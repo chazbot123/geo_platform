@@ -1,0 +1,9 @@
+node_modules/
+.next/
+dist/
+data/
+*.tsbuildinfo
+
+.trae/*
+!.trae/skills/
+!.trae/skills/**
