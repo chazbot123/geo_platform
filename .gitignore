@@ -3,6 +3,11 @@ node_modules/
 dist/
 data/
 *.tsbuildinfo
+.ccpanes/
+patch_test.txt
+public/generated-images/
+.tmp-*
+CLAUDE.md
 
 .trae/*
 !.trae/skills/

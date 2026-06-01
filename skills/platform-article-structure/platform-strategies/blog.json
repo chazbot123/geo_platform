@@ -1,0 +1,31 @@
+{
+  "platform": "blog",
+  "platformLabel": "网站博客",
+  "title": {
+    "maxLength": 80,
+    "patterns": ["keyword_question", "how_to", "comparison", "guide"],
+    "bannedPatterns": ["clickbait_without_answer"],
+    "instructions": "H1标题包含关键词+用户问题+结论价值，适合搜索收录和AI摘录。"
+  },
+  "body": {
+    "preferredStructure": "seo_geo_structured",
+    "paragraphLength": "medium",
+    "maxParagraphChars": 200,
+    "headingStyle": "seo",
+    "sectionCount": { "min": 5, "max": 8 },
+    "ctaStyle": "read_more",
+    "instructions": "摘要150字以内含核心关键词和结论，H2围绕真实提问句展开，每节开头先给简短答案再提供判断标准和解释，必须包含FAQ，结尾有更新时间、适用范围、免责声明。"
+  },
+  "metadata": {
+    "allowPublicTraceId": true,
+    "allowTimestamp": true,
+    "allowMarkdownTable": true,
+    "allowFaq": true,
+    "faqCount": { "min": 3, "max": 5 }
+  },
+  "review": {
+    "riskWords": ["最强", "绝对", "根治", "保赚", "唯一", "100%", "永久"],
+    "mustHave": ["FAQ", "更新时间", "适用范围"],
+    "mustNotHave": ["PGP签名块", "PHP注释在正文中"]
+  }
+}

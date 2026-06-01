@@ -1,5 +1,5 @@
 import { getFolderImportFieldLabel, requiredImportFields } from "@/lib/import/field-mapping";
-import { callOpenAICompatibleTextModel, parseJsonFromModelText } from "@/lib/integrations/openai-compatible";
+import { callConfiguredTextModel, NewAPIProbeError, parseJsonFromModelText } from "@/lib/integrations/openai-compatible";
 import type { FolderImportFieldKey, FolderImportPreview, FolderImportSuggestion, ModelApiConfig } from "@/lib/types";
 
 export interface Stage1ImportTextSource {
@@ -161,10 +161,13 @@ export async function runStage1ImportModel(input: Stage1ImportInput, config: Mod
   }
 
   try {
-    const result = await callOpenAICompatibleTextModel(config, buildStage1ImportMessages(input));
+    const result = await callConfiguredTextModel(config, buildStage1ImportMessages(input));
     const payload = parseJsonFromModelText<Stage1ImportPayload>(result.rawText);
     return normalizePreview(payload);
   } catch (error) {
+    if (error instanceof NewAPIProbeError) {
+      throw new Error(`IMPORT_STAGE1_PROBE_FAILED@${JSON.stringify(error.attempts)}`);
+    }
     if (error instanceof Error && error.message.startsWith("HTTP_")) {
       throw new Error(`IMPORT_STAGE1_${error.message.replace("HTTP_", "")}`);
     }

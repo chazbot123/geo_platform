@@ -5,13 +5,13 @@ import {
   getPublishingDraft,
   getPublishingDraftsByTask,
   getPublishingJobsByTask,
-  listPlatformAccounts,
   savePublishingDraft,
 } from "@/lib/storage/data-store";
 import { listAuthenticatedPlatformAccounts } from "@/lib/publish/accounts-service";
+import { normalizeToutiaoTitle } from "@/lib/publish/toutiao-title";
 import { getTaskBundle, listTaskBundles } from "@/lib/tasks/service";
 import { getPlatformDescriptor, publishPlatformDescriptors } from "@/lib/publish/platforms";
-import type { PlatformAccountRecord, PublishPlatform, PublishWorkbenchData, PublishingDraft, TaskBundle } from "@/lib/types";
+import type { PlatformAccountRecord, PublishWorkbenchData, PublishingDraft, TaskBundle } from "@/lib/types";
 
 function now() {
   return new Date().toISOString();
@@ -19,13 +19,6 @@ function now() {
 
 function compactText(value: string) {
   return value.replace(/\s+/g, " ").trim();
-}
-
-function toPlainParagraphs(value: string) {
-  return value
-    .split(/\n+/)
-    .map((item) => item.replace(/^#{1,6}\s*/, "").replace(/^\*\s+/, "").trim())
-    .filter(Boolean);
 }
 
 function extractTags(text: string) {
@@ -39,99 +32,178 @@ function extractTags(text: string) {
   ).slice(0, 8);
 }
 
-function buildXiaohongshuTitle(bundle: TaskBundle) {
+function buildToutiaoTitle(bundle: TaskBundle) {
   const productName = compactText(bundle.product.productName);
-  const keyword = compactText(bundle.theme?.selectedKeyword ?? bundle.theme?.mainKeyword ?? productName);
-  const sellingPoint = compactText(bundle.product.sellingPoints.split(/[，。；;、]/)[0] ?? "");
-  const rawCandidates = [
+  const keyword = compactText(bundle.theme?.selectedKeywordTheme ?? bundle.theme?.selectedKeyword ?? bundle.theme?.mainKeyword ?? productName);
+  const titleCandidates = [
     bundle.content?.title?.trim(),
-    `${keyword}怎么做更高效`,
-    `${productName}真的能解决${keyword}吗`,
-    `${productName}使用体验分享`,
-    sellingPoint ? `${sellingPoint}，适合谁看` : "",
+    `${keyword}：${productName}${bundle.product.category}分析报告`,
+    `${productName}${bundle.product.category}怎么选`,
+    `${productName}值不值得进一步了解`,
   ].filter((item): item is string => Boolean(item));
 
-  for (const candidate of rawCandidates) {
-    const next = compactText(candidate);
+  for (const candidate of titleCandidates) {
+    const next = normalizeToutiaoTitle(candidate, `${productName}分析报告`);
     if (!next) continue;
-    if (next.length <= 20) return next;
-    if (next.length <= 28) return next.slice(0, 28);
-    return next.slice(0, 24);
+    return next;
   }
 
-  return `${productName}使用分享`.slice(0, 20);
+  return normalizeToutiaoTitle(`${productName}分析报告`);
 }
 
-function buildXiaohongshuBody(bundle: TaskBundle) {
-  const summary = compactText(bundle.content?.summary ?? "");
-  const cta = compactText(bundle.content?.cta ?? "");
-  const paragraphs = toPlainParagraphs(bundle.content?.content ?? "");
-  const sellingPoint = compactText(bundle.product.sellingPoints.split(/[，。；;、]/)[0] ?? "");
-  const scenarios = compactText(bundle.product.scenarios.split(/[，。；;、]/)[0] ?? "");
-  const audience = compactText(bundle.product.targetAudience.split(/[，。；;、]/)[0] ?? "");
-  const intro = summary || (sellingPoint ? `最近在看 ${bundle.product.productName}，最先打动我的是 ${sellingPoint}。` : `最近研究了 ${bundle.product.productName}。`);
-  const notes = [
-    intro,
-    scenarios ? `如果你也常在 ${scenarios} 这种场景里用到它，这点会很有感。` : audience ? `如果你本身就是 ${audience}，这类方案会更容易代入。` : "",
-    ...paragraphs.slice(0, 3).map((item) => compactText(item).slice(0, 80)),
-    cta ? compactText(cta).slice(0, 50) : "",
-  ].filter(Boolean);
-
-  return notes.join("\n\n");
-}
-
-function buildDraftTitle(bundle: TaskBundle, platform: PublishPlatform) {
-  if (platform === "xiaohongshu") {
-    return buildXiaohongshuTitle(bundle);
+function splitIntoParagraphs(value: string) {
+  const normalized = value.replace(/\r\n/g, "\n").trim();
+  if (!normalized) {
+    return [] as string[];
   }
 
-  return bundle.content?.title ?? `${bundle.product.productName} 发布草稿`;
-}
+  const byNewline = normalized.split(/\n+/).map((item) => item.trim()).filter(Boolean);
+  const paragraphs: string[] = [];
 
-function buildDraftBody(bundle: TaskBundle, platform: PublishPlatform) {
-  if (platform === "xiaohongshu") {
-    return buildXiaohongshuBody(bundle);
+  for (const block of byNewline) {
+    if (block.length <= 120) {
+      paragraphs.push(block);
+      continue;
+    }
+    // 长段落按句末标点切分，累积到 >120 字符再断段，避免碎句
+    const sentences = block.match(/[^。！？!?]*[。！？!?]+|[^。！？!?]+$/g) ?? [block];
+    let buffer = "";
+    for (const sentence of sentences) {
+      buffer += sentence;
+      if (buffer.length >= 120) {
+        paragraphs.push(buffer.trim());
+        buffer = "";
+      }
+    }
+    if (buffer.trim()) {
+      paragraphs.push(buffer.trim());
+    }
   }
 
-  const baseBody = bundle.content?.content?.trim() ?? "";
-  const summary = bundle.content?.summary?.trim() ?? "";
-  const cta = bundle.content?.cta?.trim() ?? "";
-  return [summary, baseBody.slice(0, 280), cta].filter(Boolean).join("\n\n");
+  return paragraphs;
 }
 
-function buildDraft(bundle: TaskBundle, platform: PublishPlatform): PublishingDraft {
-  const descriptor = getPlatformDescriptor(platform);
-  const title = buildDraftTitle(bundle, platform);
-  const body = buildDraftBody(bundle, platform);
+function buildToutiaoBody(bundle: TaskBundle) {
+  const content = bundle.content;
+  const structured: string[] = [];
+
+  const introduction = (content?.reportIntroduction ?? "").trim();
+  if (introduction) {
+    structured.push(introduction);
+  }
+  for (const section of content?.reportSections ?? []) {
+    const body = (section?.body ?? "").trim();
+    if (body) {
+      structured.push(body);
+    }
+  }
+  const conclusion = (content?.reportConclusion ?? "").trim();
+  if (conclusion) {
+    structured.push(conclusion);
+  }
+
+  const source =
+    structured.length > 0
+      ? structured.join("\n\n")
+      : [compactText(content?.summary ?? ""), (content?.content ?? "").trim()].filter(Boolean).join("\n\n");
+
+  return splitIntoParagraphs(source).join("\n\n");
+}
+
+function buildDraftTitle(bundle: TaskBundle) {
+  return buildToutiaoTitle(bundle);
+}
+
+function buildDraftBody(bundle: TaskBundle) {
+  return buildToutiaoBody(bundle);
+}
+
+function getDraftImages(bundle: TaskBundle) {
+  const imageItems = bundle.image?.images ?? [];
+  if (imageItems.length > 0) {
+    return imageItems.map((item) => item.url);
+  }
+  if (bundle.image?.url) {
+    return [bundle.image.url];
+  }
+  return [];
+}
+
+function getDraftLocalImagePaths(bundle: TaskBundle) {
+  const imageItems = bundle.image?.images ?? [];
+  return imageItems.map((item) => item.localPath).filter((item): item is string => Boolean(item));
+}
+
+function getDraftCoverImage(bundle: TaskBundle) {
+  const imageItems = bundle.image?.images ?? [];
+  if (imageItems.length > 0) {
+    return imageItems[0]?.url;
+  }
+  return bundle.image?.url;
+}
+
+function buildDraft(bundle: TaskBundle): PublishingDraft {
+  const descriptor = getPlatformDescriptor("toutiao");
+  const title = buildDraftTitle(bundle);
+  const body = buildDraftBody(bundle);
   const tags = extractTags(
-    [bundle.theme?.selectedKeyword, bundle.theme?.mainKeyword, bundle.product.category, bundle.product.brandTone].filter(Boolean).join(" "),
+    [
+      bundle.theme?.selectedKeywordTheme,
+      ...(bundle.theme?.selectedKeywords ?? []),
+      bundle.theme?.selectedKeyword,
+      bundle.theme?.mainKeyword,
+      bundle.product.category,
+      bundle.product.brandTone,
+    ]
+      .filter(Boolean)
+      .join(" "),
   );
+  const imageUrls = getDraftImages(bundle);
+  const localImagePaths = getDraftLocalImagePaths(bundle);
+  const hasImages = imageUrls.length > 0;
 
   return {
     id: createRecordId(),
     taskId: bundle.task.id,
-    platform,
+    platform: "toutiao",
     title,
     body,
     tags,
-    coverImageUrl: bundle.image?.url,
-    imageUrls: bundle.image?.url ? [bundle.image.url] : [],
+    coverImageUrl: getDraftCoverImage(bundle),
+    imageUrls,
+    localImagePaths,
+    publishMode: hasImages ? "with_images" : "text_only",
     publishEntryUrl: descriptor?.publishEntryUrl,
     updatedAt: now(),
   };
 }
 
-function shouldRefreshXiaohongshuDraft(draft: PublishingDraft, bundle: TaskBundle) {
-  if (draft.platform !== "xiaohongshu") {
-    return false;
-  }
-
+function shouldRefreshToutiaoDraft(draft: PublishingDraft, bundle: TaskBundle) {
   const legacyTitle = bundle.content?.title ?? `${bundle.product.productName} 发布草稿`;
-  const legacyBody = [bundle.content?.summary?.trim() ?? "", (bundle.content?.content?.trim() ?? "").slice(0, 280), bundle.content?.cta?.trim() ?? ""]
-    .filter(Boolean)
-    .join("\n\n");
+  const legacyBody = bundle.content?.content?.trim() ?? "";
+  const nextTitle = buildDraftTitle(bundle);
+  const nextBody = buildDraftBody(bundle);
+  const nextTags = extractTags(
+    [bundle.theme?.selectedKeywordTheme, ...(bundle.theme?.selectedKeywords ?? []), bundle.product.category, bundle.product.brandTone]
+      .filter(Boolean)
+      .join(" "),
+  );
+  const nextImages = getDraftImages(bundle);
+  const nextLocalImagePaths = getDraftLocalImagePaths(bundle);
+  const currentLocalImagePaths = draft.localImagePaths ?? [];
+  const expectedPublishMode = nextImages.length > 0 ? "with_images" : "text_only";
 
-  return draft.title === legacyTitle || draft.body === legacyBody || (!draft.title.trim() && !draft.body.trim());
+  return (
+    draft.title === legacyTitle ||
+    draft.body === legacyBody ||
+    (!draft.title.trim() && !draft.body.trim()) ||
+    draft.title !== nextTitle ||
+    draft.body !== nextBody ||
+    nextTags.join("|") !== draft.tags.join("|") ||
+    nextImages.join("|") !== draft.imageUrls.join("|") ||
+    nextLocalImagePaths.join("|") !== currentLocalImagePaths.join("|") ||
+    draft.publishMode !== expectedPublishMode
+  );
 }
 
 async function ensureTaskDrafts(bundle: TaskBundle) {
@@ -139,14 +211,23 @@ async function ensureTaskDrafts(bundle: TaskBundle) {
   if (existingDrafts.length > 0) {
     const normalizedDrafts = await Promise.all(
       existingDrafts.map(async (draft) => {
-        if (!shouldRefreshXiaohongshuDraft(draft, bundle)) {
+        if (!shouldRefreshToutiaoDraft(draft, bundle)) {
           return draft;
         }
 
         const refreshedDraft: PublishingDraft = {
           ...draft,
-          title: buildDraftTitle(bundle, "xiaohongshu"),
-          body: buildDraftBody(bundle, "xiaohongshu"),
+          title: buildDraftTitle(bundle),
+          body: buildDraftBody(bundle),
+          tags: extractTags(
+            [bundle.theme?.selectedKeywordTheme, ...(bundle.theme?.selectedKeywords ?? []), bundle.product.category, bundle.product.brandTone]
+              .filter(Boolean)
+              .join(" "),
+          ),
+          coverImageUrl: getDraftCoverImage(bundle),
+          imageUrls: getDraftImages(bundle),
+          localImagePaths: getDraftLocalImagePaths(bundle),
+          publishMode: getDraftImages(bundle).length > 0 ? "with_images" : "text_only",
           updatedAt: now(),
         };
         await savePublishingDraft(refreshedDraft);
@@ -159,7 +240,7 @@ async function ensureTaskDrafts(bundle: TaskBundle) {
       .sort((left, right) => left.platform.localeCompare(right.platform));
   }
 
-  const drafts = publishPlatformDescriptors.map((item) => buildDraft(bundle, item.key));
+  const drafts = publishPlatformDescriptors.map(() => buildDraft(bundle));
   await Promise.all(drafts.map((draft) => savePublishingDraft(draft)));
   return drafts;
 }
@@ -167,7 +248,7 @@ async function ensureTaskDrafts(bundle: TaskBundle) {
 async function ensureDraftAccountBindings(drafts: PublishingDraft[], accounts: PlatformAccountRecord[]) {
   const nextDrafts = await Promise.all(
     drafts.map(async (draft) => {
-      if (draft.accountId) {
+      if (draft.accountIds?.length || draft.accountId) {
         return draft;
       }
 
@@ -179,6 +260,7 @@ async function ensureDraftAccountBindings(drafts: PublishingDraft[], accounts: P
       const nextDraft: PublishingDraft = {
         ...draft,
         accountId: candidates[0].id,
+        accountIds: [candidates[0].id],
         updatedAt: now(),
       };
       await savePublishingDraft(nextDraft);
@@ -193,9 +275,19 @@ export async function updatePublishingDraftRecord(draftId: string, patch: Partia
   if (!current) {
     throw new Error("草稿不存在");
   }
+  const normalizedTitle =
+    current.platform === "toutiao"
+      ? normalizeToutiaoTitle(
+          typeof patch.title === "string" ? patch.title : current.title,
+          current.title || `${current.platform}发布草稿`,
+        )
+      : patch.title;
   const nextDraft: PublishingDraft = {
     ...current,
     ...patch,
+    title: typeof normalizedTitle === "string" ? normalizedTitle : current.title,
+    localImagePaths: Array.isArray(patch.localImagePaths) ? patch.localImagePaths : (current.localImagePaths ?? []),
+    publishMode: patch.publishMode ?? current.publishMode ?? "text_only",
     updatedAt: now(),
   };
   await savePublishingDraft(nextDraft);

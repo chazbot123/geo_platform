@@ -1,18 +1,36 @@
 import { createRecordId, getPlatformAccount, getPublishingDraft, getPublishingJob, getPublishingJobsByTask, savePublishingJob } from "@/lib/storage/data-store";
+import { updatePlatformAccountRecord } from "@/lib/publish/accounts-service";
 import { buildManualDeliveryNotes } from "@/lib/publish/manual-delivery-service";
-import type { LegacyPublishPlatform, PublishingDraft, PublishingExecutionMode, PublishingJobRecord, PublishingJobStatus } from "@/lib/types";
+import type { PublishPlatform, PublishingDraft, PublishingExecutionMode, PublishingJobRecord, PublishingJobStatus } from "@/lib/types";
 
 function now() {
   return new Date().toISOString();
 }
 
-function resolveExecutionMode(platform: LegacyPublishPlatform): PublishingExecutionMode {
-  return platform === "xiaohongshu" || platform === "douyin" ? "extension_automation" : "manual_delivery";
+function resolveExecutionMode(_platform: PublishPlatform): PublishingExecutionMode {
+  return "electron_automation";
 }
 
-function resolveInitialStatus(platform: LegacyPublishPlatform): PublishingJobStatus {
-  void platform;
+function resolveInitialStatus(_platform: PublishPlatform): PublishingJobStatus {
   return "queued";
+}
+
+async function syncAccountPublishSnapshot(job: PublishingJobRecord, status: PublishingJobStatus, errorMessage?: string) {
+  if (!job.accountId) {
+    return;
+  }
+  if (status === "published") {
+    await updatePlatformAccountRecord(job.accountId, {
+      lastPublishCompletedAt: now(),
+      lastPublishError: undefined,
+    });
+    return;
+  }
+  if (status === "failed") {
+    await updatePlatformAccountRecord(job.accountId, {
+      lastPublishError: errorMessage ?? "最近一次发布失败",
+    });
+  }
 }
 
 export async function createPublishingJob(input: {
@@ -38,6 +56,8 @@ export async function createPublishingJob(input: {
     draftBody: draft.body,
     draftTags: draft.tags,
     draftImages: draft.imageUrls,
+    draftImagePaths: draft.localImagePaths,
+    publishMode: draft.publishMode ?? "text_only",
     publishEntryUrl: draft.publishEntryUrl,
     notes: buildManualDeliveryNotes({
       id: "",
@@ -49,6 +69,8 @@ export async function createPublishingJob(input: {
       draftBody: draft.body,
       draftTags: draft.tags,
       draftImages: draft.imageUrls,
+      draftImagePaths: draft.localImagePaths,
+      publishMode: draft.publishMode ?? "text_only",
       publishEntryUrl: draft.publishEntryUrl,
       createdAt: now(),
       updatedAt: now(),
@@ -87,7 +109,9 @@ export async function recordPublishingJobResult(input: {
   failureStage?: string;
   errorMessage?: string;
 }) {
-  return updatePublishingJobRecord(input.jobId, {
+  const submittedStatuses: PublishingJobStatus[] = ["submitted", "verifying", "pending_review", "verification_failed", "published"];
+  const finishedStatuses: PublishingJobStatus[] = ["published", "failed"];
+  const patch: Partial<PublishingJobRecord> = {
     publishUrl: input.publishUrl,
     draftUrl: input.draftUrl,
     verificationUrl: input.verificationUrl,
@@ -100,12 +124,30 @@ export async function recordPublishingJobResult(input: {
     platformItemId: input.platformItemId,
     failureStage: input.failureStage,
     errorMessage: input.errorMessage,
-    startedAt: input.status === "running" ? now() : undefined,
-    submittedAt: input.status === "submitted" ? now() : undefined,
-    verifiedAt: input.status === "published" ? now() : undefined,
-    finishedAt: input.status === "published" || input.status === "failed" ? now() : undefined,
-    publishedAt: input.status === "published" ? now() : undefined,
-  });
+  };
+
+  if (input.status === "running") {
+    patch.startedAt = now();
+  }
+
+  if (submittedStatuses.includes(input.status)) {
+    patch.submittedAt = now();
+  }
+
+  if (input.status === "published" || input.status === "verification_failed") {
+    patch.verifiedAt = now();
+  }
+
+  if (finishedStatuses.includes(input.status)) {
+    patch.finishedAt = now();
+  }
+
+  if (input.status === "published") {
+    patch.publishedAt = now();
+  }
+  const nextJob = await updatePublishingJobRecord(input.jobId, patch);
+  await syncAccountPublishSnapshot(nextJob, input.status, input.errorMessage);
+  return nextJob;
 }
 
 export async function listTaskPublishingJobs(taskId: string) {

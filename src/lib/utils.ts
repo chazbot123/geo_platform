@@ -17,7 +17,8 @@ export function formatDateTime(value?: string) {
 
 const taskStatusMap: Record<string, string> = {
   created: "已创建",
-  keyword_generated: "关键词已生成",
+  keyword_generated: "提问句已生成",
+  keyword_selected: "提问句已确认",
   content_generated: "内容已生成",
   image_generated: "图片已生成",
   publishing: "发布中",
@@ -38,6 +39,10 @@ const configFieldMap: Record<string, string> = {
   apiKey: "接口密钥",
   modelName: "模型名称",
   timeout: "超时时间",
+  enabled: "是否启用",
+  timeoutMs: "抓取超时",
+  userAgent: "请求 UA",
+  maxHitsPerSource: "单源最大命中数",
 };
 
 export function formatTaskStatus(status?: string) {

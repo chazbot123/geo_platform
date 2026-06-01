@@ -1,18 +1,48 @@
 import { defaultAppConfig } from "@/lib/config/defaults";
 import { normalizeApiKey } from "@/lib/integrations/auth";
-import { resolveOpenAICompatibleEndpoint } from "@/lib/integrations/openai-compatible";
+import { isNewApiAutoProvider, resolveOpenAICompatibleEndpoint } from "@/lib/integrations/openai-compatible";
 import { ensureStorageReady, getConfig, saveConfig } from "@/lib/storage/data-store";
 import type { AppConfig } from "@/lib/types";
 
+function normalizeProviderName(provider: string) {
+  const normalized = provider.trim().toLowerCase();
+  if (normalized === "sky") {
+    return "newapi-auto";
+  }
+  return provider.trim();
+}
+
+function isOpenAICompatibleProvider(provider: string) {
+  const normalized = normalizeProviderName(provider).toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return (
+    normalized === "deepseek" ||
+    normalized === "open ai" ||
+    normalized === "openai" ||
+    normalized.includes("open") ||
+    normalized.includes("gpt")
+  );
+}
+
+function sanitizeBaseUrl(baseUrl: string) {
+  return baseUrl.trim().replace(/^[`'"]+|[`'"]+$/g, "").replace(/\/+$/g, "");
+}
+
 function normalizeBaseUrl(provider: string, baseUrl: string) {
-  const trimmed = baseUrl.trim();
+  const trimmed = sanitizeBaseUrl(baseUrl);
   if (!trimmed) {
     return "";
   }
 
-  const normalizedProvider = provider.trim().toLowerCase();
+  const normalizedProvider = normalizeProviderName(provider).toLowerCase();
 
-  if (normalizedProvider === "deepseek") {
+  if (isNewApiAutoProvider(normalizedProvider)) {
+    return trimmed;
+  }
+
+  if (isOpenAICompatibleProvider(normalizedProvider)) {
     return resolveOpenAICompatibleEndpoint(trimmed);
   }
 
@@ -40,16 +70,19 @@ function normalizeConfig(config: AppConfig): AppConfig {
     ...config,
     stage1ModelApiConfig: {
       ...config.stage1ModelApiConfig,
-      baseUrl: normalizeBaseUrl(config.stage1ModelApiConfig.provider, config.stage1ModelApiConfig.baseUrl),
+      provider: "newapi-auto",
+      baseUrl: normalizeBaseUrl("newapi-auto", config.stage1ModelApiConfig.baseUrl),
       apiKey: normalizeApiKey(config.stage1ModelApiConfig.apiKey),
     },
     contentModelApiConfig: {
       ...config.contentModelApiConfig,
+      provider: normalizeProviderName(config.contentModelApiConfig.provider),
       baseUrl: normalizeBaseUrl(config.contentModelApiConfig.provider, config.contentModelApiConfig.baseUrl),
       apiKey: normalizeApiKey(config.contentModelApiConfig.apiKey),
     },
     imageModelApiConfig: {
       ...config.imageModelApiConfig,
+      provider: normalizeProviderName(config.imageModelApiConfig.provider),
       baseUrl: normalizeBaseUrl(config.imageModelApiConfig.provider, config.imageModelApiConfig.baseUrl),
       apiKey: normalizeApiKey(config.imageModelApiConfig.apiKey),
     },

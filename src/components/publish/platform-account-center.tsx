@@ -1,20 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, ExternalLink, LoaderCircle, LogIn, RefreshCcw, Trash2, XCircle } from "lucide-react";
+import { CheckCircle2, ExternalLink, FileImage, LoaderCircle, LogIn, RefreshCcw, Trash2, XCircle } from "lucide-react";
 import { openPlatformLoginWindow, validatePlatformSessionWindow } from "@/lib/publish/electron-login-client";
-import {
-  listenPlatformExtensionEvents,
-  openPlatformAccountHomeInExtension,
-  pingPlatformExtension,
-  startPlatformExtensionLoginSession,
-} from "@/lib/publish/platform-extension-bridge";
-import { socialPlatformDescriptors } from "@/lib/publish/platforms";
-import type { PlatformAccountRecord } from "@/lib/types";
+import { detectDesktopBridge, hasElectronDesktopBridge, type DesktopBridgeAvailability } from "@/lib/publish/local-bridge-client";
+import { auditPlatformAccountSession, buildDesktopSessionFailureReason, describeAccountPublishability } from "@/lib/publish/account-session-validator";
+import type { AccountPublishedJobsGroup, PlatformAccountRecord, PublishingJobRecord } from "@/lib/types";
 
-function platformLabel(platform: string) {
-  return socialPlatformDescriptors.find((item) => item.key === platform)?.label ?? platform;
-}
+const TOUTIAO_PLATFORM = "toutiao";
+const TOUTIAO_LABEL = "今日头条";
 
 function statusText(account: PlatformAccountRecord) {
   if (account.loginStatus === "authenticated") return "已登录";
@@ -24,50 +18,71 @@ function statusText(account: PlatformAccountRecord) {
   return "未登录";
 }
 
-function isDesktopGeoHost() {
-  if (typeof window === "undefined") {
-    return false;
+function statusDescription(account: PlatformAccountRecord) {
+  if (account.loginStatus === "authenticated") {
+    return "已保存并通过桌面会话校验，但发布前仍会再做一次真实平台登录态检查。";
   }
 
-  return Boolean(window.geoDesktop?.openPlatformLogin || window.geoDesktop?.validatePlatformSession);
+  if (account.loginStatus === "pending") {
+    return "账号记录已创建，但桌面登录还没有完成最终校验。";
+  }
+
+  if (account.loginStatus === "failed") {
+    return account.lastError?.trim() || "最近一次桌面登录或会话校验失败。";
+  }
+
+  return "当前账号尚未完成可用于自动发布的桌面登录验证。";
 }
 
-function buildDesktopFailureReason(status: string, reason?: string) {
-  if (reason?.trim()) {
-    return reason.trim();
-  }
-
-  switch (status) {
-    case "expired":
-      return "检测到平台会话已失效，请重新登录。";
-    case "missing_session":
-      return "未检测到有效的平台登录会话。";
-    case "unknown":
-      return "暂时无法确认当前平台登录状态。";
-    default:
-      return "桌面登录未完成。";
-  }
+function buildPublishedJobsMap(groups: AccountPublishedJobsGroup[]) {
+  return Object.fromEntries(groups.map((group) => [group.accountId, group.jobs]));
 }
 
-export function PlatformAccountCenter({ initialAccounts }: { initialAccounts: PlatformAccountRecord[] }) {
-  const [accounts, setAccounts] = useState(initialAccounts);
+function buildJobBodyPreview(body: string) {
+  const normalized = body.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "暂无正文预览";
+  }
+  return normalized.length > 140 ? `${normalized.slice(0, 140)}...` : normalized;
+}
+
+export function PlatformAccountCenter({
+  initialAccounts,
+  initialPublishedByAccount,
+}: {
+  initialAccounts: PlatformAccountRecord[];
+  initialPublishedByAccount: AccountPublishedJobsGroup[];
+}) {
+  const [accounts, setAccounts] = useState(initialAccounts.filter((item) => item.platform === TOUTIAO_PLATFORM));
   const [loadingKey, setLoadingKey] = useState("");
   const [message, setMessage] = useState("");
-  const [extensionReady, setExtensionReady] = useState(false);
-  const [hostMode, setHostMode] = useState<"desktop" | "browser">(() => (isDesktopGeoHost() ? "desktop" : "browser"));
   const [remarkDrafts, setRemarkDrafts] = useState<Record<string, string>>(
-    Object.fromEntries(initialAccounts.map((item) => [item.id, item.remark ?? ""])),
+    Object.fromEntries(initialAccounts.filter((item) => item.platform === TOUTIAO_PLATFORM).map((item) => [item.id, item.remark ?? ""])),
   );
-  const isDesktopHost = hostMode === "desktop";
+  const [publishedJobsByAccount, setPublishedJobsByAccount] = useState<Record<string, PublishingJobRecord[]>>(
+    buildPublishedJobsMap(initialPublishedByAccount),
+  );
+  const [sessionAuditSummary, setSessionAuditSummary] = useState("");
+  const [hasAutoAudited, setHasAutoAudited] = useState(false);
+  const [bridgeChecked, setBridgeChecked] = useState(false);
+  const [bridgeAvailability, setBridgeAvailability] = useState<DesktopBridgeAvailability>(() => ({
+    mode: hasElectronDesktopBridge() ? "electron_bridge" : "bridge_unreachable",
+    label: hasElectronDesktopBridge() ? "已连接 Electron 注入桥" : "未检测到可用桌面桥",
+  }));
+  const isBridgeReady = bridgeAvailability.mode === "electron_bridge" || bridgeAvailability.mode === "local_bridge";
 
-  const groupedAccounts = useMemo(
-    () =>
-      socialPlatformDescriptors.map((descriptor) => ({
-        descriptor,
-        items: accounts.filter((item) => item.platform === descriptor.key),
-      })),
-    [accounts],
-  );
+  useEffect(() => {
+    let alive = true;
+    void detectDesktopBridge().then((result) => {
+      if (alive) {
+        setBridgeAvailability(result);
+        setBridgeChecked(true);
+      }
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   async function refreshAccounts() {
     const response = await fetch("/api/publish/accounts");
@@ -75,9 +90,16 @@ export function PlatformAccountCenter({ initialAccounts }: { initialAccounts: Pl
     if (!response.ok) {
       throw new Error(payload.error ?? "加载账号失败");
     }
-    setAccounts(payload.items);
-    setRemarkDrafts(Object.fromEntries(payload.items.map((item: PlatformAccountRecord) => [item.id, item.remark ?? ""])));
+    const nextAccounts = (payload.items as PlatformAccountRecord[]).filter((item) => item.platform === TOUTIAO_PLATFORM);
+    setAccounts(nextAccounts);
+    setRemarkDrafts(Object.fromEntries(nextAccounts.map((item) => [item.id, item.remark ?? ""])));
+    setPublishedJobsByAccount(buildPublishedJobsMap(payload.publishedByAccount as AccountPublishedJobsGroup[]));
   }
+
+  const authenticatedAccounts = useMemo(
+    () => accounts.filter((item) => item.platform === TOUTIAO_PLATFORM && item.loginStatus === "authenticated"),
+    [accounts],
+  );
 
   async function sendAccountPatch(accountId: string, patch: Record<string, unknown>) {
     const response = await fetch(`/api/publish/accounts/${accountId}`, {
@@ -94,7 +116,6 @@ export function PlatformAccountCenter({ initialAccounts }: { initialAccounts: Pl
 
   async function applyDesktopLoginValidation(
     accountId: string,
-    platform: string,
     result: Awaited<ReturnType<typeof validatePlatformSessionWindow>>,
   ) {
     if (result.status === "unsupported") {
@@ -108,159 +129,70 @@ export function PlatformAccountCenter({ initialAccounts }: { initialAccounts: Pl
         lastError: undefined,
       });
       await refreshAccounts();
-      setMessage(`${platformLabel(platform)} 登录状态已通过桌面会话校验并保存。`);
+      setMessage("今日头条登录状态已通过桌面会话校验并保存。");
       return;
     }
 
-    const lastError = buildDesktopFailureReason(result.status, result.reason);
+    const lastError = buildDesktopSessionFailureReason(result.status, result.reason);
     await sendAccountPatch(accountId, {
       loginStatus: "failed",
       status: "invalid",
       lastError,
     });
     await refreshAccounts();
-    setMessage(`${platformLabel(platform)} 登录未完成：${lastError}`);
+    setMessage(`今日头条登录未完成：${lastError}`);
   }
 
-  async function startLogin(platform: string, accountId?: string) {
-    setLoadingKey(accountId ?? platform);
+  async function startLogin(accountId?: string) {
+    if (!isBridgeReady) {
+      setMessage(bridgeAvailability.reason ?? "未检测到可用桌面桥，请先启动 GEO 桌面版。");
+      return;
+    }
+
+    setLoadingKey(accountId ?? TOUTIAO_PLATFORM);
     setMessage("");
     try {
-      if (isDesktopHost) {
-        const response = await fetch("/api/publish/accounts/login", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ platform, accountId }),
-        });
-        const payload = await response.json();
-        if (!response.ok) {
-          throw new Error(payload.error ?? "发起桌面登录失败");
-        }
-
-        const targetAccountId = payload.account?.id ?? accountId;
-        const loginRequest = payload.loginRequest as
-          | {
-              platform: string;
-              title: string;
-              loginUrl?: string;
-              sessionPartition?: string;
-            }
-          | undefined;
-
-        if (!targetAccountId || !loginRequest) {
-          throw new Error("桌面登录返回数据不完整，无法继续。");
-        }
-
-        const loginResult = await openPlatformLoginWindow(loginRequest);
-        if (loginResult.status === "unsupported") {
-          throw new Error("当前桌面壳未暴露登录桥，无法打开平台登录窗。");
-        }
-
-        const validationResult = await validatePlatformSessionWindow({
-          platform,
-          publishUrl: loginRequest.loginUrl,
-          sessionPartition: loginRequest.sessionPartition,
-        });
-        await applyDesktopLoginValidation(targetAccountId, platform, validationResult);
-        return;
-      }
-
-      const ready = await pingPlatformExtension().catch(() => false);
-      setExtensionReady(ready);
-      if (!ready) {
-        throw new Error("未检测到浏览器扩展，请先加载 `scripts/browser-extension/platform-login-helper` 扩展后再登录账号。");
-      }
-
-      const response = await fetch("/api/publishing/platform-accounts/extension-login/start", {
+      const response = await fetch("/api/publish/accounts/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ platform, accountId }),
+        body: JSON.stringify({ platform: TOUTIAO_PLATFORM, accountId }),
       });
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.message ?? "发起登录失败");
+      if (!response.ok) {
+        throw new Error(payload.error ?? "发起桌面登录失败");
+      }
 
-      await startPlatformExtensionLoginSession({
-        session: payload,
-        platform: platform as PlatformAccountRecord["platform"],
-        apiBaseUrl: window.location.origin,
-        forceFreshLogin: true,
+      const targetAccountId = payload.account?.id ?? accountId;
+      const loginRequest = payload.loginRequest as
+        | {
+            platform: string;
+            title: string;
+            loginUrl?: string;
+            sessionPartition?: string;
+          }
+        | undefined;
+
+      if (!targetAccountId || !loginRequest) {
+        throw new Error("桌面登录返回数据不完整，无法继续。");
+      }
+
+      const loginResult = await openPlatformLoginWindow(loginRequest);
+      if (loginResult.status === "unsupported") {
+        throw new Error("当前桌面壳未暴露登录桥，无法打开平台登录窗。");
+      }
+
+      const validationResult = await validatePlatformSessionWindow({
+        platform: TOUTIAO_PLATFORM,
+        publishUrl: loginRequest.loginUrl,
+        sessionPartition: loginRequest.sessionPartition,
       });
-      await refreshAccounts();
-      setMessage("已尝试打开平台登录页，请在新标签页完成登录；登录成功后扩展会自动回传并保存账号状态。");
+      await applyDesktopLoginValidation(targetAccountId, validationResult);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "发起登录失败");
     } finally {
       setLoadingKey("");
     }
   }
-
-  async function openAccountHome(accountId: string) {
-    setLoadingKey(accountId);
-    setMessage("");
-    try {
-      if (isDesktopHost) {
-        setMessage("桌面版当前仅支持登录窗和会话校验；打开指定账号主页请在浏览器扩展模式下使用。");
-        return;
-      }
-
-      const ready = await pingPlatformExtension().catch(() => false);
-      setExtensionReady(ready);
-      if (!ready) {
-        throw new Error("未检测到浏览器扩展，无法切换到指定账号主页。");
-      }
-      const response = await fetch("/api/publishing/extension/platform-accounts/open-home", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountId }),
-      });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.message ?? "读取账号主页信息失败");
-      await openPlatformAccountHomeInExtension(payload);
-      setMessage("扩展已打开指定平台主页，并尝试切换到该账号登录态。");
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "打开账号主页失败");
-    } finally {
-      setLoadingKey("");
-    }
-  }
-
-  useEffect(() => {
-    const desktopHost = isDesktopGeoHost();
-    setHostMode(desktopHost ? "desktop" : "browser");
-
-    if (desktopHost) {
-      setExtensionReady(false);
-      return;
-    }
-
-    let active = true;
-    void pingPlatformExtension()
-      .then((ready) => {
-        if (active) {
-          setExtensionReady(ready);
-        }
-      })
-      .catch(() => {
-        if (active) {
-          setExtensionReady(false);
-        }
-      });
-
-    const dispose = listenPlatformExtensionEvents((event) => {
-      if (event.kind === "synced") {
-        void refreshAccounts();
-        setMessage(`${platformLabel(event.platform)} 登录状态已由扩展回传并保存。`);
-        return;
-      }
-      if (event.kind === "error") {
-        setMessage(event.message);
-      }
-    });
-    return () => {
-      active = false;
-      dispose();
-    };
-  }, []);
 
   async function patchAccount(accountId: string, patch: Record<string, unknown>, successMessage: string) {
     setLoadingKey(accountId);
@@ -292,121 +224,383 @@ export function PlatformAccountCenter({ initialAccounts }: { initialAccounts: Pl
     }
   }
 
+  async function runAutoSessionAudit() {
+    if (!isBridgeReady) {
+      setSessionAuditSummary("当前未连接桌面桥，暂时无法自动复核账号真实登录态。");
+      setHasAutoAudited(true);
+      return;
+    }
+
+    if (authenticatedAccounts.length === 0) {
+      setSessionAuditSummary("当前没有需要自动复核的已登录账号。");
+      setHasAutoAudited(true);
+      return;
+    }
+
+    let verifiedCount = 0;
+    let downgradedCount = 0;
+    let changed = false;
+
+    for (const account of authenticatedAccounts) {
+      const audit = await auditPlatformAccountSession(account);
+      if (!audit.canAutoValidate) {
+        setSessionAuditSummary(audit.summary);
+        continue;
+      }
+      const nextLoginStatus = audit.nextLoginStatus ?? account.loginStatus;
+      const nextStatus = audit.nextStatus ?? account.status;
+      const nextError = audit.lastError;
+      if (
+        nextLoginStatus !== account.loginStatus ||
+        nextStatus !== account.status ||
+        (nextError ?? "") !== (account.lastError ?? "")
+      ) {
+        await sendAccountPatch(account.id, {
+          loginStatus: nextLoginStatus,
+          status: nextStatus,
+          lastError: nextError,
+        });
+        changed = true;
+      }
+
+      if (audit.validationStatus === "authenticated") {
+        verifiedCount += 1;
+      } else {
+        downgradedCount += 1;
+      }
+    }
+
+    if (changed) {
+      await refreshAccounts();
+    }
+
+    setSessionAuditSummary(
+      downgradedCount > 0
+        ? `系统已自动复核桌面登录态：${verifiedCount} 个账号仍可发布，${downgradedCount} 个账号因真实会话失效已被降级，请重新登录。`
+        : `系统已自动复核桌面登录态：${verifiedCount} 个账号可继续用于发布。`,
+    );
+    setHasAutoAudited(true);
+  }
+
+  useEffect(() => {
+    if (!bridgeChecked) {
+      return;
+    }
+    if (hasAutoAudited) {
+      return;
+    }
+    void runAutoSessionAudit();
+  }, [bridgeChecked, hasAutoAudited, isBridgeReady, authenticatedAccounts]);
+
   return (
-    <div className="grid gap-6">
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {groupedAccounts.map(({ descriptor, items }) => (
-          <div key={descriptor.key} className="rounded-[28px] border border-white/10 bg-white/5 p-5">
-            <p className="label-base">{descriptor.label}</p>
-            <p className="mt-2 text-sm leading-6 text-slate-300">
-              {isDesktopHost ? "当前运行在桌面版，将使用内置登录窗保存和校验平台会话。" : descriptor.hint}
+    <div className="grid gap-8">
+      <div className="grid gap-6">
+        <div className="group relative overflow-hidden rounded-[32px] border border-stroke bg-panel/80 p-6 shadow-panel backdrop-blur-xl transition-all duration-300 hover:border-stroke-strong hover:bg-panelSoft/90">
+          <div className="absolute -inset-px rounded-[32px] bg-gradient-to-b from-accent/0 to-accent/0 opacity-0 transition-opacity duration-300 group-hover:from-accent/5 group-hover:opacity-100" />
+
+          <div className="relative z-10">
+            <h3 className="font-display text-xl font-semibold tracking-tight text-ink">{TOUTIAO_LABEL}</h3>
+            <p className="mt-3 text-sm leading-relaxed text-muted">
+              {isBridgeReady
+                ? "当前页面已连接桌面桥，将使用本机 GEO 桌面版打开登录窗并校验今日头条真实平台会话。"
+                : "当前页面尚未连接本机桌面桥，请先启动 GEO 桌面版后再进行今日头条登录。"}
             </p>
-            <p className="mt-4 text-xs uppercase tracking-[0.24em] text-slate-500">当前账号数 {items.length}</p>
+            <div className={`mt-4 rounded-2xl border p-4 text-xs leading-relaxed ${
+              isBridgeReady
+                ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-300"
+                : "border-warning/30 bg-warning/10 text-warning"
+            }`}>
+              {isBridgeReady
+                ? bridgeAvailability.mode === "electron_bridge"
+                  ? "当前运行在桌面壳内，操作会直接走 Electron 注入桥。"
+                  : "当前运行在浏览器里，但已经连接到本机 localhost 桌面桥；登录和校验会转给后台运行的 GEO 桌面版。"
+                : "当前未连接到 GEO 桌面版；浏览器本身不能保存或校验 Electron 分区里的真实登录态。"}
+            </div>
+            {sessionAuditSummary ? (
+              <div className="mt-4 rounded-2xl border border-stroke bg-white/5 p-4 text-sm leading-relaxed text-slate-300">
+                {sessionAuditSummary}
+              </div>
+            ) : null}
+
+            <div className="mt-6 flex items-center justify-between border-t border-stroke pt-4">
+              <span className="font-mono text-xs uppercase tracking-[0.2em] text-muted">
+                当前账号 <strong className="text-ink">{accounts.length}</strong>
+              </span>
+            </div>
+
             <button
-              className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-accent px-4 py-3 text-sm font-semibold text-slate-950"
-              onClick={() => startLogin(descriptor.key)}
-              disabled={loadingKey === descriptor.key}
+              className="mt-4 flex w-full items-center justify-center gap-2 rounded-[20px] bg-accent-muted px-4 py-3.5 text-sm font-bold text-accent transition-all duration-300 hover:bg-accent hover:text-surface hover:shadow-glow focus:outline-none focus:ring-2 focus:ring-accent/50 disabled:opacity-50 disabled:hover:bg-accent-muted disabled:hover:text-accent disabled:hover:shadow-none"
+              onClick={() => startLogin()}
+              disabled={loadingKey === TOUTIAO_PLATFORM || !isBridgeReady}
             >
-              {loadingKey === descriptor.key ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <LogIn className="h-4 w-4" />}
-              {isDesktopHost ? "打开桌面登录窗" : extensionReady ? "连接新频道" : "等待扩展就绪"}
+              {loadingKey === TOUTIAO_PLATFORM ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <LogIn className="h-4 w-4" />}
+              {isBridgeReady ? "打开今日头条登录窗" : "请先启动桌面版"}
             </button>
           </div>
-        ))}
+        </div>
       </div>
 
-      <div className="rounded-[28px] border border-white/10 bg-white/5 p-6">
-        <p className="label-base">已保存账号</p>
-        {message ? <p className="mt-3 text-sm text-slate-300">{message}</p> : null}
-        <p className="mt-3 text-xs leading-6 text-slate-400">
-          {isDesktopHost
-            ? "当前运行在桌面版，账号中心会使用内置登录桥打开平台登录窗，并在窗口关闭后校验真实平台会话。"
-            : "当前账号中心支持双桥模式：浏览器版使用扩展桥承接真实 Cookie，桌面版使用内置登录桥保存平台会话。多账号场景仍需在发布工作台手动选择。"}
-        </p>
-        <p className="mt-2 text-xs leading-6 text-slate-500">
-          {isDesktopHost
-            ? "宿主状态：已连接桌面登录桥"
-            : `扩展状态：${extensionReady ? "已连接" : "未检测到，请先在浏览器中加载 `scripts/browser-extension/platform-login-helper`"}`}
-        </p>
-        <div className="mt-4 grid gap-4">
+      <div className="rounded-[32px] border border-stroke bg-panel/50 p-8 shadow-panel backdrop-blur-xl">
+        <div className="mb-8">
+          <h2 className="font-display text-2xl font-bold tracking-tight text-ink">已保存的今日头条账号</h2>
+
+          {message && (
+            <div className="mt-4 rounded-2xl border border-accent/20 bg-accent-muted/30 p-4 text-sm font-medium text-accent-soft">
+              {message}
+            </div>
+          )}
+          
+          <div className="mt-4 space-y-2 text-sm leading-relaxed text-muted">
+            <p>
+              {bridgeAvailability.mode === "electron_bridge"
+                ? "当前运行在桌面版，账号中心会使用内置登录桥打开今日头条登录窗，并在窗口关闭后校验真实平台会话。"
+                : isBridgeReady
+                  ? "当前运行在浏览器中，但账号中心已经连接到本机 localhost 桌面桥，可以直接调用桌面版完成登录与校验。"
+                  : "当前未检测到本机桌面桥，无法发起今日头条自动发布登录。请先启动 GEO 桌面版。"}
+            </p>
+            <p className="flex items-center gap-2">
+              <span className="relative flex h-2 w-2">
+                <span className={`absolute inline-flex h-full w-full animate-ping rounded-full opacity-75 ${isBridgeReady ? "bg-emerald-400" : "bg-warning"}`}></span>
+                <span className={`relative inline-flex h-2 w-2 rounded-full ${isBridgeReady ? "bg-emerald-500" : "bg-warning"}`}></span>
+              </span>
+              {bridgeAvailability.mode === "electron_bridge"
+                ? "宿主状态：已连接 Electron 注入桥"
+                : bridgeAvailability.mode === "local_bridge"
+                  ? "宿主状态：已连接本机 localhost 桌面桥"
+                  : "宿主状态：未检测到可用桌面桥"}
+            </p>
+          </div>
+        </div>
+
+        <div className="grid gap-5">
           {accounts.length ? (
             accounts.map((account) => (
-              <div key={account.id} className="rounded-[24px] border border-white/10 bg-slate-950/20 p-4">
-                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                  <div>
-                    <p className="text-sm font-semibold text-white">{account.displayName ?? account.accountName}</p>
-                    <p className="mt-1 text-sm text-slate-300">{platformLabel(account.platform)}  {statusText(account)}</p>
-                    <p className="mt-1 text-xs text-slate-500">最近更新：{new Date(account.updatedAt).toLocaleString()}</p>
+              <div
+                key={account.id}
+                className="group relative overflow-hidden rounded-[24px] border border-stroke bg-surface/50 p-5 transition-all duration-300 hover:border-stroke-strong hover:bg-panelSoft/50"
+              >
+                {(() => {
+                  const publishedJobs = publishedJobsByAccount[account.id] ?? [];
+                  const latestPublishedJob = publishedJobs[0];
+                  return (
+                    <>
+                <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+                  <div className="space-y-1.5">
+                    <h4 className="font-display text-lg font-bold text-ink">
+                      {account.displayName ?? account.accountName}
+                    </h4>
+                    <div className="flex items-center gap-3 text-sm">
+                      <span className="font-medium text-muted">{TOUTIAO_LABEL}</span>
+                      <span className="h-1 w-1 rounded-full bg-stroke-strong"></span>
+                      <span className={`font-medium ${
+                        account.loginStatus === 'authenticated' ? 'text-emerald-400' :
+                        account.loginStatus === 'failed' ? 'text-danger' :
+                        'text-warning'
+                      }`}>
+                        {statusText(account)}
+                      </span>
+                    </div>
+                    <p className="font-mono text-xs text-muted/60">
+                      最近更新：{new Date(account.updatedAt).toLocaleString()}
+                    </p>
+                    <p className="max-w-xl text-sm leading-relaxed text-muted">
+                      {statusDescription(account)}
+                    </p>
+                    {account.lastError ? (
+                      <p className="rounded-xl border border-warning/20 bg-warning/10 px-3 py-2 text-xs leading-relaxed text-warning">
+                        最近失败原因：{account.lastError}
+                      </p>
+                    ) : null}
+                    <div className="grid gap-2 pt-1 text-xs text-slate-400">
+                      <p>
+                        <span className="text-muted">记录状态：</span>
+                        {statusText(account)}
+                      </p>
+                      <p>
+                        <span className="text-muted">真实会话：</span>
+                        {describeAccountPublishability(account, isBridgeReady)}
+                      </p>
+                      <p>
+                        <span className="text-muted">最近发布成功：</span>
+                        {account.lastPublishCompletedAt ? new Date(account.lastPublishCompletedAt).toLocaleString() : "暂无记录"}
+                      </p>
+                      <p>
+                        <span className="text-muted">最近发布失败：</span>
+                        {account.lastPublishError?.trim() || "暂无记录"}
+                      </p>
+                      {latestPublishedJob ? (
+                        <p>
+                          <span className="text-muted">最近发布标题：</span>
+                          {latestPublishedJob.draftTitle}
+                        </p>
+                      ) : null}
+                    </div>
                   </div>
-                  <div className="flex flex-wrap gap-2">
+                  
+                  <div className="flex flex-wrap items-center gap-2">
                     <button
-                      className="rounded-2xl border border-white/10 px-3 py-2 text-xs text-white"
-                      onClick={() => startLogin(account.platform, account.id)}
-                      disabled={loadingKey === account.id}
+                      className="flex items-center gap-1.5 rounded-full border border-stroke bg-white/5 px-4 py-2 text-xs font-medium text-ink transition-colors hover:bg-white/10"
+                      onClick={() => startLogin(account.id)}
+                      disabled={loadingKey === account.id || !isBridgeReady}
                     >
-                      <RefreshCcw className="mr-1 inline h-3.5 w-3.5" />
+                      <RefreshCcw className="h-3.5 w-3.5" />
                       重新登录
                     </button>
                     <button
-                      className="rounded-2xl border border-sky-400/20 px-3 py-2 text-xs text-sky-200"
-                      onClick={() => openAccountHome(account.id)}
-                      disabled={loadingKey === account.id}
-                    >
-                      <ExternalLink className="mr-1 inline h-3.5 w-3.5" />
-                      打开主页
-                    </button>
-                    <button
-                      className="rounded-2xl border border-emerald-400/20 px-3 py-2 text-xs text-emerald-200"
+                      className="flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-4 py-2 text-xs font-medium text-emerald-400 transition-colors hover:bg-emerald-500/20"
                       onClick={() =>
                         patchAccount(
                           account.id,
                           { loginStatus: "authenticated", status: "valid" },
-                          "账号已被强制标记为已登录，仅建议用于调试；若真实平台会话无效，发布前仍会提示重新登录。",
+                          "账号已被强制标记为已登录，仅用于调试；系统后续自动复核若发现真实会话无效，仍会重新降级。",
                         )
                       }
                       disabled={loadingKey === account.id}
                     >
-                      <CheckCircle2 className="mr-1 inline h-3.5 w-3.5" />
-                      强制标记已登录
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                      强制标记
                     </button>
                     <button
-                      className="rounded-2xl border border-rose-400/20 px-3 py-2 text-xs text-rose-200"
+                      className="flex items-center gap-1.5 rounded-full border border-danger/20 bg-danger/10 px-4 py-2 text-xs font-medium text-danger transition-colors hover:bg-danger/20"
                       onClick={() => patchAccount(account.id, { loginStatus: "failed", status: "invalid", lastError: "用户手动标记为失败" }, "账号已标记为失败。")}
                       disabled={loadingKey === account.id}
                     >
-                      <XCircle className="mr-1 inline h-3.5 w-3.5" />
+                      <XCircle className="h-3.5 w-3.5" />
                       标记失败
                     </button>
                     <button
-                      className="rounded-2xl border border-white/10 px-3 py-2 text-xs text-white"
+                      className="flex items-center gap-1.5 rounded-full border border-stroke bg-surface px-4 py-2 text-xs font-medium text-muted transition-colors hover:border-danger/30 hover:text-danger"
                       onClick={() => removeAccount(account.id)}
                       disabled={loadingKey === account.id}
                     >
-                      <Trash2 className="mr-1 inline h-3.5 w-3.5" />
+                      <Trash2 className="h-3.5 w-3.5" />
                       删除
                     </button>
                   </div>
                 </div>
-                <div className="mt-4 grid gap-3 lg:grid-cols-[1fr_auto]">
+                
+                <div className="mt-5 grid gap-3 lg:grid-cols-[1fr_auto]">
                   <input
-                    className="input-base"
+                    className="input-base w-full bg-surface/50"
                     value={remarkDrafts[account.id] ?? ""}
                     onChange={(event) => setRemarkDrafts((current) => ({ ...current, [account.id]: event.target.value }))}
-                    placeholder="补充账号备注、用途或状态说明"
+                    placeholder="补充账号备注、用途或状态说明..."
                   />
                   <button
-                    className="rounded-2xl border border-white/10 px-4 py-3 text-sm text-white"
+                    className="rounded-[16px] border border-stroke bg-white/5 px-6 py-2.5 text-sm font-medium text-ink transition-colors hover:bg-white/10"
                     onClick={() => patchAccount(account.id, { remark: remarkDrafts[account.id] ?? "" }, "账号备注已保存。")}
                     disabled={loadingKey === account.id}
                   >
                     保存备注
                   </button>
                 </div>
+                <div className="mt-5 border-t border-stroke pt-5">
+                  <div className="mb-4 flex items-center justify-between">
+                    <div>
+                      <h5 className="font-display text-base font-bold text-ink">本系统已发布内容</h5>
+                      <p className="mt-1 text-xs text-muted">仅展示通过 GEO 成功发布到当前账号的内容记录。</p>
+                    </div>
+                    <span className="rounded-full bg-white/5 px-3 py-1 text-xs font-medium text-muted">
+                      {publishedJobs.length} 条
+                    </span>
+                  </div>
+
+                  {publishedJobs.length ? (
+                    <div className="grid gap-3">
+                      {publishedJobs.slice(0, 5).map((job) => (
+                        <div key={job.id} className="rounded-[20px] border border-stroke bg-panel/40 p-4">
+                          <div className="flex items-start justify-between gap-4">
+                            <div className="space-y-1">
+                              <h6 className="text-sm font-semibold text-ink">{job.draftTitle}</h6>
+                              <p className="text-xs text-muted">
+                                发布时间：{new Date(job.publishedAt ?? job.updatedAt).toLocaleString()}
+                              </p>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              {job.publishUrl ? (
+                                <a
+                                  className="inline-flex items-center gap-1 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-300 transition-colors hover:bg-emerald-500/20"
+                                  href={job.publishUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  <ExternalLink className="h-3.5 w-3.5" />
+                                  发布链接
+                                </a>
+                              ) : null}
+                              {job.verificationUrl ? (
+                                <a
+                                  className="inline-flex items-center gap-1 rounded-full border border-stroke bg-white/5 px-3 py-1 text-xs font-medium text-ink transition-colors hover:bg-white/10"
+                                  href={job.verificationUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  <ExternalLink className="h-3.5 w-3.5" />
+                                  核验页
+                                </a>
+                              ) : null}
+                            </div>
+                          </div>
+                          <p className="mt-3 text-sm leading-6 text-slate-300">{buildJobBodyPreview(job.draftBody)}</p>
+                          {job.draftTags.length ? (
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              {job.draftTags.map((tag) => (
+                                <span key={`${job.id}-${tag}`} className="rounded-full bg-accent-muted/20 px-2.5 py-1 text-[11px] font-medium text-accent-soft">
+                                  #{tag}
+                                </span>
+                              ))}
+                            </div>
+                          ) : null}
+                          {job.draftImages.length ? (
+                            <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-3">
+                              {job.draftImages.slice(0, 3).map((imageUrl, index) => (
+                                <a
+                                  key={`${job.id}-${imageUrl}-${index}`}
+                                  href={imageUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="group overflow-hidden rounded-[16px] border border-stroke bg-surface"
+                                >
+                                  <img src={imageUrl} alt={`${job.draftTitle} 配图 ${index + 1}`} className="aspect-[4/3] w-full object-cover transition-transform duration-300 group-hover:scale-105" />
+                                </a>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="mt-4 flex items-center gap-2 rounded-[16px] border border-dashed border-stroke px-3 py-3 text-xs text-muted">
+                              <FileImage className="h-4 w-4" />
+                              该次发布未携带图片
+                            </div>
+                          )}
+                          {job.platformItemId ? (
+                            <p className="mt-3 text-xs text-slate-400">
+                              <span className="text-muted">平台内容 ID：</span>
+                              {job.platformItemId}
+                            </p>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="rounded-[20px] border border-dashed border-stroke px-4 py-6 text-sm text-muted">
+                      当前账号暂时还没有通过 GEO 发布成功的内容。
+                    </div>
+                  )}
+                </div>
+                    </>
+                  );
+                })()}
               </div>
             ))
           ) : (
-            <p className="text-sm text-slate-300">
-              当前还没有保存的平台账号，请先从上方入口发起登录；浏览器版会打开扩展标签页，桌面版会打开内置登录窗。
-            </p>
+            <div className="flex flex-col items-center justify-center rounded-[24px] border border-dashed border-stroke py-16 text-center">
+              <div className="rounded-full bg-surface p-4 shadow-panel">
+                <LogIn className="h-6 w-6 text-muted" />
+              </div>
+              <p className="mt-4 font-medium text-ink">暂无已保存账号</p>
+              <p className="mt-2 max-w-md text-sm text-muted">
+                请先从上方入口发起今日头条登录；当前版本只支持桌面版内置登录窗。
+              </p>
+            </div>
           )}
         </div>
       </div>

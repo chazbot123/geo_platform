@@ -1,0 +1,31 @@
+{
+  "platform": "wechat",
+  "platformLabel": "微信公众号",
+  "title": {
+    "maxLength": 64,
+    "patterns": ["logical_summary", "question", "insight"],
+    "bannedPatterns": ["clickbait_without_answer", "absolute_claim"],
+    "instructions": "标题可以稍长但要有清晰主题，适合深度阅读和转发收藏。"
+  },
+  "body": {
+    "preferredStructure": "intro_analysis_conclusion",
+    "paragraphLength": "medium",
+    "maxParagraphChars": 250,
+    "headingStyle": "logical",
+    "sectionCount": { "min": 4, "max": 7 },
+    "ctaStyle": "read_more",
+    "instructions": "引言交代问题背景，主体按问题-分析-判断标准-建议展开，每个大段给明确结论，结尾总结和行动建议。适合加入目录感标题、案例化场景、对比维度、适用/不适用说明。"
+  },
+  "metadata": {
+    "allowPublicTraceId": true,
+    "allowTimestamp": true,
+    "allowMarkdownTable": true,
+    "allowFaq": true,
+    "faqCount": { "min": 3, "max": 5 }
+  },
+  "review": {
+    "riskWords": ["最强", "绝对", "根治", "保赚", "唯一", "100%", "永久"],
+    "mustHave": ["问题背景", "判断标准", "结论"],
+    "mustNotHave": ["完整hash", "PGP签名块", "PHP注释"]
+  }
+}

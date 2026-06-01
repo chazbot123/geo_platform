@@ -3,14 +3,198 @@ const fs = require("node:fs");
 const http = require("node:http");
 const next = require("next");
 const path = require("node:path");
+const { createLocalBridge } = require("./local-bridge");
 
 const isDev = !app.isPackaged;
 const DEV_SERVER_URL = "http://localhost:3000";
 const PROD_SERVER_URL = "http://127.0.0.1:3131";
 let mainWindow;
 let server;
+let localBridge;
 const preloadPath = path.join(__dirname, "preload.js");
 const automationDirectory = path.join(__dirname, "publish-automation");
+const publishProgressSessions = new Map();
+const PUBLISH_PROGRESS_TTL_MS = 10 * 60 * 1000;
+
+const STAGE_LABELS = {
+  init: "准备启动",
+  validate_session: "会话校验",
+  prepare_images: "图片准备",
+  open_publish_page: "打开发布页",
+  inject_automation: "注入自动化",
+  load_publish_page: "页面加载",
+  manage_page_ready: "管理页已就绪",
+  open_manage_candidate: "尝试打开管理页",
+  fill_title: "填写标题",
+  fill_body: "填写正文",
+  fill_tags: "填写标签",
+  upload_images: "上传图片",
+  wait_image_upload: "等待图片上传",
+  image_upload_failed: "图片上传失败",
+  image_distribution_plan: "图文分布规划",
+  select_cover: "处理封面",
+  cover_selected: "封面已选择",
+  cover_thumb_clicked: "选中封面图",
+  cover_confirm_clicked: "确认封面",
+  cover_thumb_not_found: "未找到封面候选",
+  cover_confirm_not_found: "未找到封面确认按钮",
+  cover_dialog_dump: "封面弹层快照",
+  submit: "提交发布",
+  verify_attempt_1: "首次核验",
+  verify_attempt_2: "二次核验",
+  verify_attempt_3: "三次核验",
+  verify_match_found: "找到发布内容",
+  find_published_item: "查找发布结果",
+  open_published_item: "打开发布详情",
+  verify_published_item: "核验发布结果",
+  open_manage_page: "打开管理页",
+  verification_failed: "核验失败",
+  published: "发布成功",
+  error: "执行异常",
+};
+
+function now() {
+  return new Date().toISOString();
+}
+
+function formatStageLabel(stage) {
+  const normalized = String(stage || "").trim();
+  if (!normalized) {
+    return "未知阶段";
+  }
+  return STAGE_LABELS[normalized] || normalized.replace(/_/g, " ");
+}
+
+function createProgressSnapshot(sessionToken, platform) {
+  const startedAt = now();
+  return {
+    sessionToken,
+    platform: String(platform || ""),
+    status: "running",
+    currentStage: "init",
+    currentStageLabel: formatStageLabel("init"),
+    startedAt,
+    lastUpdatedAt: startedAt,
+    liveExecutionLog: [],
+    stageTimeline: [
+      {
+        stage: "init",
+        label: formatStageLabel("init"),
+        message: "发布会话已启动",
+        at: startedAt,
+      },
+    ],
+    imageUploadProgress: undefined,
+  };
+}
+
+function getOrCreateProgressSnapshot(sessionToken, platform) {
+  const existing = publishProgressSessions.get(sessionToken);
+  if (existing) {
+    return existing;
+  }
+  const snapshot = createProgressSnapshot(sessionToken, platform);
+  publishProgressSessions.set(sessionToken, snapshot);
+  return snapshot;
+}
+
+function appendProgressLog(sessionToken, platform, message) {
+  if (!sessionToken) {
+    return;
+  }
+  const snapshot = getOrCreateProgressSnapshot(sessionToken, platform);
+  const normalizedMessage = String(message || "").trim();
+  if (!normalizedMessage) {
+    return;
+  }
+  const lastLog = snapshot.liveExecutionLog[snapshot.liveExecutionLog.length - 1];
+  if (lastLog !== normalizedMessage) {
+    snapshot.liveExecutionLog.push(normalizedMessage);
+    snapshot.liveExecutionLog = snapshot.liveExecutionLog.slice(-200);
+  }
+
+  const separatorIndex = normalizedMessage.indexOf(":");
+  const stage = separatorIndex > 0 ? normalizedMessage.slice(0, separatorIndex).trim() : "info";
+  const detail = separatorIndex > 0 ? normalizedMessage.slice(separatorIndex + 1).trim() : normalizedMessage;
+  const at = now();
+
+  // 解析 prepare_images: start (N) / ready (N) 来初始化 total
+  if (stage === "prepare_images") {
+    const matched = detail.match(/(?:start|ready)\s*\((\d+)\)/);
+    if (matched) {
+      const total = Number(matched[1]) || 0;
+      snapshot.imageUploadProgress = {
+        total,
+        completed: snapshot.imageUploadProgress?.completed ?? 0,
+        currentStrategy: snapshot.imageUploadProgress?.currentStrategy,
+      };
+    }
+  }
+  // 解析 upload_image_N_strategy_X_try / _done / _failed
+  const uploadMatch = stage.match(/^upload_image_(\d+)_(.+)$/);
+  if (uploadMatch) {
+    const phase = uploadMatch[2];
+    const total = snapshot.imageUploadProgress?.total ?? 0;
+    const completed = snapshot.imageUploadProgress?.completed ?? 0;
+    let strategy = snapshot.imageUploadProgress?.currentStrategy;
+    if (phase === "strategy_A_try") strategy = "file_input";
+    else if (phase === "strategy_B_try") strategy = "drop";
+    else if (phase === "strategy_C_try") strategy = "paste";
+    if (phase === "done" || phase.startsWith("done")) {
+      snapshot.imageUploadProgress = {
+        total,
+        completed: completed + 1,
+        currentStrategy: strategy,
+      };
+    } else {
+      snapshot.imageUploadProgress = {
+        total,
+        completed,
+        currentStrategy: strategy,
+      };
+    }
+  }
+  snapshot.currentStage = stage;
+  snapshot.currentStageLabel = formatStageLabel(stage);
+  snapshot.lastUpdatedAt = at;
+
+  const lastTimelineEntry = snapshot.stageTimeline[snapshot.stageTimeline.length - 1];
+  if (!lastTimelineEntry || lastTimelineEntry.stage !== stage || lastTimelineEntry.message !== detail) {
+    snapshot.stageTimeline.push({
+      stage,
+      label: formatStageLabel(stage),
+      message: detail || normalizedMessage,
+      at,
+    });
+    snapshot.stageTimeline = snapshot.stageTimeline.slice(-40);
+  }
+}
+
+function updateProgressStatus(sessionToken, platform, patch = {}) {
+  if (!sessionToken) {
+    return;
+  }
+  const snapshot = getOrCreateProgressSnapshot(sessionToken, platform);
+  Object.assign(snapshot, patch, {
+    lastUpdatedAt: now(),
+  });
+}
+
+function getPlatformPublishProgress(input = {}) {
+  const sessionToken = typeof input.sessionToken === "string" ? input.sessionToken.trim() : "";
+  if (!sessionToken) {
+    return null;
+  }
+  const snapshot = publishProgressSessions.get(sessionToken);
+  if (!snapshot) {
+    return null;
+  }
+  if (Date.now() - new Date(snapshot.lastUpdatedAt).getTime() > PUBLISH_PROGRESS_TTL_MS) {
+    publishProgressSessions.delete(sessionToken);
+    return null;
+  }
+  return snapshot;
+}
 
 function setupPersistencePaths() {
   const userDataPath = app.getPath("userData");
@@ -96,17 +280,11 @@ function createScopedWindow(input = {}) {
 function getPlatformSessionSpec(platform, publishUrl) {
   const normalizedPlatform = String(platform || "").trim();
   switch (normalizedPlatform) {
-    case "xiaohongshu":
+    case "toutiao":
       return {
-        publishUrl: publishUrl || "https://creator.xiaohongshu.com/publish/publish",
-        loginUrlHints: ["/login", "passport", "signin", "signup"],
-        loginTextHints: ["登录", "手机号登录", "验证码登录", "扫码登录", "请先登录", "立即登录"],
-      };
-    case "douyin":
-      return {
-        publishUrl: publishUrl || "https://creator.douyin.com/creator-micro/content/publish",
-        loginUrlHints: ["/login", "passport", "signin", "sso"],
-        loginTextHints: ["登录", "验证码登录", "扫码登录", "手机号登录", "请先登录", "立即登录"],
+        publishUrl: publishUrl || "https://mp.toutiao.com/profile_v4/graphic/publish",
+        loginUrlHints: ["/auth/page/login", "/login", "passport", "signin", "sso"],
+        loginTextHints: ["登录", "验证码登录", "扫码登录", "请先登录", "立即登录"],
       };
     default:
       return {
@@ -225,10 +403,8 @@ function openPlatformLoginWindow(input = {}) {
 
 function resolveAutomationFile(platform) {
   switch (String(platform || "").trim()) {
-    case "xiaohongshu":
-      return path.join(automationDirectory, "xiaohongshu.js");
-    case "douyin":
-      return path.join(automationDirectory, "douyin.js");
+    case "toutiao":
+      return path.join(automationDirectory, "toutiao.js");
     default:
       return "";
   }
@@ -262,48 +438,54 @@ function parseDataUrl(value) {
   };
 }
 
-async function prepareSinglePublishImage(imageUrl, index) {
-  const normalizedUrl = String(imageUrl || "").trim();
-  if (!normalizedUrl) {
-    throw new Error("图片地址为空");
+async function prepareSinglePublishImageFromLocalPath(imagePath, index) {
+  const normalizedPath = String(imagePath || "").trim();
+  if (!normalizedPath) {
+    throw new Error("图片本地路径为空");
   }
 
-  const dataUrlPayload = parseDataUrl(normalizedUrl);
-  if (dataUrlPayload) {
-    const extension = guessExtensionFromMimeType(dataUrlPayload.mimeType);
-    return {
-      name: `publish-${index + 1}${extension}`,
-      mimeType: dataUrlPayload.mimeType,
-      dataUrl: `data:${dataUrlPayload.mimeType};base64,${dataUrlPayload.buffer.toString("base64")}`,
-    };
+  const buffer = await fs.promises.readFile(normalizedPath);
+  const extension = path.extname(normalizedPath).toLowerCase() || ".png";
+  let mimeType = "image/png";
+  switch (extension) {
+    case ".jpg":
+    case ".jpeg":
+      mimeType = "image/jpeg";
+      break;
+    case ".webp":
+      mimeType = "image/webp";
+      break;
+    case ".gif":
+      mimeType = "image/gif";
+      break;
+    default:
+      mimeType = "image/png";
+      break;
   }
 
-  const response = await fetch(normalizedUrl);
-  if (!response.ok) {
-    throw new Error(`下载图片失败：${response.status}`);
-  }
-
-  const arrayBuffer = await response.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
-  const mimeType = String(response.headers.get("content-type") || "").split(";")[0].trim() || "image/png";
-  const extension = guessExtensionFromMimeType(mimeType);
   return {
-    name: `publish-${index + 1}${extension}`,
+    name: `publish-${index + 1}${extension || guessExtensionFromMimeType(mimeType)}`,
     mimeType,
     dataUrl: `data:${mimeType};base64,${buffer.toString("base64")}`,
   };
 }
 
 async function preparePublishImages(payload = {}, log) {
-  const draftImages = Array.isArray(payload.draftImages) ? payload.draftImages : [];
-  if (draftImages.length === 0) {
+  const publishMode = String(payload.publishMode || "").trim() || "with_images";
+  if (publishMode === "text_only") {
+    log("prepare_images: skipped (text_only)");
     return [];
   }
 
-  log(`prepare_images: start (${draftImages.length})`);
+  const draftImagePaths = Array.isArray(payload.draftImagePaths) ? payload.draftImagePaths : [];
+  if (draftImagePaths.length === 0) {
+    return [];
+  }
+
+  log(`prepare_images: start (${draftImagePaths.length})`);
   const preparedImages = [];
-  for (let index = 0; index < draftImages.length; index += 1) {
-    preparedImages.push(await prepareSinglePublishImage(draftImages[index], index));
+  for (let index = 0; index < draftImagePaths.length; index += 1) {
+    preparedImages.push(await prepareSinglePublishImageFromLocalPath(draftImagePaths[index], index));
   }
   log(`prepare_images: ready (${preparedImages.length})`);
   return preparedImages;
@@ -328,9 +510,15 @@ async function runPlatformPublish(input = {}) {
   const publishUrl = typeof input.publishUrl === "string" ? input.publishUrl.trim() : "";
   const automationFile = resolveAutomationFile(input.platform);
   const executionLog = [];
+  const sessionToken = typeof input.sessionToken === "string" ? input.sessionToken.trim() : "";
 
   function log(message) {
     executionLog.push(message);
+    appendProgressLog(sessionToken, input.platform, message);
+  }
+
+  if (sessionToken) {
+    publishProgressSessions.set(sessionToken, createProgressSnapshot(sessionToken, input.platform));
   }
 
   if (!publishUrl || !automationFile) {
@@ -349,6 +537,20 @@ async function runPlatformPublish(input = {}) {
   });
   let shouldCloseWindow = false;
 
+  publishWindow.webContents.openDevTools({ mode: 'detach' });
+
+  publishWindow.webContents.on("console-message", (_, _level, message) => {
+    const text = String(message || "");
+    if (!text.startsWith("[geo-toutiao]")) {
+      return;
+    }
+    const normalized = text.replace(/^\[geo-toutiao\]\s*/, "").trim();
+    if (!normalized) {
+      return;
+    }
+    appendProgressLog(sessionToken, input.platform, normalized);
+  });
+
   publishWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url).catch(() => {});
     return { action: "deny" };
@@ -362,6 +564,11 @@ async function runPlatformPublish(input = {}) {
     });
     log(`validate_session: ${validation.status}${validation.reason ? ` (${validation.reason})` : ""}`);
     if (validation.status !== "authenticated") {
+      updateProgressStatus(sessionToken, input.platform, {
+        status: "failed",
+        failureStage: validation.status === "missing_session" ? "platform_session_missing" : "platform_login_required",
+        errorMessage: validation.reason || "当前平台会话不可用，请重新登录。",
+      });
       return {
         status: "failed",
         errorMessage: validation.reason || "当前平台会话不可用，请重新登录。",
@@ -378,6 +585,11 @@ async function runPlatformPublish(input = {}) {
     } catch (error) {
       const message = error instanceof Error ? error.message : "发布图片准备失败";
       log(`prepare_images_failed: ${message}`);
+      updateProgressStatus(sessionToken, input.platform, {
+        status: "failed",
+        failureStage: "prepare_images",
+        errorMessage: `发布图片准备失败：${message}`,
+      });
       return {
         status: "failed",
         errorMessage: `发布图片准备失败：${message}`,
@@ -389,15 +601,32 @@ async function runPlatformPublish(input = {}) {
     log(`open_publish_page: ${publishUrl}`);
     await publishWindow.loadURL(publishUrl);
     await waitForWindowStable(publishWindow);
+    
+    const isBlank = await publishWindow.webContents.executeJavaScript(`document.body?.innerText.trim().length === 0`);
+    if (isBlank) {
+      log("page_blank: 页面加载空白，尝试刷新...");
+      publishWindow.webContents.reload();
+      await waitForWindowStable(publishWindow);
+      await sleep(2000);
+    }
+
     log(`inject_automation: ${path.basename(automationFile)}`);
     const result = await executeAutomation(publishWindow, automationFile, {
       platform: input.platform,
       publishUrl,
-      timeoutMs: input.timeoutMs,
+      sessionToken,
+      timeoutMs: input.timeoutMs || 180000,
       payload,
     });
-    shouldCloseWindow = result?.status === "published";
+    // 只有明确成功或要求关闭时才关闭
+    shouldCloseWindow = result?.status === "published" || result?.status === "pending_review" || result?.status === "submitted";
     const resultExecutionLog = Array.isArray(result?.executionLog) ? result.executionLog : [];
+    resultExecutionLog.forEach((item) => appendProgressLog(sessionToken, input.platform, item));
+    updateProgressStatus(sessionToken, input.platform, {
+      status: result?.status ?? "failed",
+      failureStage: result?.failureStage ?? (!result?.status ? "invalid_automation_result" : undefined),
+      errorMessage: result?.errorMessage ?? (!result?.status ? "自动化脚本没有返回有效的发布结果。" : undefined),
+    });
     return {
       status: result?.status ?? "failed",
       draftUrl: result?.draftUrl,
@@ -414,6 +643,11 @@ async function runPlatformPublish(input = {}) {
   } catch (error) {
     const message = error instanceof Error ? error.message : "桌面自动发布失败。";
     log(`electron_publish: ${message}`);
+    updateProgressStatus(sessionToken, input.platform, {
+      status: "failed",
+      failureStage: message.includes("ERR_") || message.includes("loadURL") ? "load_publish_page" : "electron_publish",
+      errorMessage: message,
+    });
     return {
       status: "failed",
       errorMessage: message,
@@ -428,21 +662,44 @@ async function runPlatformPublish(input = {}) {
           if (!publishWindow.isDestroyed()) {
             publishWindow.close();
           }
-        }, 2000);
+        }, 5000);
       }
     }
   }
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(async () => {
+  localBridge = createLocalBridge({
+    isReady: () => app.isReady(),
+    getVersion: () => app.getVersion(),
+    openPlatformLogin: (input) => openPlatformLoginWindow(input),
+    validatePlatformSession: (input) => inspectPlatformSession(input),
+    runPlatformPublish: (input) => runPlatformPublish(input),
+    getPlatformPublishProgress: (input) => getPlatformPublishProgress(input),
+  });
+
+  try {
+    await localBridge.start();
+  } catch (error) {
+    console.error("Failed to start GEO local bridge:", error);
+  }
+
+  await createWindow();
+});
 
 ipcMain.handle("geo:open-platform-login", async (_, input) => openPlatformLoginWindow(input));
 ipcMain.handle("geo:validate-platform-session", async (_, input) => inspectPlatformSession(input));
 ipcMain.handle("geo:run-platform-publish", async (_, input) => runPlatformPublish(input));
+ipcMain.handle("geo:get-platform-publish-progress", async (_, input) => getPlatformPublishProgress(input));
 
 app.on("window-all-closed", () => {
   if (server) {
     server.close();
+  }
+  if (localBridge) {
+    void localBridge.stop().catch((error) => {
+      console.error("Failed to stop GEO local bridge:", error);
+    });
   }
   if (process.platform !== "darwin") {
     app.quit();

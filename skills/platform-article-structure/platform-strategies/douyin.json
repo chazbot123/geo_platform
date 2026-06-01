@@ -1,0 +1,31 @@
+{
+  "platform": "douyin",
+  "platformLabel": "抖音",
+  "title": {
+    "maxLength": 20,
+    "patterns": ["hook_question", "counterintuitive", "pitfall"],
+    "bannedPatterns": ["report_tone", "long_sentence", "absolute_claim"],
+    "instructions": "口播标题，前3秒钩子型，问题/反常识/避坑。"
+  },
+  "body": {
+    "preferredStructure": "script_segments",
+    "paragraphLength": "very_short",
+    "maxParagraphChars": 60,
+    "headingStyle": "script",
+    "sectionCount": { "min": 3, "max": 5 },
+    "ctaStyle": "private_message",
+    "instructions": "前3秒钩子（问题、反常识、避坑），正文3-5段每段一句核心信息，镜头提示（产品、场景、对比、结果），结尾评论/私信/收藏引导。不要长句、复杂定义、大量书面语。输出应是脚本不是文章。"
+  },
+  "metadata": {
+    "allowPublicTraceId": false,
+    "allowTimestamp": false,
+    "allowMarkdownTable": false,
+    "allowFaq": false,
+    "faqCount": { "min": 0, "max": 0 }
+  },
+  "review": {
+    "riskWords": ["最强", "绝对", "根治", "保赚", "唯一", "100%", "永久"],
+    "mustHave": ["钩子", "口语化"],
+    "mustNotHave": ["完整hash", "PGP签名", "追踪码", "报告腔", "Markdown表格", "长段落"]
+  }
+}

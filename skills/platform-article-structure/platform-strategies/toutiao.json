@@ -1,0 +1,31 @@
+{
+  "platform": "toutiao",
+  "platformLabel": "今日头条",
+  "title": {
+    "maxLength": 30,
+    "patterns": ["question", "comparison", "risk_warning", "conclusion"],
+    "bannedPatterns": ["clickbait_without_answer", "absolute_claim"],
+    "instructions": "标题30字以内，优先疑问、对比、避坑、结论型。不要标题党。"
+  },
+  "body": {
+    "preferredStructure": "hook_then_points",
+    "paragraphLength": "short",
+    "maxParagraphChars": 150,
+    "headingStyle": "hook",
+    "sectionCount": { "min": 3, "max": 5 },
+    "ctaStyle": "soft_consult",
+    "instructions": "开头2-3句说明用户痛点，主体3-5个小节每节一个判断点，中段加入选择标准或避坑清单，结尾自然CTA不强推。避免长篇报告腔、大量Markdown表格、过度官方口吻。"
+  },
+  "metadata": {
+    "allowPublicTraceId": false,
+    "allowTimestamp": false,
+    "allowMarkdownTable": false,
+    "allowFaq": true,
+    "faqCount": { "min": 0, "max": 3 }
+  },
+  "review": {
+    "riskWords": ["最强", "绝对", "根治", "保赚", "唯一", "100%", "永久"],
+    "mustHave": ["判断标准", "适用场景"],
+    "mustNotHave": ["完整hash", "PGP签名", "PHP注释", "报告腔页脚"]
+  }
+}

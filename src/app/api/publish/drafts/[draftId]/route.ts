@@ -12,17 +12,19 @@ export async function GET(_: Request, context: { params: { draftId: string } }) 
 
 export async function PATCH(request: Request, context: { params: { draftId: string } }) {
   try {
-    const { title, body, tags, accountId } = (await request.json()) as {
+    const { title, body, tags, accountId, accountIds } = (await request.json()) as {
       title?: string;
       body?: string;
       tags?: string[];
       accountId?: string;
+      accountIds?: string[];
     };
     const draft = await updatePublishingDraftRecord(context.params.draftId, {
       title,
       body,
       tags,
       accountId,
+      accountIds,
     });
     return NextResponse.json({ draft });
   } catch (error) {

@@ -1,4 +1,15 @@
-import { createRecordId, ensureStorageReady, getContent, getImage, getProduct, getPublishResult, getTask, getTheme, listTasks, saveTask } from "@/lib/storage/data-store";
+import {
+  createRecordId,
+  ensureStorageReady,
+  getContent,
+  getImage,
+  getProduct,
+  getPublishResult,
+  getTask,
+  getTheme,
+  listTasks,
+  saveTask,
+} from "@/lib/storage/data-store";
 import type { ProductProfile, TaskBundle, TaskCreateInput, TaskRecord, TaskStatus } from "@/lib/types";
 
 function now() {
@@ -9,17 +20,19 @@ export async function createTask(input: TaskCreateInput) {
   await ensureStorageReady();
   const taskId = createRecordId();
   const productId = createRecordId();
+  const { searchProvider, ...productInput } = input;
 
   const product: ProductProfile = {
     id: productId,
     taskId,
-    ...input,
+    ...productInput,
   };
 
   const task: TaskRecord = {
     id: taskId,
     productId,
     status: "created",
+    searchProvider: searchProvider || undefined,
     createdAt: now(),
     updatedAt: now(),
   };
@@ -50,7 +63,14 @@ export async function getTaskBundle(taskId: string): Promise<TaskBundle | null> 
     return null;
   }
 
-  return { task, product, theme: theme ?? undefined, content: content ?? undefined, image: image ?? undefined, publish: publish ?? undefined };
+  return {
+    task,
+    product,
+    theme: theme ?? undefined,
+    content: content ?? undefined,
+    image: image ?? undefined,
+    publish: publish ?? undefined,
+  };
 }
 
 export async function listTaskBundles() {

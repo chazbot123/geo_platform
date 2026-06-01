@@ -1,3 +1,13 @@
+import {
+  checkLocalBridgeHealth,
+  getPlatformPublishProgressViaLocalBridge,
+  hasElectronDesktopBridge,
+  openPlatformLoginViaLocalBridge,
+  runPlatformPublishViaLocalBridge,
+  validatePlatformSessionViaLocalBridge,
+} from "./local-bridge-client";
+import type { PublishProgressSnapshot } from "@/lib/types";
+
 export interface ElectronPlatformLoginRequest {
   platform: string;
   title: string;
@@ -27,12 +37,15 @@ export interface ElectronPlatformPublishRequest {
   title: string;
   publishUrl?: string;
   sessionPartition?: string;
+  sessionToken?: string;
   timeoutMs?: number;
   payload: {
     draftTitle: string;
     draftBody: string;
     draftTags: string[];
     draftImages: string[];
+    draftImagePaths?: string[];
+    publishMode?: "text_only" | "with_images";
     preparedImages?: Array<{
       name: string;
       mimeType: string;
@@ -55,12 +68,17 @@ export interface ElectronPlatformPublishResult {
   errorMessage?: string;
 }
 
+export interface ElectronPlatformPublishProgressRequest {
+  sessionToken: string;
+}
+
 declare global {
   interface Window {
     geoDesktop?: {
       openPlatformLogin?: (input: ElectronPlatformLoginRequest) => Promise<ElectronPlatformLoginResult>;
       validatePlatformSession?: (input: ElectronPlatformSessionValidationRequest) => Promise<ElectronPlatformSessionValidationResult>;
       runPlatformPublish?: (input: ElectronPlatformPublishRequest) => Promise<ElectronPlatformPublishResult>;
+      getPlatformPublishProgress?: (input: ElectronPlatformPublishProgressRequest) => Promise<PublishProgressSnapshot | null>;
     };
   }
 }
@@ -74,9 +92,9 @@ export async function openPlatformLoginWindow(input: ElectronPlatformLoginReques
     return window.geoDesktop.openPlatformLogin(input);
   }
 
-  if (input.loginUrl) {
-    window.open(input.loginUrl, "_blank", "noopener,noreferrer");
-    return { status: "opened" };
+  const health = await checkLocalBridgeHealth();
+  if (health?.status === "ok" && health.ready) {
+    return openPlatformLoginViaLocalBridge(input);
   }
 
   return { status: "unsupported" };
@@ -93,7 +111,12 @@ export async function validatePlatformSessionWindow(
     return window.geoDesktop.validatePlatformSession(input);
   }
 
-  return { status: "unsupported", reason: "当前环境缺少 Electron 会话检测桥。" };
+  const health = await checkLocalBridgeHealth();
+  if (health?.status === "ok" && health.ready) {
+    return validatePlatformSessionViaLocalBridge(input);
+  }
+
+  return { status: "unsupported", reason: "当前环境缺少可用桌面桥，请先启动 GEO 桌面版。" };
 }
 
 export async function runPlatformPublishWindow(input: ElectronPlatformPublishRequest): Promise<ElectronPlatformPublishResult> {
@@ -110,14 +133,43 @@ export async function runPlatformPublishWindow(input: ElectronPlatformPublishReq
     return window.geoDesktop.runPlatformPublish(input);
   }
 
-  if (input.publishUrl) {
-    window.open(input.publishUrl, "_blank", "noopener,noreferrer");
+  const health = await checkLocalBridgeHealth();
+  if (health?.status === "ok" && health.ready) {
+    return runPlatformPublishViaLocalBridge(input);
   }
 
   return {
     status: "unsupported",
-    errorMessage: "当前环境缺少 Electron 发布桥，无法执行桌面自动发布。",
+    errorMessage: "当前环境缺少可用桌面桥，无法执行桌面自动发布。请先启动 GEO 桌面版。",
     failureStage: "missing_electron_bridge",
-    executionLog: ["missing_electron_bridge: window.geoDesktop.runPlatformPublish 不存在"],
+    executionLog: ["missing_electron_bridge: Electron 注入桥和本机 localhost 桥都不可用"],
   };
+}
+
+export async function getPlatformPublishProgressWindow(
+  input: ElectronPlatformPublishProgressRequest,
+): Promise<PublishProgressSnapshot | null> {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  if (window.geoDesktop?.getPlatformPublishProgress) {
+    return window.geoDesktop.getPlatformPublishProgress(input);
+  }
+
+  const health = await checkLocalBridgeHealth();
+  if (health?.status === "ok" && health.ready) {
+    return getPlatformPublishProgressViaLocalBridge(input);
+  }
+
+  return null;
+}
+
+export async function isDesktopBridgeAvailable() {
+  if (hasElectronDesktopBridge()) {
+    return true;
+  }
+
+  const health = await checkLocalBridgeHealth();
+  return Boolean(health?.status === "ok" && health.ready);
 }

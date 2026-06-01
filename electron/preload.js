@@ -10,4 +10,7 @@ contextBridge.exposeInMainWorld("geoDesktop", {
   runPlatformPublish(input) {
     return ipcRenderer.invoke("geo:run-platform-publish", input);
   },
+  getPlatformPublishProgress(input) {
+    return ipcRenderer.invoke("geo:get-platform-publish-progress", input);
+  },
 });

@@ -10,7 +10,7 @@ export default async function KeywordPage({ params }: { params: { taskId: string
   }
 
   return (
-    <AppShell title="关键词工作台" description="生成主冷门词，查看备选词，并确认当前任务后续内容与社媒发布使用的最终主题。">
+    <AppShell title="AI 提问工作台" description="按所选检索平台直接生成 10 条 AI 用户提问句，确认最多 5 条后进入第二阶段权威报告文章生成。">
       <KeywordWorkbench taskId={params.taskId} task={bundle.task} initialTheme={bundle.theme} />
     </AppShell>
   );

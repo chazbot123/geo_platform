@@ -1,6 +1,18 @@
 import { NextResponse } from "next/server";
 import { analyzeFolderImport } from "@/lib/import/folder-import-service";
 
+function formatProbeDetails(message: string) {
+  const raw = message.replace("IMPORT_STAGE1_PROBE_FAILED@", "");
+  try {
+    const attempts = JSON.parse(raw) as Array<{ endpoint?: string; authMode?: string; error?: string }>;
+    return attempts
+      .map((attempt) => `${attempt.authMode ?? "unknown"} -> ${attempt.endpoint ?? "unknown"} (${attempt.error ?? "UNKNOWN_ERROR"})`)
+      .join("；");
+  } catch {
+    return raw;
+  }
+}
+
 export async function POST(request: Request) {
   try {
     const formData = await request.formData();
@@ -35,6 +47,10 @@ export async function POST(request: Request) {
 
     if (message === "IMPORT_STAGE1_TIMEOUT") {
       return NextResponse.json({ error: "资料解析超时，请增大第一阶段模型超时时间后重试。" }, { status: 504 });
+    }
+
+    if (message.startsWith("IMPORT_STAGE1_PROBE_FAILED@")) {
+      return NextResponse.json({ error: `资料解析自动探测失败。已尝试：${formatProbeDetails(message)}` }, { status: 502 });
     }
 
     if (message.startsWith("IMPORT_STAGE1_")) {

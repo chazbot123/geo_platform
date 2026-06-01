@@ -1,5 +1,5 @@
-import { createRecordId, deletePlatformAccount, getPlatformAccount, listPlatformAccounts, savePlatformAccount } from "@/lib/storage/data-store";
-import type { PlatformAccountLoginStatus, PlatformAccountRecord, PlatformAccountStatus, SocialPlatform } from "@/lib/types";
+import { createRecordId, deletePlatformAccount, getPlatformAccount, listPlatformAccounts, listPublishingJobs, savePlatformAccount } from "@/lib/storage/data-store";
+import type { AccountPublishedJobsGroup, PlatformAccountLoginStatus, PlatformAccountRecord, PlatformAccountStatus, SocialPlatform } from "@/lib/types";
 
 function now() {
   return new Date().toISOString();
@@ -24,6 +24,28 @@ function buildAuthPayloadPreview(authPayload?: string) {
 export async function getAllPlatformAccounts() {
   const items = await listPlatformAccounts();
   return items.sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
+}
+
+export async function getPublishedJobsByAccount(platform?: SocialPlatform): Promise<AccountPublishedJobsGroup[]> {
+  const jobs = await listPublishingJobs();
+  const filteredJobs = jobs
+    .filter((job) => job.status === "published" && job.accountId && (!platform || job.platform === platform))
+    .sort(
+      (left, right) =>
+        new Date(right.publishedAt ?? right.updatedAt).getTime() -
+        new Date(left.publishedAt ?? left.updatedAt).getTime(),
+    );
+
+  const grouped = new Map<string, AccountPublishedJobsGroup>();
+  for (const job of filteredJobs) {
+    if (!job.accountId) {
+      continue;
+    }
+    const current = grouped.get(job.accountId) ?? { accountId: job.accountId, jobs: [] };
+    current.jobs.push(job);
+    grouped.set(job.accountId, current);
+  }
+  return Array.from(grouped.values());
 }
 
 export async function listAuthenticatedPlatformAccounts(platform?: SocialPlatform) {
@@ -54,9 +76,9 @@ export async function createPlatformAccount(input: {
   const record: PlatformAccountRecord = {
     id,
     platform: input.platform,
-    provider: "extension",
-    authType: "cookie",
-    source: "browser_extension",
+    provider: "electron",
+    authType: "session",
+    source: "electron_shell",
     accountName: input.accountName.trim(),
     displayName: input.displayName?.trim() || input.accountName.trim(),
     loginUrl: input.loginUrl?.trim(),
@@ -111,7 +133,7 @@ export async function markPlatformAccountLoginResult(
     status: result.status ?? (result.loginStatus === "authenticated" ? "valid" : "saved"),
     lastError: result.lastError,
     lastLoginCompletedAt: now(),
-    lastValidatedAt: result.loginStatus === "authenticated" ? now() : undefined,
+    lastValidatedAt: now(),
   });
 }
 

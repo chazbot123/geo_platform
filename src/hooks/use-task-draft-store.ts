@@ -10,22 +10,21 @@ interface TaskDraftState {
 }
 
 const initialDraft: TaskCreateInput = {
+  searchProvider: "",
   productName: "",
   category: "",
   sellingPoints: "",
   targetAudience: "",
   priceRange: "",
+  province: "",
+  city: "",
+  district: "",
   scenarios: "",
   brandTone: "",
-  competitorName: "",
-  competitorKeywords: "",
-  competitorLink: "",
-  restrictedWords: "",
   complianceNotes: "",
   productImagePath: "",
   brandImagePath: "",
   documentPath: "",
-  scheduledAt: "",
 };
 
 export const useTaskDraftStore = create<TaskDraftState>((set) => ({

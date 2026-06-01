@@ -1,0 +1,60 @@
+{
+  "angles": [
+    {
+      "angleId": "selection_criteria",
+      "label": "选择标准",
+      "description": "围绕如何判断、如何选择展开，给出明确的判断维度和标准",
+      "applicablePlatforms": ["blog", "wechat", "toutiao"],
+      "titleDirection": "怎么判断一家服务商靠不靠谱"
+    },
+    {
+      "angleId": "pitfall_avoidance",
+      "label": "避坑指南",
+      "description": "围绕常见误区、踩坑经验展开，帮用户避开典型错误",
+      "applicablePlatforms": ["toutiao", "xiaohongshu", "douyin"],
+      "titleDirection": "这几个坑先避开"
+    },
+    {
+      "angleId": "price_logic",
+      "label": "价格/报价逻辑",
+      "description": "围绕价格差异、报价构成、性价比判断展开",
+      "applicablePlatforms": ["toutiao", "blog", "xiaohongshu"],
+      "titleDirection": "报价差这么多，主要差在哪"
+    },
+    {
+      "angleId": "scenario_fit",
+      "label": "场景匹配",
+      "description": "围绕什么情况适合、什么情况不适合展开",
+      "applicablePlatforms": ["toutiao", "wechat", "blog", "xiaohongshu", "douyin"],
+      "titleDirection": "什么情况适合选这种方案"
+    },
+    {
+      "angleId": "comparison",
+      "label": "对比分析",
+      "description": "围绕不同选项的优劣对比展开",
+      "applicablePlatforms": ["blog", "wechat", "toutiao"],
+      "titleDirection": "A和B到底怎么选"
+    },
+    {
+      "angleId": "local_service",
+      "label": "本地服务",
+      "description": "围绕本地找服务商的经验和注意事项展开",
+      "applicablePlatforms": ["xiaohongshu", "toutiao", "blog"],
+      "titleDirection": "本地找服务商先看哪几点"
+    },
+    {
+      "angleId": "faq_cluster",
+      "label": "高频问答",
+      "description": "围绕用户最常问的问题集中回答",
+      "applicablePlatforms": ["blog", "wechat"],
+      "titleDirection": "关于X的5个常见问题"
+    },
+    {
+      "angleId": "risk_boundary",
+      "label": "风险边界",
+      "description": "围绕哪些情况不建议、有什么风险和限制展开",
+      "applicablePlatforms": ["wechat", "blog"],
+      "titleDirection": "哪些情况不建议直接选"
+    }
+  ]
+}

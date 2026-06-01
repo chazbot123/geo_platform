@@ -1,16 +1,139 @@
 export type TaskStatus =
   | "created"
   | "keyword_generated"
+  | "keyword_selected"
   | "content_generated"
   | "image_generated"
   | "publishing"
   | "published"
   | "failed";
 
+export type SearchProvider = "doubao" | "yuanbao" | "tongyi" | "deepseek";
+export type AudienceChannel = "social" | "streaming";
+
+export type GeoAiScenario =
+  | "doubao_plain_answer"
+  | "yuanbao_qa_chain"
+  | "deepseek_logic"
+  | "tongyi_structured_summary";
+
+export type GeoQuestionIntent =
+  | "selection_criteria"
+  | "pitfall_avoidance"
+  | "price_logic"
+  | "scenario_fit"
+  | "comparison"
+  | "local_service"
+  | "faq_cluster"
+  | "risk_boundary"
+  | "process_solution"
+  | "evidence_check";
+
+export type GeoRegionUsage = "explicit" | "implicit" | "none";
+export type GeoCommercialStage = "awareness" | "comparison" | "decision" | "retention";
+
+export interface QuestionCandidateScore {
+  userRealness: number;
+  commercialValue: number;
+  aiAnswerability: number;
+  platformExtensibility: number;
+  novelty: number;
+  riskControl: number;
+  total: number;
+}
+
+export interface QuestionCandidate {
+  id: string;
+  question: string;
+  intent: GeoQuestionIntent;
+  targetAiScenarios: GeoAiScenario[];
+  contentAngle: string;
+  userRole: string;
+  regionUsage: GeoRegionUsage;
+  commercialStage: GeoCommercialStage;
+  mustAnswer: string[];
+  evidenceNeeded: string[];
+  riskNotes: string[];
+  generationRationale: string;
+  scores: QuestionCandidateScore;
+}
+
+export interface QuestionCandidateSet {
+  module: "generate_question_candidates";
+  passed: boolean;
+  mainQuestion: string;
+  questionCandidates: QuestionCandidate[];
+  coverage: {
+    coveredIntents: GeoQuestionIntent[];
+    coveredAiScenarios: GeoAiScenario[];
+    coveredReaderRoles: string[];
+    missingImportantAngles: string[];
+  };
+  blockingIssues: string[];
+  warnings: string[];
+}
+
+export interface QuestionCandidateReview {
+  module: "review_question_candidates";
+  passed: boolean;
+  validQuestionIds: string[];
+  invalidQuestionIds: string[];
+  blockingIssues: Array<{
+    code: string;
+    questionId?: string;
+    message: string;
+    fix: string;
+  }>;
+  warnings: string[];
+  coverageReview: {
+    hasEnoughQuestions: boolean;
+    intentCount: number;
+    aiScenarioCount: number;
+    hasMainDecisionQuestion: boolean;
+    hasRiskOrPitfallQuestion: boolean;
+    hasProcessOrScenarioQuestion: boolean;
+  };
+}
+
+export interface SelectedQuestionBundle {
+  module: "select_question_bundle";
+  passed: boolean;
+  selectedQuestionBundle: {
+    bundleId: string;
+    mainQuestion: {
+      id: string;
+      question: string;
+      intent: GeoQuestionIntent;
+      contentAngle: string;
+    };
+    supportingQuestions: Array<{
+      id: string;
+      question: string;
+      intent: GeoQuestionIntent;
+      sectionRole: "criteria" | "risk" | "process" | "comparison" | "scenario" | "evidence";
+    }>;
+    followUpQuestions: Array<{
+      id: string;
+      question: string;
+      faqRole: "clarification" | "objection" | "next_step" | "boundary";
+    }>;
+    primaryAiScenario: GeoAiScenario;
+    secondaryAiScenarios: GeoAiScenario[];
+    primaryAngle: string;
+    readerRole: string;
+    selectionReason: string;
+    riskNotes: string[];
+  };
+  rejectedQuestionIds: string[];
+  blockingIssues: string[];
+  warnings: string[];
+}
+
 export interface TaskRecord {
   id: string;
   productId: string;
   status: TaskStatus;
+  searchProvider?: SearchProvider;
   createdAt: string;
   updatedAt: string;
   selectedKeyword?: string;
@@ -28,26 +151,39 @@ export interface ProductProfile {
   sellingPoints: string;
   targetAudience: string;
   priceRange?: string;
+  province?: string;
+  city?: string;
+  district?: string;
   scenarios: string;
   brandTone: string;
-  competitorName?: string;
-  competitorKeywords?: string;
-  competitorLink?: string;
-  restrictedWords?: string;
   complianceNotes?: string;
   productImagePath?: string;
   brandImagePath?: string;
   documentPath?: string;
-  scheduledAt?: string;
 }
 
 export interface ThemeSet {
   taskId: string;
+  searchProvider: SearchProvider;
+  audienceChannels: AudienceChannel[];
   mainKeyword: string;
   backupKeywords: string[];
   relatedKeywords: string[];
+  trendKeywords: string[];
+  generatedKeywords?: string[];
+  highHeatKeywords?: string[];
+  mediumHeatKeywords?: string[];
+  lowHeatKeywords?: string[];
+  recommendedKeywords?: string[];
+  candidateKeywords: string[];
   scoreSummary: string;
+  rankingSummary: string;
   selectedKeyword?: string;
+  selectedKeywords?: string[];
+  selectedKeywordTheme?: string;
+  questionCandidateSet?: QuestionCandidateSet;
+  questionReview?: QuestionCandidateReview;
+  selectedQuestionBundle?: SelectedQuestionBundle;
   updatedAt: string;
 }
 
@@ -56,20 +192,59 @@ export interface ContentDraft {
   title: string;
   summary: string;
   content: string;
+  selectedKeywords?: string[];
+  selectedKeywordTheme?: string;
+  reportIntroduction?: string;
+  reportConclusion?: string;
+  reportSections?: Array<{
+    question: string;
+    heading: string;
+    summary: string;
+    body: string;
+  }>;
   faq: string[];
   cta: string;
+  aiScenario?: string;
+  platform?: string;
+  contentAngle?: string;
+  promptVersion?: string;
   updatedAt: string;
+}
+
+export interface ArticleImagePlacement {
+  paragraphIndex: number;
+  caption?: string;
+}
+
+export interface ArticleImageItem {
+  id: string;
+  url: string;
+  localPath?: string;
+  publicUrl?: string;
+  prompt: string;
+  alt: string;
+  question?: string;
+  sectionHeading?: string;
+  referenceMode?: "article_only" | "reference_enhanced";
+  reviewStatus: "pending" | "passed" | "fallback";
+  provider?: string;
+  providerTaskId?: string;
+  generationMode?: "prompt" | "reference";
+  placement: ArticleImagePlacement;
 }
 
 export interface ImageAsset {
   taskId: string;
   assetType: "cover";
   url: string;
+  localCoverPath?: string;
+  localImageDir?: string;
   reviewStatus: "pending" | "passed" | "fallback";
   prompt: string;
   provider?: string;
   providerTaskId?: string;
   generationMode?: "prompt" | "reference";
+  images?: ArticleImageItem[];
   updatedAt: string;
 }
 
@@ -83,18 +258,12 @@ export interface PublishResult {
   errorMessage?: string;
 }
 
-export type SocialPlatform =
-  | "xiaohongshu"
-  | "douyin"
-  | "wechat_mp"
-  | "kuaishou"
-  | "bilibili"
-  | "wechat_official";
+export type SocialPlatform = "toutiao";
 
 export type PublishPlatform = SocialPlatform;
-export type LegacyPublishPlatform = PublishPlatform | "blog";
+export type LegacyPublishPlatform = PublishPlatform;
 
-export type PlatformAccountProvider = "extension" | "electron" | "manual";
+export type PlatformAccountProvider = "electron" | "manual";
 export type PlatformAccountAuthType = "session" | "cookie" | "manual";
 export type PlatformAccountStatus = "saved" | "valid" | "invalid" | "disabled";
 export type PlatformAccountLoginStatus = "idle" | "pending" | "authenticated" | "failed" | "cancelled";
@@ -109,8 +278,8 @@ export type PublishingJobStatus =
   | "manual_pending"
   | "published"
   | "failed";
-export type PublishingExecutionMode = "manual_delivery" | "electron_automation" | "extension_automation";
-export type LegacyPublishingExecutionMode = PublishingExecutionMode | "blog";
+export type PublishingExecutionMode = "manual_delivery" | "electron_automation";
+export type LegacyPublishingExecutionMode = PublishingExecutionMode;
 
 export interface PlatformAccountRecord {
   id: string;
@@ -151,8 +320,11 @@ export interface PublishingDraft {
   tags: string[];
   coverImageUrl?: string;
   imageUrls: string[];
+  localImagePaths: string[];
+  publishMode?: "text_only" | "with_images";
   publishEntryUrl?: string;
   accountId?: string;
+  accountIds?: string[];
   updatedAt: string;
 }
 
@@ -168,6 +340,8 @@ export interface PublishingJobRecord {
   draftBody: string;
   draftTags: string[];
   draftImages: string[];
+  draftImagePaths: string[];
+  publishMode?: "text_only" | "with_images";
   publishEntryUrl?: string;
   publishUrl?: string;
   draftUrl?: string;
@@ -190,50 +364,35 @@ export interface PublishingJobRecord {
   publishedAt?: string;
 }
 
-export interface PlatformExtensionLoginSession {
-  sessionId: string;
+export interface PublishStageTimelineEntry {
+  stage: string;
+  label: string;
+  message: string;
+  at: string;
+}
+
+export interface PublishProgressSnapshot {
   sessionToken: string;
-  platform: SocialPlatform;
-  accountId: string | null;
-  expiresAt: string;
-  loginUrl: string;
+  platform: string;
+  status: string;
+  currentStage: string;
+  currentStageLabel: string;
+  startedAt: string;
+  lastUpdatedAt: string;
+  failureStage?: string;
+  errorMessage?: string;
+  liveExecutionLog: string[];
+  stageTimeline: PublishStageTimelineEntry[];
+  imageUploadProgress?: {
+    total: number;
+    completed: number;
+    currentStrategy?: "file_input" | "drop" | "paste";
+  };
 }
 
-export interface PlatformExtensionPublishJobPayload {
-  id: string;
-  platform: LegacyPublishPlatform;
-  publishEntryUrl?: string;
-  draftTitle: string;
-  draftBody: string;
-  draftTags: string[];
-  draftImages: string[];
-  draftVideoUrl?: string;
-}
-
-export interface PlatformExtensionPublishSession {
-  sessionToken: string;
-  expiresAt: string;
-  job: PlatformExtensionPublishJobPayload;
-  accountAuthPayload: string;
-  platformAccountId: string;
-  platformAccountName: string;
-  platformAccountDisplayName?: string;
-}
-
-export interface StoredPlatformExtensionLoginSession extends PlatformExtensionLoginSession {
+export interface AccountPublishedJobsGroup {
   accountId: string;
-  createdAt: string;
-  updatedAt: string;
-  status: "pending" | "completed" | "expired" | "failed";
-}
-
-export interface StoredPlatformExtensionPublishSession extends PlatformExtensionPublishSession {
-  platform: SocialPlatform;
-  jobId: string;
-  accountId: string;
-  createdAt: string;
-  updatedAt: string;
-  status: "pending" | "running" | "success" | "failed" | "expired";
+  jobs: PublishingJobRecord[];
 }
 
 export interface ModelApiConfig {
@@ -326,4 +485,6 @@ export interface PublishWorkbenchData {
   jobs: PublishingJobRecord[];
 }
 
-export type TaskCreateInput = Omit<ProductProfile, "id" | "taskId">;
+export interface TaskCreateInput extends Omit<ProductProfile, "id" | "taskId"> {
+  searchProvider: SearchProvider | "";
+}

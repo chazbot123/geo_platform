@@ -2,11 +2,11 @@ import type { AppConfig } from "@/lib/types";
 
 export const defaultAppConfig: AppConfig = {
   stage1ModelApiConfig: {
-    provider: "mock-stage1",
+    provider: "newapi-auto",
     baseUrl: "",
     apiKey: "",
     modelName: "geo-stage1-local",
-    timeout: 60000,
+    timeout: 120000,
   },
   contentModelApiConfig: {
     provider: "mock-content",

@@ -8,8 +8,6 @@ import type {
   ContentDraft,
   ImageAsset,
   PlatformAccountRecord,
-  StoredPlatformExtensionLoginSession,
-  StoredPlatformExtensionPublishSession,
   ProductProfile,
   PublishResult,
   PublishingDraft,
@@ -72,6 +70,10 @@ export async function getContent(taskId: string) {
   return readJsonFile<ContentDraft | null>(filePathFor(dataDirectories.content, taskId), null);
 }
 
+export async function listAllContentDrafts() {
+  return listJsonFiles<ContentDraft>(dataDirectories.content);
+}
+
 export async function saveImage(image: ImageAsset) {
   await writeJsonFile(filePathFor(dataDirectories.images, image.taskId), image);
   return image;
@@ -132,38 +134,6 @@ export async function deletePlatformAccount(accountId: string) {
       throw error;
     }
   }
-}
-
-export async function saveExtensionLoginSession(session: StoredPlatformExtensionLoginSession) {
-  await writeJsonFile(filePathFor(dataDirectories.extensionLoginSessions, session.sessionId), session);
-  return session;
-}
-
-export async function getExtensionLoginSession(sessionId: string) {
-  return readJsonFile<StoredPlatformExtensionLoginSession | null>(
-    filePathFor(dataDirectories.extensionLoginSessions, sessionId),
-    null,
-  );
-}
-
-export async function listExtensionLoginSessions() {
-  return listJsonFiles<StoredPlatformExtensionLoginSession>(dataDirectories.extensionLoginSessions);
-}
-
-export async function saveExtensionPublishSession(session: StoredPlatformExtensionPublishSession) {
-  await writeJsonFile(filePathFor(dataDirectories.extensionPublishSessions, session.jobId), session);
-  return session;
-}
-
-export async function getExtensionPublishSession(jobId: string) {
-  return readJsonFile<StoredPlatformExtensionPublishSession | null>(
-    filePathFor(dataDirectories.extensionPublishSessions, jobId),
-    null,
-  );
-}
-
-export async function listExtensionPublishSessions() {
-  return listJsonFiles<StoredPlatformExtensionPublishSession>(dataDirectories.extensionPublishSessions);
 }
 
 export async function savePublishingDraft(draft: PublishingDraft) {

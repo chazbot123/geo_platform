@@ -11,6 +11,9 @@ function buildDefaultAccountName(platform: SocialPlatform) {
 export async function POST(request: Request) {
   try {
     const { platform, accountId } = (await request.json()) as { platform: SocialPlatform; accountId?: string };
+    if (platform !== "toutiao") {
+      return NextResponse.json({ error: "当前登录中心仅支持今日头条。" }, { status: 400 });
+    }
     const descriptor = getSocialPlatformDescriptor(platform);
     if (!descriptor) {
       return NextResponse.json({ error: "不支持的平台。" }, { status: 400 });

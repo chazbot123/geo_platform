@@ -13,7 +13,7 @@ export interface ManualDeliveryPayload {
 }
 
 export function buildManualDeliveryPayload(draft: PublishingDraft, account?: PlatformAccountRecord | null): ManualDeliveryPayload {
-  const descriptor = draft.platform === "blog" ? undefined : getPlatformDescriptor(draft.platform);
+  const descriptor = getPlatformDescriptor(draft.platform);
   return {
     platformLabel: descriptor?.label ?? draft.platform,
     publishEntryUrl: draft.publishEntryUrl ?? descriptor?.publishEntryUrl,
@@ -28,11 +28,11 @@ export function buildManualDeliveryPayload(draft: PublishingDraft, account?: Pla
 
 export function buildManualDeliveryNotes(job: PublishingJobRecord) {
   return [
-    `平台：${job.platform}`,
+    "平台：今日头条",
     job.accountName ? `账号：${job.accountName}` : "",
     job.publishEntryUrl ? `入口：${job.publishEntryUrl}` : "",
-    "已创建发布任务；社媒只有在平台作品列表里再次核验到新内容时，系统才会自动记为成功。",
-    "若平台已经收稿，但自动核验没有通过，可回到工作台手动补录结果。",
+    "已创建今日头条图文发布任务；系统只会在收到明确成功反馈或人工回录后记为成功。",
+    "若平台已经收稿，但系统未能自动确认，可回到工作台手动补录结果。",
   ]
     .filter(Boolean)
     .join("\n");

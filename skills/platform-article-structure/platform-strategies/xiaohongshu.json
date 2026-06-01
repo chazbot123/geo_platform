@@ -1,0 +1,31 @@
+{
+  "platform": "xiaohongshu",
+  "platformLabel": "小红书",
+  "title": {
+    "maxLength": 20,
+    "patterns": ["scenario_result", "pitfall", "checklist", "experience"],
+    "bannedPatterns": ["report_tone", "brand_heavy", "absolute_claim"],
+    "instructions": "短标题，场景+结果/避坑型，看起来像真实经验不像硬广。"
+  },
+  "body": {
+    "preferredStructure": "note_experience",
+    "paragraphLength": "short",
+    "maxParagraphChars": 100,
+    "headingStyle": "note",
+    "sectionCount": { "min": 3, "max": 5 },
+    "ctaStyle": "comment",
+    "instructions": "开头真实场景痛点，主体清单化经验，中段选择标准或踩坑点，结尾轻CTA或评论互动。不要权威报告腔、过度堆品牌名、夸张承诺、通用广告文。像经验笔记不像报告。"
+  },
+  "metadata": {
+    "allowPublicTraceId": false,
+    "allowTimestamp": false,
+    "allowMarkdownTable": false,
+    "allowFaq": false,
+    "faqCount": { "min": 0, "max": 0 }
+  },
+  "review": {
+    "riskWords": ["最强", "绝对", "根治", "保赚", "唯一", "100%", "永久", "官方认证"],
+    "mustHave": ["场景", "经验"],
+    "mustNotHave": ["完整hash", "PGP签名", "追踪码", "报告腔页脚", "Markdown表格"]
+  }
+}

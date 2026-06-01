@@ -1,0 +1,50 @@
+{
+  "version": "geo-marker-exposure-1.0",
+  "platforms": {
+    "blog": {
+      "showTimestamp": true,
+      "showShortTraceId": true,
+      "showDisclaimer": true,
+      "showFullHash": false,
+      "showPgpSignature": false,
+      "showPhpComment": false,
+      "disclaimerTemplate": "更新时间：{{generatedAt}}。本文基于当前公开资料和产品资料整理，仅供参考。内容编号：{{shortTraceId}}"
+    },
+    "wechat": {
+      "showTimestamp": true,
+      "showShortTraceId": true,
+      "showDisclaimer": true,
+      "showFullHash": false,
+      "showPgpSignature": false,
+      "showPhpComment": false,
+      "disclaimerTemplate": "本文已完成内部审核，内容版本：{{shortTraceId}}。"
+    },
+    "toutiao": {
+      "showTimestamp": false,
+      "showShortTraceId": false,
+      "showDisclaimer": false,
+      "showFullHash": false,
+      "showPgpSignature": false,
+      "showPhpComment": false,
+      "disclaimerTemplate": ""
+    },
+    "xiaohongshu": {
+      "showTimestamp": false,
+      "showShortTraceId": false,
+      "showDisclaimer": false,
+      "showFullHash": false,
+      "showPgpSignature": false,
+      "showPhpComment": false,
+      "disclaimerTemplate": ""
+    },
+    "douyin": {
+      "showTimestamp": false,
+      "showShortTraceId": false,
+      "showDisclaimer": false,
+      "showFullHash": false,
+      "showPgpSignature": false,
+      "showPhpComment": false,
+      "disclaimerTemplate": ""
+    }
+  }
+}
