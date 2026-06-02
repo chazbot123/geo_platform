@@ -5,13 +5,13 @@ import { getAllPlatformAccounts, getPublishedJobsByAccount } from "@/lib/publish
 export default async function AccountsPage() {
   const [accounts, publishedByAccount] = await Promise.all([
     getAllPlatformAccounts(),
-    getPublishedJobsByAccount("toutiao"),
+    getPublishedJobsByAccount(),
   ]);
 
   return (
     <AppShell
-      title="今日头条账号中心"
-      description="集中管理今日头条桌面登录入口、账号状态与备注信息。当前版本只保留 Electron 桌面登录桥，用于保存并校验真实平台会话。"
+      title="多平台账号中心"
+      description="按发布平台管理账号记录、登录状态和发布历史。已自动化平台可走桌面登录桥，计划接入平台先支持手动发布记录。"
     >
       <PlatformAccountCenter initialAccounts={accounts} initialPublishedByAccount={publishedByAccount} />
     </AppShell>

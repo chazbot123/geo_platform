@@ -12,7 +12,7 @@ export default async function PublishWorkbenchPage() {
   }));
 
   return (
-    <AppShell title="今日头条发布工作台" description="围绕当前任务生成今日头条草稿，绑定平台账号，创建 Electron 自动发布任务，并统一查看执行与回录记录。">
+    <AppShell title="多平台发布工作台" description="按板块映射展示目标平台和账号级发布稿；今日头条可自动发布，其他平台先进入手动或计划接入流程。">
       <PublishWorkbench tasks={tasks} />
     </AppShell>
   );

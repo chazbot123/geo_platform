@@ -5,6 +5,7 @@ import { dataDirectories } from "@/lib/paths";
 import { ensureDir, listJsonFiles, readJsonFile, writeJsonFile } from "@/lib/storage/json-store";
 import type {
   AppConfig,
+  AccountPublishingDraft,
   ContentDraft,
   ImageAsset,
   PlatformAccountRecord,
@@ -169,6 +170,41 @@ export async function deletePublishingDraft(draftId: string) {
 export async function deletePublishingDraftsByTask(taskId: string) {
   const drafts = await getPublishingDraftsByTask(taskId);
   await Promise.all(drafts.map((draft) => deletePublishingDraft(draft.id)));
+}
+
+export async function saveAccountPublishingDraft(draft: AccountPublishingDraft) {
+  await writeJsonFile(filePathFor(dataDirectories.accountPublishingDrafts, draft.id), draft);
+  return draft;
+}
+
+export async function getAccountPublishingDraft(draftId: string) {
+  return readJsonFile<AccountPublishingDraft | null>(filePathFor(dataDirectories.accountPublishingDrafts, draftId), null);
+}
+
+export async function listAccountPublishingDrafts() {
+  return listJsonFiles<AccountPublishingDraft>(dataDirectories.accountPublishingDrafts);
+}
+
+export async function getAccountPublishingDraftsByTask(taskId: string) {
+  const drafts = await listAccountPublishingDrafts();
+  return drafts.filter((draft) => draft.taskId === taskId);
+}
+
+export async function deleteAccountPublishingDraft(draftId: string) {
+  const filePath = filePathFor(dataDirectories.accountPublishingDrafts, draftId);
+  try {
+    await fs.unlink(filePath);
+  } catch (error) {
+    const nodeError = error as NodeJS.ErrnoException;
+    if (nodeError.code !== "ENOENT") {
+      throw error;
+    }
+  }
+}
+
+export async function deleteAccountPublishingDraftsByTask(taskId: string) {
+  const drafts = await getAccountPublishingDraftsByTask(taskId);
+  await Promise.all(drafts.map((draft) => deleteAccountPublishingDraft(draft.id)));
 }
 
 export async function savePublishingJob(job: PublishingJobRecord) {

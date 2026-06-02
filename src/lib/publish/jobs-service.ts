@@ -1,6 +1,15 @@
-import { createRecordId, getPlatformAccount, getPublishingDraft, getPublishingJob, getPublishingJobsByTask, savePublishingJob } from "@/lib/storage/data-store";
+import {
+  createRecordId,
+  getAccountPublishingDraft,
+  getPlatformAccount,
+  getPublishingDraft,
+  getPublishingJob,
+  getPublishingJobsByTask,
+  savePublishingJob,
+} from "@/lib/storage/data-store";
 import { updatePlatformAccountRecord } from "@/lib/publish/accounts-service";
 import { buildManualDeliveryNotes } from "@/lib/publish/manual-delivery-service";
+import { getPlatformDescriptor } from "@/lib/publish/platforms";
 import type { PublishPlatform, PublishingDraft, PublishingExecutionMode, PublishingJobRecord, PublishingJobStatus } from "@/lib/types";
 
 function now() {
@@ -44,10 +53,12 @@ export async function createPublishingJob(input: {
   }
 
   const account = input.accountId ? await getPlatformAccount(input.accountId) : null;
+  const descriptor = getPlatformDescriptor(draft.platform);
   const job: PublishingJobRecord = {
     id: createRecordId(),
     taskId: input.taskId,
     platform: draft.platform,
+    automationStatus: descriptor?.automationStatus ?? "planned",
     accountId: account?.id,
     accountName: account?.displayName ?? account?.accountName,
     executionMode: resolveExecutionMode(draft.platform),
@@ -72,6 +83,57 @@ export async function createPublishingJob(input: {
       draftImagePaths: draft.localImagePaths,
       publishMode: draft.publishMode ?? "text_only",
       publishEntryUrl: draft.publishEntryUrl,
+      createdAt: now(),
+      updatedAt: now(),
+    }),
+    createdAt: now(),
+    updatedAt: now(),
+  };
+  return savePublishingJob(job);
+}
+
+export async function createAccountPublishingJob(input: {
+  taskId: string;
+  accountPublishingDraftId: string;
+}) {
+  const draft = await getAccountPublishingDraft(input.accountPublishingDraftId);
+  if (!draft) {
+    throw new Error("账号发布稿不存在");
+  }
+
+  const account = await getPlatformAccount(draft.accountId);
+  const descriptor = getPlatformDescriptor(draft.platform);
+  const job: PublishingJobRecord = {
+    id: createRecordId(),
+    taskId: input.taskId,
+    platform: draft.platform,
+    accountPublishingDraftId: draft.id,
+    sourceSearchProvider: draft.searchProvider,
+    automationStatus: descriptor?.automationStatus ?? "planned",
+    accountId: account?.id ?? draft.accountId,
+    accountName: account?.displayName ?? account?.accountName ?? draft.accountName,
+    executionMode: descriptor?.executionMode ?? resolveExecutionMode(draft.platform),
+    status: descriptor?.automationStatus === "ready" ? "queued" : "manual_pending",
+    draftTitle: draft.title,
+    draftBody: draft.body,
+    draftTags: draft.tags,
+    draftImages: draft.imageUrls,
+    draftImagePaths: draft.localImagePaths,
+    publishMode: draft.publishMode ?? "text_only",
+    publishEntryUrl: draft.publishEntryUrl ?? descriptor?.publishEntryUrl,
+    notes: buildManualDeliveryNotes({
+      id: "",
+      taskId: input.taskId,
+      platform: draft.platform,
+      executionMode: descriptor?.executionMode ?? resolveExecutionMode(draft.platform),
+      status: descriptor?.automationStatus === "ready" ? "queued" : "manual_pending",
+      draftTitle: draft.title,
+      draftBody: draft.body,
+      draftTags: draft.tags,
+      draftImages: draft.imageUrls,
+      draftImagePaths: draft.localImagePaths,
+      publishMode: draft.publishMode ?? "text_only",
+      publishEntryUrl: draft.publishEntryUrl ?? descriptor?.publishEntryUrl,
       createdAt: now(),
       updatedAt: now(),
     }),

@@ -8,20 +8,22 @@
 
 body {
   min-height: 100vh;
-  background-color: #050505;
+  background-color: #090a0c;
   color: #fafafa;
   position: relative;
 }
 
-/* Add a subtle noise overlay and striking radial gradient to the body */
 body::before {
   content: "";
   position: fixed;
   inset: 0;
   z-index: -1;
-  background-image: var(--tw-gradient-stops);
-  background-image: radial-gradient(circle at 50% 0%, rgba(255, 79, 0, 0.08), transparent 50%),
-                    radial-gradient(circle at 100% 100%, rgba(255, 79, 0, 0.05), transparent 40%);
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+  background-size: 32px 32px;
+  background-position: center top;
+  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.7), transparent 75%);
   pointer-events: none;
 }
 
@@ -65,14 +67,34 @@ a {
 
 @layer components {
   .glass-panel {
-    @apply border border-stroke bg-panel/80 backdrop-blur-2xl shadow-panel;
+    @apply border border-stroke bg-panel/85 backdrop-blur-xl shadow-panel;
   }
 
   .input-base {
-    @apply w-full rounded-xl border border-stroke bg-surface px-4 py-3 text-sm text-ink outline-none transition-all duration-200 focus:border-accent/80 focus:bg-accent-muted focus:ring-4 focus:ring-accent/10 placeholder:text-muted/50;
+    @apply w-full rounded-lg border border-stroke bg-surface px-3.5 py-3 text-sm text-ink outline-none transition-all duration-200 focus:border-accent/80 focus:bg-panelSoft focus:ring-4 focus:ring-accent/10 placeholder:text-muted/50;
   }
 
   .label-base {
-    @apply mb-2 flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-muted font-mono;
+    @apply mb-2 flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider text-muted font-mono;
+  }
+
+  .section-card {
+    @apply rounded-lg border border-stroke bg-panel/70 p-5 shadow-panel;
+  }
+
+  .subtle-card {
+    @apply rounded-lg border border-stroke bg-surface/60 p-4;
+  }
+
+  .status-pill {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-stroke bg-white/5 px-2.5 py-1 text-[11px] font-medium text-muted;
+  }
+
+  .page-section-title {
+    @apply font-display text-lg font-bold tracking-tight text-ink;
+  }
+
+  .page-section-desc {
+    @apply mt-1 text-sm leading-relaxed text-muted;
   }
 }

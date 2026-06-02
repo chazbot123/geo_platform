@@ -8,7 +8,7 @@ import { getPlatformPublisher } from "@/lib/publish/platform-publishers";
 import { detectDesktopBridge, hasElectronDesktopBridge, type DesktopBridgeAvailability } from "@/lib/publish/local-bridge-client";
 import { publishPlatformDescriptors } from "@/lib/publish/platforms";
 import { countToutiaoTitleLength, TOUTIAO_TITLE_MAX_LENGTH } from "@/lib/publish/toutiao-title";
-import type { PlatformAccountRecord, PublishProgressSnapshot, PublishWorkbenchData, PublishingDraft, PublishingJobRecord } from "@/lib/types";
+import type { AccountPublishingDraft, PlatformAccountRecord, PublishProgressSnapshot, PublishWorkbenchData, PublishingDraft, PublishingJobRecord } from "@/lib/types";
 
 interface TaskOption {
   id: string;
@@ -39,6 +39,30 @@ function platformLabel(platform: string) {
 function accountOptions(accounts: PlatformAccountRecord[], platform: string) {
   return accounts.filter((item) => item.platform === platform && item.loginStatus === "authenticated");
 }
+
+function platformAutomationLabel(platform: string) {
+  const status = publishPlatformDescriptors.find((item) => item.key === platform)?.automationStatus;
+  if (status === "ready") return "已自动化";
+  if (status === "manual_only") return "手动发布";
+  return "计划接入";
+}
+
+function groupAccountDraftsByPlatform(data: PublishWorkbenchData | null) {
+  const groups = new Map<string, NonNullable<PublishWorkbenchData["accountDrafts"]>>();
+  for (const draft of data?.accountDrafts ?? []) {
+    const current = groups.get(draft.platform) ?? [];
+    current.push(draft);
+    groups.set(draft.platform, current);
+  }
+  return Array.from(groups.entries()).sort(([left], [right]) => left.localeCompare(right));
+}
+
+const providerLabels: Record<string, string> = {
+  doubao: "豆包",
+  yuanbao: "元宝",
+  tongyi: "通义千问",
+  deepseek: "DeepSeek",
+};
 
 function buildWorkbenchPreflight(data: PublishWorkbenchData | null, bridgeAvailability: DesktopBridgeAvailability) {
   const issues: string[] = [];
@@ -245,6 +269,25 @@ function resolveTaskPreviewImages(data: PublishWorkbenchData | null, draft?: Pub
   return [];
 }
 
+function accountDraftToPublishingDraft(draft: AccountPublishingDraft): PublishingDraft {
+  return {
+    id: draft.id,
+    taskId: draft.taskId,
+    platform: draft.platform,
+    title: draft.title,
+    body: draft.body,
+    tags: draft.tags,
+    coverImageUrl: draft.coverImageUrl,
+    imageUrls: draft.imageUrls,
+    localImagePaths: draft.localImagePaths,
+    publishMode: draft.publishMode,
+    publishEntryUrl: draft.publishEntryUrl,
+    accountId: draft.accountId,
+    accountIds: [draft.accountId],
+    updatedAt: draft.updatedAt,
+  };
+}
+
 function draftTitleMeta(platform: string, title: string) {
   if (platform !== "toutiao") {
     return null;
@@ -310,6 +353,7 @@ export function PublishWorkbench({
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [selectedDraftIds, setSelectedDraftIds] = useState<string[]>(initialData?.drafts.map((item) => item.id) ?? []);
+  const [selectedAccountDraftIds, setSelectedAccountDraftIds] = useState<string[]>(initialData?.accountDrafts?.map((item) => item.id) ?? []);
   const [draftEdits, setDraftEdits] = useState<Record<string, { title: string; body: string; tagsText: string; accountIds: string[] }>>(
     Object.fromEntries(
       (initialData?.drafts ?? []).map((draft) => [
@@ -337,6 +381,7 @@ export function PublishWorkbench({
       if (!response.ok) throw new Error(payload.error ?? "加载发布工作台失败");
       setData(payload);
       setSelectedDraftIds(payload.drafts.map((item: PublishingDraft) => item.id));
+      setSelectedAccountDraftIds((payload.accountDrafts ?? []).map((item: AccountPublishingDraft) => item.id));
       setDraftEdits(
         Object.fromEntries(
           payload.drafts.map((draft: PublishingDraft) => [
@@ -434,6 +479,7 @@ export function PublishWorkbench({
   const taskPreviewBody = primaryDraftEdit?.body?.trim() || primaryDraft?.body?.trim() || data?.content?.content?.trim() || "";
   const taskPreviewTags = primaryDraftEdit ? parseTags(primaryDraftEdit.tagsText) : primaryDraft?.tags ?? [];
   const taskPreviewImages = useMemo(() => resolveTaskPreviewImages(data, primaryDraft), [data, primaryDraft]);
+  const accountDraftGroups = useMemo(() => groupAccountDraftsByPlatform(data), [data]);
 
   async function saveDraft(draftId: string) {
     const draft = draftEdits[draftId];
@@ -500,6 +546,44 @@ export function PublishWorkbench({
       setMessage("发布任务已创建。当前会实时展示自动发布阶段和诊断日志。");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "创建发布任务失败");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function createAccountDraftJobs() {
+    if (!selectedTaskId || selectedAccountDraftIds.length === 0) return;
+    if (!isBridgeReady) {
+      setMessage(bridgeAvailability.reason ?? "当前未检测到可用桌面桥，请先启动 GEO 桌面版后再创建账号级自动发布任务。");
+      return;
+    }
+    setLoading(true);
+    setMessage("");
+    try {
+      const response = await fetch("/api/publish/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          taskId: selectedTaskId,
+          items: selectedAccountDraftIds.map((accountPublishingDraftId) => ({ accountPublishingDraftId })),
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? "创建账号级发布任务失败");
+      const createdJobs = payload.jobs as PublishingJobRecord[];
+      const jobsWithSession = await Promise.all(
+        createdJobs.map(async (job) => {
+          if (job.status !== "queued") return job;
+          const sessionToken = createClientSessionToken();
+          return patchJob(job.id, { sessionToken });
+        }),
+      );
+      await loadWorkbench(selectedTaskId);
+      await executeSocialJobs(jobsWithSession);
+      await loadWorkbench(selectedTaskId);
+      setMessage("账号级发布任务已创建。已接入自动化的平台会进入 Electron 执行流程。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "创建账号级发布任务失败");
     } finally {
       setLoading(false);
     }
@@ -624,7 +708,12 @@ export function PublishWorkbench({
       return;
     }
 
-    const draft = data.drafts.find((item) => item.platform === job.platform) ?? {
+    const accountDraft = job.accountPublishingDraftId
+      ? data.accountDrafts?.find((item) => item.id === job.accountPublishingDraftId)
+      : undefined;
+    const draft = accountDraft
+      ? accountDraftToPublishingDraft(accountDraft)
+      : data.drafts.find((item) => item.platform === job.platform) ?? {
       id: `${job.taskId}-${job.platform}`,
       taskId: job.taskId,
       platform: job.platform,
@@ -641,8 +730,8 @@ export function PublishWorkbench({
 
     await patchJob(job.id, {
       status: "running",
-      notes: "Electron 发布已启动，正在执行今日头条自动化脚本。当前阶段和原始日志会实时更新。",
-      executionLog: ["启动 Electron 今日头条发布会话"],
+      notes: `Electron 发布已启动，正在执行${platformLabel(job.platform)}自动化脚本。当前阶段和原始日志会实时更新。`,
+      executionLog: [`启动 Electron ${platformLabel(job.platform)}发布会话`],
     });
     void pollLiveProgress(job.id, job.sessionToken);
 
@@ -670,7 +759,7 @@ export function PublishWorkbench({
         verificationEvidence: result.verificationEvidence,
         verificationAttempts: result.verificationAttempts,
         platformItemId: result.platformItemId,
-          notes: "平台自动发布成功，并已在今日头条列表或详情页完成二次核验。",
+          notes: `平台自动发布成功，并已完成${platformLabel(job.platform)}发布回录。`,
       });
       return;
     }
@@ -703,11 +792,11 @@ export function PublishWorkbench({
         errorMessage: result.errorMessage,
         notes:
           result.status === "verifying"
-            ? "平台发布已提交，正在自动进入今日头条列表或详情页核验结果。"
+            ? `平台发布已提交，正在自动进入${platformLabel(job.platform)}列表或详情页核验结果。`
             : result.status === "pending_review"
               ? "平台已接受提交，但仍处于审核中或暂未形成可核验证据，暂不标记为成功。"
               : result.status === "verification_failed"
-                ? "已提交发布，但自动核验没有在今日头条列表或详情页找到新内容，不能标记为成功。"
+                ? `已提交发布，但自动核验没有在${platformLabel(job.platform)}列表或详情页找到新内容，不能标记为成功。`
                 : "平台发布已提交，但系统尚未拿到足够证据确认已发布。",
       });
       return;
@@ -756,12 +845,12 @@ export function PublishWorkbench({
 
   return (
     <div className="grid gap-8">
-      <div className="grid gap-6 xl:grid-cols-[0.75fr_1.25fr]">
-        <div className="rounded-[32px] border border-stroke bg-panel/80 p-8 shadow-panel backdrop-blur-xl">
+      <div className="grid gap-5 xl:grid-cols-[0.72fr_1.28fr]">
+        <div className="section-card">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <h2 className="font-display text-xl font-bold tracking-tight text-ink">任务选择</h2>
-              <p className="mt-2 text-sm leading-relaxed text-muted">选择一条已完成内容生成的任务，工作台会自动加载对应草稿、发布预览和历史记录。</p>
+              <h2 className="page-section-title">任务选择</h2>
+              <p className="page-section-desc">选择已生成内容的任务，系统会加载平台组合、账号级发布稿和发布记录。</p>
             </div>
             {currentTask ? (
               <span className={`rounded-full px-3 py-1 text-xs font-medium ${taskStatusTone(currentTask.status)}`}>{currentTask.status}</span>
@@ -783,28 +872,28 @@ export function PublishWorkbench({
             ))}
           </select>
           {currentTask ? (
-            <div className="mt-6 grid gap-3 rounded-[24px] border border-stroke bg-surface/50 p-5">
-              <div className="rounded-[18px] bg-panel/60 p-4">
+            <div className="mt-5 grid gap-3 rounded-lg border border-stroke bg-surface/50 p-4">
+              <div className="subtle-card">
                 <p className="text-xs font-medium uppercase tracking-wider text-muted">任务标题</p>
                 <p className="mt-2 text-sm font-medium leading-relaxed text-ink">{currentTask.title}</p>
               </div>
               <div className="grid gap-3 sm:grid-cols-2">
-                <div className="rounded-[18px] bg-panel/60 p-4">
+                <div className="subtle-card">
                   <p className="text-xs font-medium uppercase tracking-wider text-muted">当前状态</p>
                   <p className="mt-2 text-sm font-medium text-ink">{currentTask.status}</p>
                 </div>
-                <div className="rounded-[18px] bg-panel/60 p-4">
+                <div className="subtle-card">
                   <p className="text-xs font-medium uppercase tracking-wider text-muted">更新时间</p>
                   <p className="mt-2 font-mono text-xs text-slate-300">{new Date(currentTask.updatedAt).toLocaleString()}</p>
                 </div>
               </div>
               <div className="grid gap-3 sm:grid-cols-2">
-                <div className="rounded-[18px] border border-accent/20 bg-accent/10 p-4">
-                  <p className="text-xs font-medium uppercase tracking-wider text-accent-soft">发布模式</p>
-                  <p className="mt-2 text-sm font-semibold text-ink">图文直粘模式</p>
-                  <p className="mt-1 text-xs leading-relaxed text-accent-soft">系统将正文与配图均匀混排后直接粘贴到平台编辑器，自动提取封面。</p>
+                <div className="rounded-lg border border-accent/20 bg-accent/10 p-4">
+                  <p className="text-xs font-medium uppercase tracking-wider text-accent-soft">来源板块</p>
+                  <p className="mt-2 text-sm font-semibold text-ink">{providerLabels[data?.task.searchProvider ?? ""] ?? data?.task.searchProvider ?? "未设置"}</p>
+                  <p className="mt-1 text-xs leading-relaxed text-accent-soft">板块决定目标发布平台组合。</p>
                 </div>
-                <div className={`rounded-[18px] border p-4 ${isBridgeReady ? "border-emerald-500/20 bg-emerald-500/10" : "border-warning/30 bg-warning/10"}`}>
+                <div className={`rounded-lg border p-4 ${isBridgeReady ? "border-emerald-500/20 bg-emerald-500/10" : "border-warning/30 bg-warning/10"}`}>
                   <p className="text-xs font-medium uppercase tracking-wider text-muted">环境状态</p>
                   <p className={`mt-2 text-sm font-semibold ${isBridgeReady ? "text-emerald-300" : "text-warning"}`}>{bridgeAvailability.label}</p>
                   <p className="mt-1 text-xs leading-relaxed text-slate-300">
@@ -818,26 +907,26 @@ export function PublishWorkbench({
               </div>
             </div>
           ) : (
-            <div className="mt-6 rounded-[20px] border border-dashed border-stroke p-5 text-center text-sm text-muted">
+            <div className="mt-6 rounded-lg border border-dashed border-stroke p-5 text-center text-sm text-muted">
               请选择一个已生成内容或图片的任务进入工作台。
             </div>
           )}
         </div>
 
-        <div className="rounded-[32px] border border-stroke bg-panel/80 p-8 shadow-panel backdrop-blur-xl">
+        <div className="section-card">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
-              <h2 className="font-display text-xl font-bold tracking-tight text-ink">发布动作</h2>
-              <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted">
-                当前工作台只负责今日头条自动发布。建议先在左侧编辑并保存草稿，再创建任务执行自动化。
+              <h2 className="page-section-title">发布动作</h2>
+              <p className="page-section-desc max-w-2xl">
+                账号级发布任务用于百家号、抖音和后续平台；下方旧平台草稿保留今日头条兼容链路。
               </p>
             </div>
-            <div className="rounded-full border border-accent/20 bg-accent/10 px-4 py-2 text-xs font-medium text-accent-soft">
-              发布模式：图文直粘模式
+            <div className="status-pill">
+              图文直粘模式
             </div>
           </div>
-          <div className="mt-5 grid gap-4 lg:grid-cols-2">
-            <div className={`rounded-[20px] border p-4 ${isBridgeReady ? "border-emerald-500/20 bg-emerald-500/10" : "border-warning/30 bg-warning/10"}`}>
+          <div className="mt-5 grid gap-3 lg:grid-cols-2">
+            <div className={`rounded-lg border p-4 ${isBridgeReady ? "border-emerald-500/20 bg-emerald-500/10" : "border-warning/30 bg-warning/10"}`}>
               <p className="text-xs font-medium uppercase tracking-wider text-muted">环境状态</p>
               <p className={`mt-2 text-sm font-semibold ${isBridgeReady ? "text-emerald-300" : "text-warning"}`}>{bridgeAvailability.label}</p>
               <p className="mt-2 text-xs leading-relaxed text-slate-300">
@@ -848,7 +937,7 @@ export function PublishWorkbench({
                     : "当前未检测到可用桌面桥，只能查看草稿和发布记录；请先启动 GEO 桌面版。"}
               </p>
             </div>
-            <div className="rounded-[20px] border border-accent/20 bg-accent/10 p-4">
+            <div className="rounded-lg border border-accent/20 bg-accent/10 p-4">
               <p className="text-xs font-medium uppercase tracking-wider text-accent-soft">本次发布策略</p>
               <p className="mt-2 text-sm font-semibold text-ink">系统将正文与配图均匀混排后直接粘贴到平台编辑器，自动提取封面。</p>
               <p className="mt-2 text-xs leading-relaxed text-accent-soft">
@@ -856,18 +945,18 @@ export function PublishWorkbench({
               </p>
             </div>
           </div>
-          <div className="mt-4 rounded-2xl bg-accent-muted/20 p-4 text-xs leading-relaxed text-accent-soft">
+          <div className="mt-4 rounded-lg bg-accent-muted/20 p-4 text-xs leading-relaxed text-accent-soft">
             账号中心里的“已登录”只表示可用，不等于当前草稿已经绑定；若平台只有 1 个已登录账号，系统会自动补绑。
           </div>
           {preflight.issues.length ? (
-            <div className="mt-4 rounded-2xl border border-warning/30 bg-warning/10 p-4 text-xs leading-relaxed text-warning">
+            <div className="mt-4 rounded-lg border border-warning/30 bg-warning/10 p-4 text-xs leading-relaxed text-warning">
               {preflight.issues.map((item) => (
                 <p key={item}>{item}</p>
               ))}
             </div>
           ) : null}
           {preflight.hints.length ? (
-            <div className="mt-4 rounded-2xl border border-stroke bg-white/5 p-4 text-xs leading-relaxed text-muted">
+            <div className="mt-4 rounded-lg border border-stroke bg-white/5 p-4 text-xs leading-relaxed text-muted">
               {preflight.hints.map((item) => (
                 <p key={item}>{item}</p>
               ))}
@@ -875,15 +964,23 @@ export function PublishWorkbench({
           ) : null}
           <div className="mt-6 flex flex-wrap gap-4">
             <button 
-              className="flex items-center justify-center gap-2 rounded-[20px] bg-accent px-6 py-4 text-sm font-bold text-surface shadow-glow transition-all hover:bg-accent-soft disabled:opacity-50 disabled:shadow-none" 
+              className="flex items-center justify-center gap-2 rounded-lg bg-accent px-5 py-3.5 text-sm font-bold text-surface shadow-glow transition-all hover:bg-accent-soft disabled:opacity-50 disabled:shadow-none" 
               disabled={loading || !selectedTaskId || !isBridgeReady} 
               onClick={createJobs}
             >
               {loading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <FileUp className="h-4 w-4" />}
               创建今日头条发布任务
             </button>
+            <button
+              className="flex items-center justify-center gap-2 rounded-lg border border-accent/30 bg-accent-muted/30 px-5 py-3.5 text-sm font-bold text-accent-soft transition-all hover:bg-accent hover:text-surface disabled:opacity-50"
+              disabled={loading || !selectedTaskId || !isBridgeReady || !selectedAccountDraftIds.length}
+              onClick={createAccountDraftJobs}
+            >
+              {loading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <FileUp className="h-4 w-4" />}
+              创建账号级自动发布任务
+            </button>
             <button 
-              className="flex items-center justify-center gap-2 rounded-[20px] border border-danger/20 bg-danger/10 px-6 py-4 text-sm font-bold text-danger transition-all hover:bg-danger/20 disabled:opacity-50" 
+              className="flex items-center justify-center gap-2 rounded-lg border border-danger/20 bg-danger/10 px-5 py-3.5 text-sm font-bold text-danger transition-all hover:bg-danger/20 disabled:opacity-50" 
               disabled={loading || !selectedTaskId} 
               onClick={clearPublishData}
             >
@@ -892,7 +989,7 @@ export function PublishWorkbench({
             </button>
           </div>
           {message && (
-            <div className="mt-6 rounded-2xl border border-stroke-strong bg-white/5 p-4 text-sm text-ink">
+            <div className="mt-6 rounded-lg border border-stroke-strong bg-white/5 p-4 text-sm text-ink">
               {message}
             </div>
           )}
@@ -901,8 +998,102 @@ export function PublishWorkbench({
 
       <div className="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
         <div className="space-y-6">
-          <div className="rounded-[32px] border border-stroke bg-panel/50 p-8 shadow-panel backdrop-blur-xl">
-            <h2 className="font-display text-2xl font-bold tracking-tight text-ink mb-6">平台草稿</h2>
+          <div className="section-card">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <h2 className="page-section-title">账号级发布稿</h2>
+                <p className="page-section-desc">
+                  这里展示板块映射后的平台账号稿。每个账号对应一篇独立稿，当前先作为多平台发布可见流程，头条自动发布仍使用下方平台草稿。
+                </p>
+              </div>
+              <span className="status-pill text-accent-soft">
+                {providerLabels[data?.task.searchProvider ?? ""] ?? data?.task.searchProvider ?? "未设置板块"}
+              </span>
+            </div>
+
+            {accountDraftGroups.length ? (
+              <div className="mt-6 grid gap-5">
+                {accountDraftGroups.map(([platform, drafts]) => (
+                  <div key={platform} className="rounded-lg border border-stroke bg-surface/50 p-5">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <h3 className="font-display text-base font-bold text-ink">{platformLabel(platform)}</h3>
+                        <p className="mt-1 text-xs text-muted">{publishPlatformDescriptors.find((item) => item.key === platform)?.contentProfile}</p>
+                      </div>
+                      <span className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${
+                        platformAutomationLabel(platform) === "已自动化"
+                          ? "bg-emerald-500/15 text-emerald-300"
+                          : platformAutomationLabel(platform) === "手动发布"
+                            ? "bg-cyan-500/15 text-cyan-300"
+                            : "bg-warning/15 text-warning"
+                      }`}>
+                        {platformAutomationLabel(platform)}
+                      </span>
+                    </div>
+
+                    <div className="mt-4 grid gap-4">
+                      {drafts.map((draft) => (
+                        <div key={draft.id} className="rounded-lg border border-stroke bg-panel/50 p-4">
+                          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                            <div>
+                              <label className="flex cursor-pointer items-start gap-3">
+                                <input
+                                  type="checkbox"
+                                  className="mt-1 h-4 w-4 cursor-pointer rounded border border-stroke bg-panel"
+                                  checked={selectedAccountDraftIds.includes(draft.id)}
+                                  onChange={(event) =>
+                                    setSelectedAccountDraftIds((current) =>
+                                      event.target.checked ? [...current, draft.id] : current.filter((item) => item !== draft.id),
+                                    )
+                                  }
+                                />
+                                <span>
+                                  <span className="block text-xs font-medium uppercase tracking-wider text-muted">发布账号</span>
+                                  <span className="mt-1 block text-sm font-semibold text-ink">{draft.accountName ?? draft.accountId}</span>
+                                </span>
+                              </label>
+                            </div>
+                            <div className="status-pill">
+                              {draft.publishMode === "with_images" ? "图文稿" : "纯文本稿"}
+                            </div>
+                          </div>
+                          <div className="mt-4 grid gap-3">
+                            <div>
+                              <p className="text-xs font-medium uppercase tracking-wider text-muted">独立标题</p>
+                              <p className="mt-1 text-sm font-semibold leading-relaxed text-ink">{draft.title}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs font-medium uppercase tracking-wider text-muted">正文摘要</p>
+                              <p className="mt-1 text-sm leading-6 text-slate-300">{buildBodyPreview(draft.body)}</p>
+                            </div>
+                            {draft.tags.length ? (
+                              <div className="flex flex-wrap gap-2">
+                                {draft.tags.map((tag) => (
+                                  <span key={`${draft.id}-${tag}`} className="rounded-full bg-accent-muted/20 px-2.5 py-1 text-[11px] font-medium text-accent-soft">
+                                    #{tag}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="mt-6 rounded-lg border border-dashed border-stroke p-6 text-sm leading-relaxed text-muted">
+                当前任务还没有可展示的账号级发布稿。请先在账号中心为该板块对应的平台创建账号记录，或完成内容生成后重新进入工作台。
+              </div>
+            )}
+          </div>
+
+          <div className="section-card">
+            <div className="mb-5">
+              <h2 className="page-section-title">平台草稿</h2>
+              <p className="page-section-desc">兼容旧的今日头条平台草稿编辑和自动发布链路。</p>
+            </div>
             <div className="grid gap-5">
               {(data?.drafts ?? []).map((draft) => {
                 const edit = draftEdits[draft.id] ?? { title: draft.title, body: draft.body, tagsText: formatTags(draft.tags), accountIds: draft.accountIds ?? (draft.accountId ? [draft.accountId] : []) };
@@ -916,7 +1107,7 @@ export function PublishWorkbench({
                     account.lastError?.trim(),
                 );
                 return (
-                  <div key={draft.id} className="group relative overflow-hidden rounded-[24px] border border-stroke bg-surface/50 p-6 transition-all duration-300 hover:border-stroke-strong">
+                  <div key={draft.id} className="rounded-lg border border-stroke bg-surface/50 p-5 transition-colors hover:border-stroke-strong">
                     <div className="flex items-center justify-between gap-4 mb-6">
                       <label className="flex cursor-pointer items-center gap-3">
                         <div className="relative flex items-center">
@@ -939,7 +1130,7 @@ export function PublishWorkbench({
                         <span className="font-display text-lg font-bold text-ink">{platformLabel(draft.platform)}</span>
                       </label>
                       {draft.publishEntryUrl && (
-                        <a className="flex items-center gap-1.5 rounded-full bg-accent-muted/30 px-3 py-1.5 text-xs font-medium text-accent transition-colors hover:bg-accent hover:text-surface" href={draft.publishEntryUrl} target="_blank" rel="noreferrer">
+                        <a className="flex items-center gap-1.5 rounded-lg bg-accent-muted/30 px-3 py-1.5 text-xs font-medium text-accent transition-colors hover:bg-accent hover:text-surface" href={draft.publishEntryUrl} target="_blank" rel="noreferrer">
                           <ExternalLink className="h-3.5 w-3.5" />
                           打开平台入口
                         </a>
@@ -1063,7 +1254,7 @@ export function PublishWorkbench({
                       </div>
 
                       <button 
-                        className="mt-2 flex w-full items-center justify-center gap-2 rounded-[16px] border border-stroke bg-white/5 px-4 py-3.5 text-sm font-bold text-ink transition-colors hover:bg-white/10 disabled:opacity-50" 
+                        className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-stroke bg-white/5 px-4 py-3.5 text-sm font-bold text-ink transition-colors hover:bg-white/10 disabled:opacity-50" 
                         onClick={() => saveDraft(draft.id)} 
                         disabled={loading}
                       >
@@ -1079,38 +1270,38 @@ export function PublishWorkbench({
         </div>
 
         <div className="space-y-6">
-          <div className="rounded-[32px] border border-stroke bg-panel/50 p-8 shadow-panel backdrop-blur-xl">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h2 className="font-display text-xl font-bold tracking-tight text-ink mb-2">发布预览</h2>
-                <p className="text-sm leading-relaxed text-muted">这里展示本次会送入头条自动化链路的内容摘要。图片与正文将组装为富文本进行混排发布。</p>
+            <div className="section-card">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                <h2 className="page-section-title">发布预览</h2>
+                <p className="page-section-desc">这里展示本次会送入头条自动化链路的内容摘要。图片与正文将组装为富文本进行混排发布。</p>
               </div>
-              <div className="rounded-full border border-accent/20 bg-accent/10 px-3 py-1 text-xs font-medium text-accent-soft">
+              <div className="status-pill text-accent-soft">
                 仅预览，不可编辑
               </div>
             </div>
             {data ? (
-              <div className="mt-6 space-y-4 rounded-[24px] bg-surface/50 p-5">
+              <div className="mt-5 space-y-4 rounded-lg border border-stroke bg-surface/50 p-4">
                 <div className="grid gap-3 sm:grid-cols-2">
-                  <div className="rounded-[18px] bg-panel/60 p-4">
+                  <div className="rounded-lg bg-panel/60 p-4">
                     <span className="text-xs font-medium uppercase tracking-wider text-muted">关联产品</span>
                     <p className="mt-2 text-sm font-medium text-ink">{data.product.productName}</p>
                   </div>
-                  <div className="rounded-[18px] border border-accent/20 bg-accent/10 p-4">
+                  <div className="rounded-lg border border-accent/20 bg-accent/10 p-4">
                     <span className="text-xs font-medium uppercase tracking-wider text-accent-soft">发布模式说明</span>
                     <p className="mt-2 text-sm font-semibold text-ink">图文直粘模式</p>
                     <p className="mt-1 text-xs leading-relaxed text-accent-soft">系统将正文与配图均匀排版，通过原生剪贴板事件直接粘贴至平台编辑器，平台会自动提取封面。</p>
                   </div>
                 </div>
-                <div className="rounded-[18px] bg-panel/60 p-4">
+                <div className="rounded-lg bg-panel/60 p-4">
                   <span className="text-xs font-medium text-muted uppercase tracking-wider">发布标题</span>
                   <p className="mt-2 text-sm font-medium leading-relaxed text-ink">{taskPreviewTitle}</p>
                 </div>
-                <div className="rounded-[18px] bg-panel/60 p-4">
+                <div className="rounded-lg bg-panel/60 p-4">
                   <span className="text-xs font-medium text-muted uppercase tracking-wider">发布正文摘要</span>
                   <p className="mt-2 text-sm leading-relaxed text-slate-300">{buildBodyPreview(taskPreviewBody)}</p>
                 </div>
-                <div className="rounded-[18px] bg-panel/60 p-4">
+                <div className="rounded-lg bg-panel/60 p-4">
                   <span className="text-xs font-medium text-muted uppercase tracking-wider">发布标签</span>
                   {taskPreviewTags.length ? (
                     <div className="mt-3 flex flex-wrap gap-2">
@@ -1124,7 +1315,7 @@ export function PublishWorkbench({
                     <span className="mt-2 block text-sm text-muted">暂无标签</span>
                   )}
                 </div>
-                <div className="rounded-[18px] bg-panel/60 p-4">
+                <div className="rounded-lg bg-panel/60 p-4">
                   <div className="flex items-center justify-between gap-3">
                     <span className="text-xs font-medium text-muted uppercase tracking-wider">图片预览</span>
                     <span className="text-[11px] text-accent-soft">图文混排发布</span>
@@ -1138,13 +1329,13 @@ export function PublishWorkbench({
                             href={imageUrl}
                             target="_blank"
                             rel="noreferrer"
-                            className="group overflow-hidden rounded-[16px] border border-stroke bg-panel/60"
+                            className="group overflow-hidden rounded-lg border border-stroke bg-panel/60"
                           >
                             <img src={imageUrl} alt={`${taskPreviewTitle} 配图 ${index + 1}`} className="aspect-[4/3] w-full object-cover transition-transform duration-300 group-hover:scale-105" />
                           </a>
                         ))}
                       </div>
-                      <div className="mt-3 flex items-center justify-between rounded-[16px] border border-stroke bg-panel/40 px-4 py-3 text-xs text-muted">
+                      <div className="mt-3 flex items-center justify-between rounded-lg border border-stroke bg-panel/40 px-4 py-3 text-xs text-muted">
                         <span>当前任务已生成图片 {taskPreviewImages.length} 张</span>
                         <a
                           className="inline-flex items-center gap-1 text-accent transition-colors hover:text-accent-soft"
@@ -1158,30 +1349,30 @@ export function PublishWorkbench({
                       </div>
                     </>
                   ) : (
-                    <div className="mt-3 flex items-center gap-2 rounded-[16px] border border-dashed border-stroke px-4 py-3 text-sm text-muted">
+                    <div className="mt-3 flex items-center gap-2 rounded-lg border border-dashed border-stroke px-4 py-3 text-sm text-muted">
                       <FileImage className="h-4 w-4" />
                       当前任务暂无图片，将按纯文章模式发布。
                     </div>
                   )}
                 </div>
-                <div className="rounded-[18px] bg-panel/60 p-4">
+                <div className="rounded-lg bg-panel/60 p-4">
                   <span className="text-xs font-medium text-muted uppercase tracking-wider">主稿摘要</span>
                   <p className="mt-2 text-sm leading-relaxed text-slate-300">{data.content?.summary ?? "暂无主稿摘要"}</p>
                 </div>
               </div>
             ) : (
-              <div className="flex h-32 items-center justify-center rounded-[20px] border border-dashed border-stroke text-sm text-muted">
+              <div className="flex h-32 items-center justify-center rounded-lg border border-dashed border-stroke text-sm text-muted">
                 选择任务后即可查看交付素材。
               </div>
             )}
           </div>
 
-          <div className="rounded-[32px] border border-stroke bg-panel/50 p-8 shadow-panel backdrop-blur-xl">
-            <h2 className="font-display text-xl font-bold tracking-tight text-ink mb-6">发布记录</h2>
+          <div className="section-card">
+            <h2 className="page-section-title mb-5">发布记录</h2>
             <div className="grid gap-4">
               {(data?.jobs ?? []).length ? (
                 data?.jobs.map((job) => (
-                  <div key={job.id} className="rounded-[24px] border border-stroke bg-surface/80 p-5 transition-colors hover:border-stroke-strong">
+                  <div key={job.id} className="rounded-lg border border-stroke bg-surface/70 p-5 transition-colors hover:border-stroke-strong">
                     {(() => {
                       const progress = liveProgress[job.id];
                       const recentLogLines = progress?.liveExecutionLog?.slice(-6) ?? [];
@@ -1198,7 +1389,7 @@ export function PublishWorkbench({
                       </span>
                     </div>
 
-                    <div className="mb-4 rounded-[20px] border border-stroke bg-panel/40 p-4">
+                    <div className="mb-4 rounded-lg border border-stroke bg-panel/40 p-4">
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div className="space-y-1">
                           <p className="text-xs font-medium uppercase tracking-wider text-muted">发布诊断</p>
@@ -1232,7 +1423,7 @@ export function PublishWorkbench({
                       {recentLogLines.length ? (
                         <div className="mt-4">
                           <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted">最近日志</p>
-                          <pre className="max-h-28 overflow-y-auto rounded-[16px] border border-stroke bg-surface p-3 font-mono text-[10px] leading-relaxed text-muted/80 scrollbar-thin">
+                          <pre className="max-h-28 overflow-y-auto rounded-lg border border-stroke bg-surface p-3 font-mono text-[10px] leading-relaxed text-muted/80 scrollbar-thin">
                             {recentLogLines.join("\n")}
                           </pre>
                         </div>
@@ -1245,13 +1436,13 @@ export function PublishWorkbench({
                       ) : null}
                     </div>
 
-                    <div className="rounded-[20px] border border-stroke bg-panel/40 p-4">
+                    <div className="rounded-lg border border-stroke bg-panel/40 p-4">
                       <div className="flex items-start justify-between gap-4">
                         <div className="space-y-1">
                           <p className="text-xs font-medium text-muted uppercase tracking-wider">本次发布内容</p>
                           <h5 className="text-sm font-semibold leading-relaxed text-ink">{job.draftTitle}</h5>
                         </div>
-                        <div className="rounded-full border border-accent/20 bg-accent/10 px-3 py-1 text-[11px] font-medium text-accent-soft">
+                        <div className="status-pill text-accent-soft">
                           图文直粘模式
                         </div>
                       </div>
@@ -1268,13 +1459,13 @@ export function PublishWorkbench({
                           ))}
                         </div>
                       ) : null}
-                      <div className="mt-4 flex items-center gap-2 rounded-[16px] border border-dashed border-stroke px-3 py-3 text-xs text-muted">
+                      <div className="mt-4 flex items-center gap-2 rounded-lg border border-dashed border-stroke px-3 py-3 text-xs text-muted">
                         <FileImage className="h-4 w-4" />
                         系统将正文与配图组装为 HTML 统一粘贴。
                       </div>
                     </div>
 
-                    <div className="mt-4 rounded-[20px] border border-stroke bg-panel/30 p-4 text-sm">
+                    <div className="mt-4 rounded-lg border border-stroke bg-panel/30 p-4 text-sm">
                       <div className="grid gap-2 sm:grid-cols-2">
                         <p className="flex justify-between gap-3">
                           <span className="text-muted">发布账号</span>
@@ -1331,7 +1522,7 @@ export function PublishWorkbench({
                     {job.executionLog?.length ? (
                       <div className="mt-4">
                         <p className="mb-2 text-xs font-medium text-muted uppercase tracking-wider">执行日志</p>
-                        <pre className="max-h-32 overflow-y-auto rounded-[16px] border border-stroke bg-surface p-3 font-mono text-[10px] leading-relaxed text-muted/80 scrollbar-thin">
+                        <pre className="max-h-32 overflow-y-auto rounded-lg border border-stroke bg-surface p-3 font-mono text-[10px] leading-relaxed text-muted/80 scrollbar-thin">
                           {job.executionLog.join("\n")}
                         </pre>
                       </div>
@@ -1339,7 +1530,7 @@ export function PublishWorkbench({
 
                     <div className="mt-5 grid gap-3">
                       <button
-                        className="flex w-full items-center justify-center gap-2 rounded-[16px] border border-stroke bg-white/5 px-4 py-3 text-sm font-bold text-ink transition-colors hover:bg-white/10 disabled:opacity-50"
+                        className="flex w-full items-center justify-center gap-2 rounded-lg border border-stroke bg-white/5 px-4 py-3 text-sm font-bold text-ink transition-colors hover:bg-white/10 disabled:opacity-50"
                         onClick={() => retryJob(job)}
                         disabled={loading || !job.accountId || !isBridgeReady}
                       >
@@ -1357,14 +1548,14 @@ export function PublishWorkbench({
                         />
                         <div className="flex gap-3">
                           <button
-                            className="flex-1 rounded-[16px] bg-emerald-500/20 px-4 py-2.5 text-xs font-bold text-emerald-400 transition-colors hover:bg-emerald-500/30 disabled:opacity-50"
+                            className="flex-1 rounded-lg bg-emerald-500/20 px-4 py-2.5 text-xs font-bold text-emerald-400 transition-colors hover:bg-emerald-500/30 disabled:opacity-50"
                             onClick={() => updateJob(job.id, "published")}
                             disabled={loading}
                           >
                             手动补录成功
                           </button>
                           <button
-                            className="flex-1 rounded-[16px] bg-danger/20 px-4 py-2.5 text-xs font-bold text-danger transition-colors hover:bg-danger/30 disabled:opacity-50"
+                            className="flex-1 rounded-lg bg-danger/20 px-4 py-2.5 text-xs font-bold text-danger transition-colors hover:bg-danger/30 disabled:opacity-50"
                             onClick={() => updateJob(job.id, "failed")}
                             disabled={loading}
                           >
@@ -1379,7 +1570,7 @@ export function PublishWorkbench({
                   </div>
                 ))
               ) : (
-                <div className="flex h-32 items-center justify-center rounded-[24px] border border-dashed border-stroke text-sm text-muted">
+                <div className="flex h-32 items-center justify-center rounded-lg border border-dashed border-stroke text-sm text-muted">
                   当前任务还没有生成任何发布记录。
                 </div>
               )}

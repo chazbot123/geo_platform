@@ -11,12 +11,12 @@ function buildDefaultAccountName(platform: SocialPlatform) {
 export async function POST(request: Request) {
   try {
     const { platform, accountId } = (await request.json()) as { platform: SocialPlatform; accountId?: string };
-    if (platform !== "toutiao") {
-      return NextResponse.json({ error: "当前登录中心仅支持今日头条。" }, { status: 400 });
-    }
     const descriptor = getSocialPlatformDescriptor(platform);
     if (!descriptor) {
       return NextResponse.json({ error: "不支持的平台。" }, { status: 400 });
+    }
+    if (!descriptor.loginSupported || descriptor.automationStatus !== "ready") {
+      return NextResponse.json({ error: `${descriptor.label} 当前暂未接入桌面自动登录，可先创建账号记录并按手动发布流程处理。` }, { status: 400 });
     }
 
     let account = accountId ? await getPlatformAccount(accountId) : null;

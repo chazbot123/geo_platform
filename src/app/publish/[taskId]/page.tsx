@@ -17,7 +17,7 @@ export default async function PublishPage({ params }: { params: { taskId: string
   }));
 
   return (
-    <AppShell title="今日头条发布工作台" description="从当前任务直接进入今日头条发布工作台，继续完成草稿编辑、账号绑定、Electron 自动发布和人工补录。">
+    <AppShell title="多平台发布工作台" description="从当前任务进入板块驱动的发布工作台，查看平台组合、账号级发布稿和发布任务执行状态。">
       <PublishWorkbench tasks={tasks} initialTaskId={params.taskId} initialData={data} />
     </AppShell>
   );

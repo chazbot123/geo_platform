@@ -15,5 +15,6 @@ export const dataDirectories = {
   platformAccounts: path.join(dataRoot, "platform-accounts"),
   publishingJobs: path.join(dataRoot, "publishing-jobs"),
   publishingDrafts: path.join(dataRoot, "publishing-drafts"),
+  accountPublishingDrafts: path.join(dataRoot, "account-publishing-drafts"),
   config: path.join(dataRoot, "config"),
 };

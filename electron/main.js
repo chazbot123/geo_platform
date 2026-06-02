@@ -286,6 +286,18 @@ function getPlatformSessionSpec(platform, publishUrl) {
         loginUrlHints: ["/auth/page/login", "/login", "passport", "signin", "sso"],
         loginTextHints: ["登录", "验证码登录", "扫码登录", "请先登录", "立即登录"],
       };
+    case "baijiahao":
+      return {
+        publishUrl: publishUrl || "https://baijiahao.baidu.com/builder/rc/edit?type=news",
+        loginUrlHints: ["/login", "passport", "signin", "sso", "cas.baidu.com"],
+        loginTextHints: ["登录", "扫码登录", "请先登录", "百度账号登录", "立即登录"],
+      };
+    case "douyin":
+      return {
+        publishUrl: publishUrl || "https://creator.douyin.com/creator-micro/content/upload",
+        loginUrlHints: ["/login", "passport", "signin", "sso"],
+        loginTextHints: ["登录", "扫码登录", "请先登录", "验证码登录", "抖音创作者服务中心"],
+      };
     default:
       return {
         publishUrl: publishUrl || "",
@@ -405,6 +417,10 @@ function resolveAutomationFile(platform) {
   switch (String(platform || "").trim()) {
     case "toutiao":
       return path.join(automationDirectory, "toutiao.js");
+    case "baijiahao":
+      return path.join(automationDirectory, "baijiahao.js");
+    case "douyin":
+      return path.join(automationDirectory, "douyin.js");
     default:
       return "";
   }
@@ -541,10 +557,11 @@ async function runPlatformPublish(input = {}) {
 
   publishWindow.webContents.on("console-message", (_, _level, message) => {
     const text = String(message || "");
-    if (!text.startsWith("[geo-toutiao]")) {
+    const prefix = text.match(/^\[geo-(toutiao|baijiahao|douyin)\]\s*/);
+    if (!prefix) {
       return;
     }
-    const normalized = text.replace(/^\[geo-toutiao\]\s*/, "").trim();
+    const normalized = text.replace(/^\[geo-(toutiao|baijiahao|douyin)\]\s*/, "").trim();
     if (!normalized) {
       return;
     }

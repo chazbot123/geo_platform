@@ -1,14 +1,15 @@
 import { NextResponse } from "next/server";
 import { getAllPlatformAccounts, listAuthenticatedPlatformAccounts } from "@/lib/publish/accounts-service";
-import { createPublishingJob, recordPublishingJobResult } from "@/lib/publish/jobs-service";
+import { createAccountPublishingJob, createPublishingJob, recordPublishingJobResult } from "@/lib/publish/jobs-service";
 import { updatePublishingDraftRecord } from "@/lib/publish/workbench-service";
-import { getPublishingDraft } from "@/lib/storage/data-store";
+import { getAccountPublishingDraft, getPublishingDraft } from "@/lib/storage/data-store";
+import { getPlatformDescriptor } from "@/lib/publish/platforms";
 
 export async function POST(request: Request) {
   try {
     const { taskId, items } = (await request.json()) as {
       taskId: string;
-      items: Array<{ draftId: string; accountId?: string }>;
+      items: Array<{ draftId?: string; accountId?: string; accountPublishingDraftId?: string }>;
     };
 
     if (!taskId || !Array.isArray(items) || items.length === 0) {
@@ -17,12 +18,64 @@ export async function POST(request: Request) {
 
     const jobs = [];
     for (const item of items) {
+      if (item.accountPublishingDraftId) {
+        const accountDraft = await getAccountPublishingDraft(item.accountPublishingDraftId);
+        if (!accountDraft) {
+          return NextResponse.json({ error: "账号发布稿不存在或已失效。" }, { status: 400 });
+        }
+        const descriptor = getPlatformDescriptor(accountDraft.platform);
+        if (!descriptor) {
+          return NextResponse.json({ error: "账号发布稿所属平台不受支持。" }, { status: 400 });
+        }
+        if (!accountDraft.title.trim() || !accountDraft.body.trim()) {
+          return NextResponse.json({ error: "账号发布稿缺少标题或正文。" }, { status: 400 });
+        }
+
+        const authenticatedAccounts = await listAuthenticatedPlatformAccounts(accountDraft.platform);
+        const authenticatedAccountIds = new Set(authenticatedAccounts.map((account) => account.id));
+        const job = await createAccountPublishingJob({
+          taskId,
+          accountPublishingDraftId: accountDraft.id,
+        });
+
+        if (!authenticatedAccountIds.has(accountDraft.accountId)) {
+          jobs.push(
+            await recordPublishingJobResult({
+              jobId: job.id,
+              status: "failed",
+              errorMessage: `${descriptor.label}账号未认证或真实登录态已失效，请先到账号中心重新登录。`,
+              failureStage: "account_binding",
+            }),
+          );
+          continue;
+        }
+
+        if (descriptor.automationStatus !== "ready") {
+          jobs.push(
+            await recordPublishingJobResult({
+              jobId: job.id,
+              status: "manual_pending",
+              notes: `${descriptor.label} 暂未接入自动发布，请按平台入口手动发布该账号稿。`,
+              externalStatus: descriptor.automationStatus,
+            }),
+          );
+          continue;
+        }
+
+        jobs.push(job);
+        continue;
+      }
+
+      if (!item.draftId) {
+        return NextResponse.json({ error: "缺少草稿 ID。" }, { status: 400 });
+      }
       const draft = await getPublishingDraft(item.draftId);
       if (!draft) {
         return NextResponse.json({ error: "草稿不存在或已失效。" }, { status: 400 });
       }
-      if (draft.platform !== "toutiao") {
-        return NextResponse.json({ error: "当前发布工作台仅支持创建今日头条发布任务。" }, { status: 400 });
+      const descriptor = getPlatformDescriptor(draft.platform);
+      if (!descriptor) {
+        return NextResponse.json({ error: "当前草稿所属平台不受支持。" }, { status: 400 });
       }
       if (!draft.title.trim() || !draft.body.trim()) {
         return NextResponse.json({ error: "当前任务缺少可发布的文章内容，请先回到第二阶段生成并保存文章后再发布。" }, { status: 400 });
@@ -51,6 +104,18 @@ export async function POST(request: Request) {
         draftId: item.draftId,
         accountId: resolvedAccountId,
       });
+
+      if (descriptor.automationStatus !== "ready") {
+        jobs.push(
+          await recordPublishingJobResult({
+            jobId: job.id,
+            status: "manual_pending",
+            notes: `${descriptor.label} 暂未接入自动发布，请按平台入口手动发布该草稿。`,
+            externalStatus: descriptor.automationStatus,
+          }),
+        );
+        continue;
+      }
 
       if (!job.accountId) {
         const errorMessage =

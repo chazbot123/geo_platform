@@ -143,16 +143,16 @@ export function TaskCreator() {
 
   return (
     <form className="flex flex-col gap-8" onSubmit={handleSubmit}>
-      <div className="rounded-3xl border border-stroke bg-panel/70 p-6 lg:p-8 shadow-panel backdrop-blur-xl">
+      <div className="section-card">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <p className="label-base">第一步</p>
-            <h2 className="font-display text-2xl font-bold text-ink">选择检索平台</h2>
-            <p className="mt-3 max-w-3xl text-sm leading-relaxed text-muted">
+            <h2 className="page-section-title">选择检索平台</h2>
+            <p className="page-section-desc max-w-3xl">
               先确定本次 AI 提问句生成由哪一套平台逻辑驱动。系统会根据所选平台，叠加社媒与流媒体场景语境，再结合你上传的产品资料生成 10 条可供挑选的用户提问句。
             </p>
           </div>
-          <div className="rounded-2xl border border-accent/20 bg-accent-muted/20 px-4 py-3 text-xs leading-6 text-accent-soft">
+          <div className="rounded-lg border border-accent/20 bg-accent-muted/20 px-4 py-3 text-xs leading-6 text-accent-soft">
             当前流程：单次仅运行 1 个检索平台，后续可重新切换平台再发起新的任务。
           </div>
         </div>
@@ -163,25 +163,22 @@ export function TaskCreator() {
               <button
                 key={provider.key}
                 type="button"
-                className={`group relative overflow-hidden rounded-[24px] border p-5 text-left transition-all duration-300 ${
+                className={`rounded-lg border p-5 text-left transition-colors ${
                   active
                     ? "border-accent bg-accent-muted/30 shadow-glow"
                     : "border-stroke bg-surface/40 hover:border-stroke-strong hover:bg-white/5"
                 }`}
                 onClick={() => setField("searchProvider", provider.key)}
               >
-                <div className="absolute inset-0 bg-gradient-to-br from-accent/0 via-accent/0 to-accent/0 opacity-0 transition-opacity duration-300 group-hover:from-accent/5 group-hover:opacity-100" />
-                <div className="relative z-10">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2">
-                      <Bot className={`h-5 w-5 ${active ? "text-accent" : "text-muted"}`} />
-                      <p className="font-display text-lg font-bold text-ink">{provider.label}</p>
-                    </div>
-                    {active ? <span className="rounded-full bg-accent px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-surface">已选中</span> : null}
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <Bot className={`h-5 w-5 ${active ? "text-accent" : "text-muted"}`} />
+                    <p className="font-display text-base font-bold text-ink">{provider.label}</p>
                   </div>
-                  <p className="mt-4 text-sm font-medium text-slate-200">{provider.summary}</p>
-                  <p className="mt-2 text-sm leading-6 text-muted">{provider.detail}</p>
+                  {active ? <span className="rounded-full bg-accent px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-surface">已选中</span> : null}
                 </div>
+                <p className="mt-4 text-sm font-medium text-slate-200">{provider.summary}</p>
+                <p className="mt-2 text-sm leading-6 text-muted">{provider.detail}</p>
               </button>
             );
           })}

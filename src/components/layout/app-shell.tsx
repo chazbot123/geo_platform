@@ -17,19 +17,16 @@ export function AppShell({ title, description, children }: { title: string; desc
   const pathname = usePathname();
 
   return (
-    <div className="min-h-screen p-4 sm:p-6 lg:p-8">
-      <div className="mx-auto grid max-w-[1400px] gap-8 lg:grid-cols-[280px_minmax(0,1fr)] items-start">
-        <aside className="glass-panel rounded-3xl p-4 sticky top-8">
-          <div className="mb-6 rounded-2xl border border-stroke-strong bg-surface/50 p-6 relative overflow-hidden group">
-            <div className="absolute inset-0 bg-accent/5 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
-            <div className="flex items-center gap-2 mb-4">
+    <div className="min-h-screen px-4 py-4 sm:px-6 lg:px-8">
+      <div className="mx-auto grid max-w-[1600px] gap-5 lg:grid-cols-[248px_minmax(0,1fr)] items-start">
+        <aside className="glass-panel sticky top-4 rounded-xl p-3">
+          <div className="mb-3 rounded-lg border border-stroke bg-surface/70 p-4">
+            <div className="flex items-center gap-2">
               <Activity className="h-4 w-4 text-accent" />
-              <p className="font-mono text-[10px] uppercase tracking-[0.3em] text-accent">System Active</p>
+              <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-accent">Local Active</p>
             </div>
-            <h1 className="font-display text-3xl font-medium tracking-tight text-ink">GEO<br/>Desktop</h1>
-            <p className="mt-4 text-xs leading-relaxed text-muted font-mono">
-              Local Publisher &<br/>Content Engine
-            </p>
+            <h1 className="mt-3 font-display text-2xl font-bold tracking-tight text-ink">GEO Desktop</h1>
+            <p className="mt-2 text-xs leading-relaxed text-muted">内容生成、账号管理和多平台发布控制台</p>
           </div>
           
           <nav className="space-y-1">
@@ -41,16 +38,16 @@ export function AppShell({ title, description, children }: { title: string; desc
                   key={item.href}
                   href={item.href === "/keywords/demo" ? "/" : item.href}
                   className={cn(
-                    "group flex items-center gap-3 rounded-xl px-4 py-3 text-sm font-medium transition-all duration-300 relative overflow-hidden",
+                    "group relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all duration-200",
                     active 
-                      ? "text-accent bg-accent-muted" 
-                      : "text-muted hover:text-ink hover:bg-surface"
+                      ? "bg-accent-muted text-accent" 
+                      : "text-muted hover:bg-surface hover:text-ink"
                   )}
                 >
                   {active && (
-                    <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-1/2 bg-accent rounded-r-full shadow-glow" />
+                    <span className="absolute left-0 top-1/2 h-5 -translate-y-1/2 rounded-r-full border-l-2 border-accent" />
                   )}
-                  <Icon className={cn("h-4 w-4 transition-transform duration-300", active ? "scale-110" : "group-hover:scale-110")} />
+                  <Icon className="h-4 w-4" />
                   <span className="relative z-10">{item.label}</span>
                 </Link>
               );
@@ -58,25 +55,24 @@ export function AppShell({ title, description, children }: { title: string; desc
           </nav>
         </aside>
 
-        <main className="glass-panel rounded-3xl p-6 lg:p-10 min-h-[calc(100vh-4rem)]">
-          <header className="mb-10 flex flex-col gap-6 border-b border-stroke pb-8 lg:flex-row lg:items-end lg:justify-between">
-            <div className="max-w-2xl">
-              <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-accent mb-3 flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-accent animate-pulse" />
-                执行控制台
+        <main className="glass-panel min-h-[calc(100vh-2rem)] rounded-xl p-5 lg:p-7">
+          <header className="mb-6 flex flex-col gap-4 border-b border-stroke pb-5 lg:flex-row lg:items-center lg:justify-between">
+            <div className="max-w-4xl">
+              <p className="mb-2 flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.16em] text-accent">
+                <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+                工作台
               </p>
-              <h2 className="font-display text-4xl lg:text-5xl font-medium tracking-tight text-ink">{title}</h2>
-              <p className="mt-4 text-sm leading-relaxed text-muted">{description}</p>
+              <h2 className="font-display text-3xl font-bold tracking-tight text-ink lg:text-4xl">{title}</h2>
+              <p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted">{description}</p>
             </div>
-            <div className="shrink-0 flex items-center gap-3 rounded-full border border-stroke-strong bg-surface/80 px-4 py-2 text-[11px] font-mono text-muted backdrop-blur-md">
-              <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-accent" />Local Mode</span>
-              <span className="w-px h-3 bg-stroke-strong" />
+            <div className="status-pill shrink-0 font-mono">
+              <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+              <span>Local Mode</span>
+              <span className="h-3 w-px bg-stroke-strong" />
               <span>v1.0.0-beta</span>
             </div>
           </header>
-          <div className="animate-in fade-in slide-in-from-bottom-4 duration-700 ease-out">
-            {children}
-          </div>
+          <div className="animate-in fade-in duration-300 ease-out">{children}</div>
         </main>
       </div>
     </div>

@@ -258,7 +258,15 @@ export interface PublishResult {
   errorMessage?: string;
 }
 
-export type SocialPlatform = "toutiao";
+export type SocialPlatform =
+  | "toutiao"
+  | "baijiahao"
+  | "douyin"
+  | "wechat"
+  | "videohao"
+  | "zhihu"
+  | "weibo"
+  | "csdn";
 
 export type PublishPlatform = SocialPlatform;
 export type LegacyPublishPlatform = PublishPlatform;
@@ -328,10 +336,35 @@ export interface PublishingDraft {
   updatedAt: string;
 }
 
+export interface AccountPublishingDraft {
+  id: string;
+  taskId: string;
+  platform: SocialPlatform;
+  accountId: string;
+  accountName?: string;
+  searchProvider: SearchProvider;
+  sourceContentTaskId?: string;
+  sourceTheme?: string;
+  title: string;
+  body: string;
+  tags: string[];
+  coverImageUrl?: string;
+  imageUrls: string[];
+  localImagePaths: string[];
+  publishMode?: "text_only" | "with_images";
+  publishEntryUrl?: string;
+  styleProfile?: string;
+  contentLengthProfile?: string;
+  updatedAt: string;
+}
+
 export interface PublishingJobRecord {
   id: string;
   taskId: string;
   platform: LegacyPublishPlatform;
+  accountPublishingDraftId?: string;
+  sourceSearchProvider?: SearchProvider;
+  automationStatus?: "ready" | "manual_only" | "planned";
   accountId?: string;
   accountName?: string;
   executionMode: LegacyPublishingExecutionMode;
@@ -481,6 +514,7 @@ export interface PublishWorkbenchData {
   image?: ImageAsset;
   publish?: PublishResult;
   drafts: PublishingDraft[];
+  accountDrafts?: AccountPublishingDraft[];
   accounts: PlatformAccountRecord[];
   jobs: PublishingJobRecord[];
 }

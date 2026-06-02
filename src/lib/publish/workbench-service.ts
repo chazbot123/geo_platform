@@ -8,6 +8,7 @@ import {
   savePublishingDraft,
 } from "@/lib/storage/data-store";
 import { listAuthenticatedPlatformAccounts } from "@/lib/publish/accounts-service";
+import { ensureAccountPublishingDrafts } from "@/lib/publish/publish-orchestrator";
 import { normalizeToutiaoTitle } from "@/lib/publish/toutiao-title";
 import { getTaskBundle, listTaskBundles } from "@/lib/tasks/service";
 import { getPlatformDescriptor, publishPlatformDescriptors } from "@/lib/publish/platforms";
@@ -305,6 +306,7 @@ export async function getWorkbenchData(taskId: string): Promise<PublishWorkbench
     listAuthenticatedPlatformAccounts(),
     getPublishingJobsByTask(taskId),
   ]);
+  const accountDrafts = await ensureAccountPublishingDrafts(bundle);
   const normalizedDrafts = await ensureDraftAccountBindings(drafts, accounts);
   const visibleJobs = jobs.filter((job) => publishPlatformDescriptors.some((item) => item.key === job.platform));
 
@@ -316,6 +318,7 @@ export async function getWorkbenchData(taskId: string): Promise<PublishWorkbench
     image: bundle.image,
     publish: bundle.publish,
     drafts: normalizedDrafts,
+    accountDrafts,
     accounts,
     jobs: visibleJobs.sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime()),
   };

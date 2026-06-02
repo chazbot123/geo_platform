@@ -1,14 +1,15 @@
 import { NextResponse } from "next/server";
 import { createPlatformAccount, getAllPlatformAccounts, getPublishedJobsByAccount } from "@/lib/publish/accounts-service";
+import { getSocialPlatformDescriptor } from "@/lib/publish/platforms";
 import type { SocialPlatform } from "@/lib/types";
 
 export async function GET() {
   const [items, publishedByAccount] = await Promise.all([
     getAllPlatformAccounts(),
-    getPublishedJobsByAccount("toutiao"),
+    getPublishedJobsByAccount(),
   ]);
   return NextResponse.json({
-    items: items.filter((item) => item.platform === "toutiao"),
+    items,
     publishedByAccount,
   });
 }
@@ -26,8 +27,9 @@ export async function POST(request: Request) {
     if (!platform || !accountName?.trim()) {
       return NextResponse.json({ error: "缺少平台或账号名称。" }, { status: 400 });
     }
-    if (platform !== "toutiao") {
-      return NextResponse.json({ error: "当前账号中心仅支持今日头条账号。" }, { status: 400 });
+    const descriptor = getSocialPlatformDescriptor(platform);
+    if (!descriptor) {
+      return NextResponse.json({ error: "不支持的平台。" }, { status: 400 });
     }
 
     const account = await createPlatformAccount({
@@ -35,7 +37,9 @@ export async function POST(request: Request) {
       accountName,
       displayName,
       remark,
-      loginUrl,
+      loginUrl: loginUrl ?? descriptor.publishEntryUrl,
+      loginStatus: descriptor.loginSupported ? "idle" : "authenticated",
+      status: descriptor.loginSupported ? "saved" : "valid",
     });
     return NextResponse.json({ account });
   } catch (error) {

@@ -7,7 +7,7 @@ export const electronBrowserPublisher: PlatformPublisher = {
   async publish({ account, draft, job, timeoutMs }) {
     return runPlatformPublishWindow({
       platform: draft.platform,
-      title: "今日头条发布",
+      title: `${draft.platform}发布`,
       publishUrl: draft.publishEntryUrl,
       sessionPartition: account.sessionPartition,
       sessionToken: job.sessionToken,
