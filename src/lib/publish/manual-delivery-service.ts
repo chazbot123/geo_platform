@@ -27,11 +27,13 @@ export function buildManualDeliveryPayload(draft: PublishingDraft, account?: Pla
 }
 
 export function buildManualDeliveryNotes(job: PublishingJobRecord) {
+  const descriptor = getPlatformDescriptor(job.platform);
+  const platformLabel = descriptor?.label ?? job.platform;
   return [
-    "平台：今日头条",
+    `平台：${platformLabel}`,
     job.accountName ? `账号：${job.accountName}` : "",
     job.publishEntryUrl ? `入口：${job.publishEntryUrl}` : "",
-    "已创建今日头条图文发布任务；系统只会在收到明确成功反馈或人工回录后记为成功。",
+    `已创建${platformLabel}发布任务；系统只会在收到明确成功反馈或人工回录后记为成功。`,
     "若平台已经收稿，但系统未能自动确认，可回到工作台手动补录结果。",
   ]
     .filter(Boolean)

@@ -9,10 +9,11 @@ import {
 } from "@/lib/storage/data-store";
 import { listAuthenticatedPlatformAccounts } from "@/lib/publish/accounts-service";
 import { ensureAccountPublishingDrafts } from "@/lib/publish/publish-orchestrator";
+import { getPlatformsBySearchProvider } from "@/lib/publish/provider-platform-matrix";
 import { normalizeToutiaoTitle } from "@/lib/publish/toutiao-title";
 import { getTaskBundle, listTaskBundles } from "@/lib/tasks/service";
 import { getPlatformDescriptor, publishPlatformDescriptors } from "@/lib/publish/platforms";
-import type { PlatformAccountRecord, PublishWorkbenchData, PublishingDraft, TaskBundle } from "@/lib/types";
+import type { PlatformAccountRecord, PublishWorkbenchData, PublishingDraft, SocialPlatform, TaskBundle } from "@/lib/types";
 
 function now() {
   return new Date().toISOString();
@@ -33,23 +34,63 @@ function extractTags(text: string) {
   ).slice(0, 8);
 }
 
-function buildToutiaoTitle(bundle: TaskBundle) {
+function platformTitlePrefix(platform: SocialPlatform) {
+  return getPlatformDescriptor(platform)?.label ?? platform;
+}
+
+function buildSourceBody(bundle: TaskBundle) {
+  const content = bundle.content;
+  const structured: string[] = [];
+
+  const introduction = (content?.reportIntroduction ?? "").trim();
+  if (introduction) {
+    structured.push(introduction);
+  }
+  for (const section of content?.reportSections ?? []) {
+    const body = (section?.body ?? "").trim();
+    if (body) {
+      structured.push(body);
+    }
+  }
+  const conclusion = (content?.reportConclusion ?? "").trim();
+  if (conclusion) {
+    structured.push(conclusion);
+  }
+
+  return structured.length > 0
+    ? structured.join("\n\n")
+    : [compactText(content?.summary ?? ""), (content?.content ?? "").trim()].filter(Boolean).join("\n\n");
+}
+
+function buildDraftTitle(bundle: TaskBundle, platform: SocialPlatform) {
   const productName = compactText(bundle.product.productName);
   const keyword = compactText(bundle.theme?.selectedKeywordTheme ?? bundle.theme?.selectedKeyword ?? bundle.theme?.mainKeyword ?? productName);
+  const sourceTitle = bundle.content?.title?.trim();
+  const platformLabel = platformTitlePrefix(platform);
+
+  if (platform === "weibo") {
+    return `${keyword || productName}，怎么判断更靠谱？`;
+  }
+  if (platform === "douyin" || platform === "videohao") {
+    return `${keyword || productName}，先看这几个判断点`;
+  }
+
   const titleCandidates = [
-    bundle.content?.title?.trim(),
+    sourceTitle ? (platform === "toutiao" ? sourceTitle : `${sourceTitle}｜${platformLabel}`) : "",
     `${keyword}：${productName}${bundle.product.category}分析报告`,
-    `${productName}${bundle.product.category}怎么选`,
-    `${productName}值不值得进一步了解`,
+    platform === "zhihu"
+      ? `${keyword || productName}怎么判断更合适？`
+      : `${productName}${bundle.product.category}怎么选`,
+    `${productName}${platform === "wechat" ? "实用拆解" : "值不值得进一步了解"}`,
   ].filter((item): item is string => Boolean(item));
 
   for (const candidate of titleCandidates) {
-    const next = normalizeToutiaoTitle(candidate, `${productName}分析报告`);
-    if (!next) continue;
+    const next = platform === "toutiao" ? normalizeToutiaoTitle(candidate, `${productName}分析报告`) : candidate;
+    if (!next?.trim()) continue;
     return next;
   }
 
-  return normalizeToutiaoTitle(`${productName}分析报告`);
+  return platform === "toutiao" ? normalizeToutiaoTitle(`${productName}分析报告`) : `${productName}｜${platformLabel}`;
 }
 
 function splitIntoParagraphs(value: string) {
@@ -84,39 +125,36 @@ function splitIntoParagraphs(value: string) {
   return paragraphs;
 }
 
-function buildToutiaoBody(bundle: TaskBundle) {
-  const content = bundle.content;
-  const structured: string[] = [];
-
-  const introduction = (content?.reportIntroduction ?? "").trim();
-  if (introduction) {
-    structured.push(introduction);
+function trimForPlatform(body: string, platform: SocialPlatform) {
+  const normalized = body.trim();
+  if (!normalized) {
+    return "";
   }
-  for (const section of content?.reportSections ?? []) {
-    const body = (section?.body ?? "").trim();
-    if (body) {
-      structured.push(body);
-    }
+  if (platform === "weibo") {
+    return normalized.replace(/\s+/g, " ").slice(0, 480);
   }
-  const conclusion = (content?.reportConclusion ?? "").trim();
-  if (conclusion) {
-    structured.push(conclusion);
+  if (platform === "douyin" || platform === "videohao") {
+    return normalized
+      .split(/\n+/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .slice(0, 8)
+      .join("\n");
   }
-
-  const source =
-    structured.length > 0
-      ? structured.join("\n\n")
-      : [compactText(content?.summary ?? ""), (content?.content ?? "").trim()].filter(Boolean).join("\n\n");
-
-  return splitIntoParagraphs(source).join("\n\n");
+  if (platform === "csdn") {
+    return `## 背景\n\n${normalized}\n\n## 方法建议\n\n请结合实际业务场景补充可验证资料、执行步骤和边界条件。`;
+  }
+  if (platform === "zhihu") {
+    return `先给结论：这个问题需要从场景、判断标准和风险边界一起看。\n\n${normalized}`;
+  }
+  if (platform === "toutiao") {
+    return splitIntoParagraphs(normalized).join("\n\n");
+  }
+  return normalized;
 }
 
-function buildDraftTitle(bundle: TaskBundle) {
-  return buildToutiaoTitle(bundle);
-}
-
-function buildDraftBody(bundle: TaskBundle) {
-  return buildToutiaoBody(bundle);
+function buildDraftBody(bundle: TaskBundle, platform: SocialPlatform) {
+  return trimForPlatform(buildSourceBody(bundle), platform);
 }
 
 function getDraftImages(bundle: TaskBundle) {
@@ -143,10 +181,10 @@ function getDraftCoverImage(bundle: TaskBundle) {
   return bundle.image?.url;
 }
 
-function buildDraft(bundle: TaskBundle): PublishingDraft {
-  const descriptor = getPlatformDescriptor("toutiao");
-  const title = buildDraftTitle(bundle);
-  const body = buildDraftBody(bundle);
+function buildDraft(bundle: TaskBundle, platform: SocialPlatform): PublishingDraft {
+  const descriptor = getPlatformDescriptor(platform);
+  const title = buildDraftTitle(bundle, platform);
+  const body = buildDraftBody(bundle, platform);
   const tags = extractTags(
     [
       bundle.theme?.selectedKeywordTheme,
@@ -166,7 +204,7 @@ function buildDraft(bundle: TaskBundle): PublishingDraft {
   return {
     id: createRecordId(),
     taskId: bundle.task.id,
-    platform: "toutiao",
+    platform,
     title,
     body,
     tags,
@@ -179,71 +217,80 @@ function buildDraft(bundle: TaskBundle): PublishingDraft {
   };
 }
 
-function shouldRefreshToutiaoDraft(draft: PublishingDraft, bundle: TaskBundle) {
+function shouldRefreshDraft(draft: PublishingDraft, bundle: TaskBundle, platform: SocialPlatform) {
   const legacyTitle = bundle.content?.title ?? `${bundle.product.productName} 发布草稿`;
   const legacyBody = bundle.content?.content?.trim() ?? "";
-  const nextTitle = buildDraftTitle(bundle);
-  const nextBody = buildDraftBody(bundle);
+  const nextCandidate = buildDraft(bundle, platform);
   const nextTags = extractTags(
     [bundle.theme?.selectedKeywordTheme, ...(bundle.theme?.selectedKeywords ?? []), bundle.product.category, bundle.product.brandTone]
       .filter(Boolean)
       .join(" "),
   );
-  const nextImages = getDraftImages(bundle);
-  const nextLocalImagePaths = getDraftLocalImagePaths(bundle);
   const currentLocalImagePaths = draft.localImagePaths ?? [];
-  const expectedPublishMode = nextImages.length > 0 ? "with_images" : "text_only";
 
   return (
     draft.title === legacyTitle ||
     draft.body === legacyBody ||
     (!draft.title.trim() && !draft.body.trim()) ||
-    draft.title !== nextTitle ||
-    draft.body !== nextBody ||
+    draft.title !== nextCandidate.title ||
+    draft.body !== nextCandidate.body ||
     nextTags.join("|") !== draft.tags.join("|") ||
-    nextImages.join("|") !== draft.imageUrls.join("|") ||
-    nextLocalImagePaths.join("|") !== currentLocalImagePaths.join("|") ||
-    draft.publishMode !== expectedPublishMode
+    nextCandidate.imageUrls.join("|") !== draft.imageUrls.join("|") ||
+    nextCandidate.localImagePaths.join("|") !== currentLocalImagePaths.join("|") ||
+    draft.publishMode !== nextCandidate.publishMode ||
+    draft.publishEntryUrl !== nextCandidate.publishEntryUrl
   );
 }
 
+function dedupeDraftsByPlatform(drafts: PublishingDraft[], platforms: SocialPlatform[]) {
+  const latestDraftByPlatform = new Map<SocialPlatform, PublishingDraft>();
+  for (const draft of drafts) {
+    if (!platforms.includes(draft.platform as SocialPlatform)) {
+      continue;
+    }
+    const platform = draft.platform as SocialPlatform;
+    const current = latestDraftByPlatform.get(platform);
+    if (!current || new Date(draft.updatedAt).getTime() > new Date(current.updatedAt).getTime()) {
+      latestDraftByPlatform.set(platform, draft);
+    }
+  }
+  return latestDraftByPlatform;
+}
+
 async function ensureTaskDrafts(bundle: TaskBundle) {
+  const searchProvider = bundle.task.searchProvider ?? bundle.theme?.searchProvider;
+  const targetPlatforms = getPlatformsBySearchProvider(searchProvider);
   const existingDrafts = await getPublishingDraftsByTask(bundle.task.id);
-  if (existingDrafts.length > 0) {
-    const normalizedDrafts = await Promise.all(
-      existingDrafts.map(async (draft) => {
-        if (!shouldRefreshToutiaoDraft(draft, bundle)) {
-          return draft;
-        }
+  const latestDraftByPlatform = dedupeDraftsByPlatform(existingDrafts, targetPlatforms);
+  const normalizedDrafts: PublishingDraft[] = [];
 
-        const refreshedDraft: PublishingDraft = {
-          ...draft,
-          title: buildDraftTitle(bundle),
-          body: buildDraftBody(bundle),
-          tags: extractTags(
-            [bundle.theme?.selectedKeywordTheme, ...(bundle.theme?.selectedKeywords ?? []), bundle.product.category, bundle.product.brandTone]
-              .filter(Boolean)
-              .join(" "),
-          ),
-          coverImageUrl: getDraftCoverImage(bundle),
-          imageUrls: getDraftImages(bundle),
-          localImagePaths: getDraftLocalImagePaths(bundle),
-          publishMode: getDraftImages(bundle).length > 0 ? "with_images" : "text_only",
-          updatedAt: now(),
-        };
-        await savePublishingDraft(refreshedDraft);
-        return refreshedDraft;
-      }),
-    );
+  for (const platform of targetPlatforms) {
+    const existing = latestDraftByPlatform.get(platform);
+    if (!existing) {
+      const createdDraft = await savePublishingDraft(buildDraft(bundle, platform));
+      normalizedDrafts.push(createdDraft);
+      continue;
+    }
 
-    return normalizedDrafts
-      .filter((draft) => publishPlatformDescriptors.some((item) => item.key === draft.platform))
-      .sort((left, right) => left.platform.localeCompare(right.platform));
+    if (!shouldRefreshDraft(existing, bundle, platform)) {
+      normalizedDrafts.push(existing);
+      continue;
+    }
+
+    const candidate = buildDraft(bundle, platform);
+    const refreshedDraft: PublishingDraft = {
+      ...existing,
+      ...candidate,
+      id: existing.id,
+      accountId: existing.accountId,
+      accountIds: existing.accountIds,
+      updatedAt: now(),
+    };
+    await savePublishingDraft(refreshedDraft);
+    normalizedDrafts.push(refreshedDraft);
   }
 
-  const drafts = publishPlatformDescriptors.map(() => buildDraft(bundle));
-  await Promise.all(drafts.map((draft) => savePublishingDraft(draft)));
-  return drafts;
+  return normalizedDrafts.sort((left, right) => targetPlatforms.indexOf(left.platform as SocialPlatform) - targetPlatforms.indexOf(right.platform as SocialPlatform));
 }
 
 async function ensureDraftAccountBindings(drafts: PublishingDraft[], accounts: PlatformAccountRecord[]) {

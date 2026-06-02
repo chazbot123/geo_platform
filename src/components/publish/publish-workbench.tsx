@@ -70,7 +70,7 @@ function buildWorkbenchPreflight(data: PublishWorkbenchData | null, bridgeAvaila
   const isBridgeReady = bridgeAvailability.mode === "electron_bridge" || bridgeAvailability.mode === "local_bridge";
 
   if (!isBridgeReady) {
-    issues.push("当前未连接 GEO 桌面版，暂时无法复核发布账号的真实登录态，也不能真正执行今日头条自动发布。");
+    issues.push("当前未连接 GEO 桌面版，暂时无法复核发布账号的真实登录态，也不能真正执行平台自动发布。");
   }
 
   if (!data) {
@@ -79,7 +79,7 @@ function buildWorkbenchPreflight(data: PublishWorkbenchData | null, bridgeAvaila
 
   const imageCount = data.image?.images?.length ?? (data.image?.url ? 1 : 0);
   if (imageCount === 0) {
-    hints.push("当前任务没有图片也可以发布，系统会按纯文章模式执行今日头条发布。");
+    hints.push("当前任务没有图片也可以发布，系统会按纯文章模式执行对应平台发布。");
   }
 
   for (const draft of data.drafts) {
@@ -511,7 +511,7 @@ export function PublishWorkbench({
   async function createJobs() {
     if (!selectedTaskId || selectedDraftIds.length === 0) return;
     if (!isBridgeReady) {
-      setMessage(bridgeAvailability.reason ?? "当前未检测到可用桌面桥，请先启动 GEO 桌面版后再创建今日头条发布任务。");
+      setMessage(bridgeAvailability.reason ?? "当前未检测到可用桌面桥，请先启动 GEO 桌面版后再创建平台草稿发布任务。");
       return;
     }
     setLoading(true);
@@ -554,7 +554,7 @@ export function PublishWorkbench({
   async function createAccountDraftJobs() {
     if (!selectedTaskId || selectedAccountDraftIds.length === 0) return;
     if (!isBridgeReady) {
-      setMessage(bridgeAvailability.reason ?? "当前未检测到可用桌面桥，请先启动 GEO 桌面版后再创建账号级自动发布任务。");
+      setMessage(bridgeAvailability.reason ?? "当前未检测到可用桌面桥，请先启动 GEO 桌面版后再按账号变体创建发布任务。");
       return;
     }
     setLoading(true);
@@ -850,7 +850,7 @@ export function PublishWorkbench({
           <div className="flex items-start justify-between gap-4">
             <div>
               <h2 className="page-section-title">任务选择</h2>
-              <p className="page-section-desc">选择已生成内容的任务，系统会加载平台组合、账号级发布稿和发布记录。</p>
+              <p className="page-section-desc">选择已生成内容的任务，系统会加载平台草稿、账号级发布稿和发布记录。</p>
             </div>
             {currentTask ? (
               <span className={`rounded-full px-3 py-1 text-xs font-medium ${taskStatusTone(currentTask.status)}`}>{currentTask.status}</span>
@@ -898,7 +898,7 @@ export function PublishWorkbench({
                   <p className={`mt-2 text-sm font-semibold ${isBridgeReady ? "text-emerald-300" : "text-warning"}`}>{bridgeAvailability.label}</p>
                   <p className="mt-1 text-xs leading-relaxed text-slate-300">
                     {bridgeAvailability.mode === "electron_bridge"
-                      ? "当前宿主已连接 Electron 注入桥，可直接执行头条自动发布。"
+                      ? "当前宿主已连接 Electron 注入桥，可直接执行平台自动发布。"
                       : bridgeAvailability.mode === "local_bridge"
                         ? "当前页面运行在浏览器中，但已连接本机 localhost 桌面桥。"
                         : "当前未连接 GEO 桌面版，只能查看草稿和发布记录。"}
@@ -918,7 +918,7 @@ export function PublishWorkbench({
             <div>
               <h2 className="page-section-title">发布动作</h2>
               <p className="page-section-desc max-w-2xl">
-                账号级发布任务用于百家号、抖音和后续平台；下方旧平台草稿保留今日头条兼容链路。
+                平台草稿是当前主编辑与主发布入口；账号级发布稿保留为账号变体参考与独立任务入口。
               </p>
             </div>
             <div className="status-pill">
@@ -931,7 +931,7 @@ export function PublishWorkbench({
               <p className={`mt-2 text-sm font-semibold ${isBridgeReady ? "text-emerald-300" : "text-warning"}`}>{bridgeAvailability.label}</p>
               <p className="mt-2 text-xs leading-relaxed text-slate-300">
                 {bridgeAvailability.mode === "electron_bridge"
-                  ? "当前宿主已连接 Electron 注入桥，可以直接执行今日头条自动发布。"
+                  ? "当前宿主已连接 Electron 注入桥，可以直接执行平台自动发布。"
                   : bridgeAvailability.mode === "local_bridge"
                     ? "当前页面运行在浏览器中，但已连接本机 localhost 桌面桥；创建任务后会由后台运行的 GEO 桌面版执行自动发布。"
                     : "当前未检测到可用桌面桥，只能查看草稿和发布记录；请先启动 GEO 桌面版。"}
@@ -969,7 +969,7 @@ export function PublishWorkbench({
               onClick={createJobs}
             >
               {loading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <FileUp className="h-4 w-4" />}
-              创建今日头条发布任务
+              创建平台草稿发布任务
             </button>
             <button
               className="flex items-center justify-center gap-2 rounded-lg border border-accent/30 bg-accent-muted/30 px-5 py-3.5 text-sm font-bold text-accent-soft transition-all hover:bg-accent hover:text-surface disabled:opacity-50"
@@ -977,7 +977,7 @@ export function PublishWorkbench({
               onClick={createAccountDraftJobs}
             >
               {loading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <FileUp className="h-4 w-4" />}
-              创建账号级自动发布任务
+              按账号变体创建发布任务
             </button>
             <button 
               className="flex items-center justify-center gap-2 rounded-lg border border-danger/20 bg-danger/10 px-5 py-3.5 text-sm font-bold text-danger transition-all hover:bg-danger/20 disabled:opacity-50" 
@@ -1003,7 +1003,7 @@ export function PublishWorkbench({
               <div>
                 <h2 className="page-section-title">账号级发布稿</h2>
                 <p className="page-section-desc">
-                  这里展示板块映射后的平台账号稿。每个账号对应一篇独立稿，当前先作为多平台发布可见流程，头条自动发布仍使用下方平台草稿。
+                  这里展示板块映射后的平台账号稿。每个账号对应一篇独立稿，当前作为账号变体参考区，也可单独创建账号级发布任务。
                 </p>
               </div>
               <span className="status-pill text-accent-soft">
@@ -1092,7 +1092,7 @@ export function PublishWorkbench({
           <div className="section-card">
             <div className="mb-5">
               <h2 className="page-section-title">平台草稿</h2>
-              <p className="page-section-desc">兼容旧的今日头条平台草稿编辑和自动发布链路。</p>
+              <p className="page-section-desc">这里按当前板块映射展示多平台草稿；每个平台一张草稿卡，可独立编辑内容并绑定一个或多个发布账号。</p>
             </div>
             <div className="grid gap-5">
               {(data?.drafts ?? []).map((draft) => {
@@ -1274,7 +1274,7 @@ export function PublishWorkbench({
               <div className="flex items-start justify-between gap-4">
                 <div>
                 <h2 className="page-section-title">发布预览</h2>
-                <p className="page-section-desc">这里展示本次会送入头条自动化链路的内容摘要。图片与正文将组装为富文本进行混排发布。</p>
+                <p className="page-section-desc">这里展示本次会送入平台发布链路的内容摘要。图片与正文会按平台能力组装后提交。</p>
               </div>
               <div className="status-pill text-accent-soft">
                 仅预览，不可编辑

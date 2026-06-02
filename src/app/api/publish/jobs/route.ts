@@ -118,14 +118,15 @@ export async function POST(request: Request) {
       }
 
       if (!job.accountId) {
+        const platformLabel = descriptor.label;
         const errorMessage =
           authenticatedCount === 0
             ? platformAccountCount > 0
-              ? "当前平台已有账号记录，但真实登录态已失效，请先到账号中心重新登录。"
-              : "当前平台还没有任何可发布账号，请先到账号中心完成登录。"
+              ? `当前${platformLabel}已有账号记录，但真实登录态已失效，请先到账号中心重新登录。`
+              : `当前${platformLabel}还没有任何可发布账号，请先到账号中心完成登录。`
             : authenticatedCount > 1
-              ? "当前平台存在多个已登录账号，请先在平台草稿中明确选择一个账号。"
-              : "今日头条自动发布需要先为平台草稿绑定唯一的已登录账号；若草稿原绑定账号已失效，系统会要求重新确认。";
+              ? `当前${platformLabel}存在多个已登录账号，请先在平台草稿中明确选择一个账号。`
+              : `${platformLabel}自动发布需要先为平台草稿绑定唯一的已登录账号；若草稿原绑定账号已失效，系统会要求重新确认。`;
         jobs.push(
           await recordPublishingJobResult({
             jobId: job.id,
