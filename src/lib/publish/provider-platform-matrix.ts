@@ -14,8 +14,10 @@ export const providerPublishMatrix: Record<SearchProvider, ProviderPublishBundle
   },
   yuanbao: {
     searchProvider: "yuanbao",
-    label: "元宝",
-    platforms: ["videohao", "wechat"],
+    // Consumer app Yuanbao is not a stable API target.
+    // API-backed generation uses Tencent Hunyuan (tencent-hunyuan provider profile).
+    label: "元宝（混元）",
+    platforms: ["wechat", "videohao"],
   },
   tongyi: {
     searchProvider: "tongyi",

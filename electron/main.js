@@ -6,15 +6,18 @@ const path = require("node:path");
 const { createLocalBridge } = require("./local-bridge");
 
 const isDev = !app.isPackaged;
-const DEV_SERVER_URL = "http://localhost:3000";
+const DEV_SERVER_URL = process.env.GEO_DEV_SERVER_URL || "http://localhost:3000";
 const PROD_SERVER_URL = "http://127.0.0.1:3131";
 let mainWindow;
 let server;
 let localBridge;
 const preloadPath = path.join(__dirname, "preload.js");
 const automationDirectory = path.join(__dirname, "publish-automation");
+const automationHelperFile = path.join(automationDirectory, "dom-helpers.js");
 const publishProgressSessions = new Map();
 const PUBLISH_PROGRESS_TTL_MS = 10 * 60 * 1000;
+const AUTOMATION_SUCCESS_STATUSES = new Set(["published", "submitted", "verifying", "pending_review", "verification_failed"]);
+const AUTOMATION_TERMINAL_STATUSES = new Set([...AUTOMATION_SUCCESS_STATUSES, "failed", "unsupported"]);
 
 const STAGE_LABELS = {
   init: "准备启动",
@@ -284,25 +287,55 @@ function getPlatformSessionSpec(platform, publishUrl) {
       return {
         publishUrl: publishUrl || "https://mp.toutiao.com/profile_v4/graphic/publish",
         loginUrlHints: ["/auth/page/login", "/login", "passport", "signin", "sso"],
-        loginTextHints: ["登录", "验证码登录", "扫码登录", "请先登录", "立即登录"],
+        loginTextHints: ["验证码登录", "扫码登录", "请先登录", "立即登录"],
       };
     case "baijiahao":
       return {
         publishUrl: publishUrl || "https://baijiahao.baidu.com/builder/rc/edit?type=news",
         loginUrlHints: ["/login", "passport", "signin", "sso", "cas.baidu.com"],
-        loginTextHints: ["登录", "扫码登录", "请先登录", "百度账号登录", "立即登录"],
+        loginTextHints: ["扫码登录", "请先登录", "百度账号登录", "立即登录"],
       };
     case "douyin":
       return {
         publishUrl: publishUrl || "https://creator.douyin.com/creator-micro/content/upload",
         loginUrlHints: ["/login", "passport", "signin", "sso"],
-        loginTextHints: ["登录", "扫码登录", "请先登录", "验证码登录", "抖音创作者服务中心"],
+        loginTextHints: ["扫码登录", "请先登录", "验证码登录"],
+      };
+    case "wechat":
+      return {
+        publishUrl: publishUrl || "https://mp.weixin.qq.com/cgi-bin/appmsg?t=media/appmsg_edit&action=edit&type=10",
+        loginUrlHints: ["/cgi-bin/bizlogin", "/cgi-bin/loginpage", "login.weixin.qq.com", "open.weixin.qq.com/connect/qrconnect"],
+        loginTextHints: ["请使用微信扫码登录", "扫码登录", "微信扫一扫", "账号密码登录", "登录公众平台"],
+      };
+    case "videohao":
+      return {
+        publishUrl: publishUrl || "https://channels.weixin.qq.com/platform/post/create",
+        loginUrlHints: ["login.weixin.qq.com", "open.weixin.qq.com/connect/qrconnect", "/login"],
+        loginTextHints: ["请使用微信扫码登录", "扫码登录", "微信扫一扫"],
+      };
+    case "zhihu":
+      return {
+        publishUrl: publishUrl || "https://zhuanlan.zhihu.com/write",
+        loginUrlHints: ["/signin", "/login", "passport", "oauth"],
+        loginTextHints: ["扫码登录", "密码登录", "验证码登录"],
+      };
+    case "weibo":
+      return {
+        publishUrl: publishUrl || "https://weibo.com/",
+        loginUrlHints: ["/login", "/newlogin", "passport", "sina.com.cn/signup", "signin"],
+        loginTextHints: ["扫码登录", "账号登录", "请输入手机号", "请输入密码", "验证码登录"],
+      };
+    case "csdn":
+      return {
+        publishUrl: publishUrl || "https://editor.csdn.net/md/",
+        loginUrlHints: ["/login", "passport", "sso", "signin"],
+        loginTextHints: ["扫码登录", "账号密码登录", "请输入手机号", "验证码登录"],
       };
     default:
       return {
         publishUrl: publishUrl || "",
         loginUrlHints: ["/login", "passport", "signin"],
-        loginTextHints: ["登录", "扫码登录", "请先登录"],
+        loginTextHints: ["扫码登录", "请先登录"],
       };
   }
 }
@@ -345,12 +378,36 @@ async function inspectPlatformSession(input = {}) {
         const pageText = String(document.body?.innerText || document.body?.textContent || "").replace(/\\s+/g, " ").trim();
         const loginUrlHints = ${JSON.stringify(spec.loginUrlHints)};
         const loginTextHints = ${JSON.stringify(spec.loginTextHints)};
-        const matchedUrlHint = loginUrlHints.find((hint) => currentUrl.includes(hint)) || "";
-        const matchedTextHint = loginTextHints.find((hint) => pageText.includes(hint)) || "";
+        const lowerUrl = currentUrl.toLowerCase();
+        const matchedUrlHint = loginUrlHints.find((hint) => lowerUrl.includes(String(hint).toLowerCase())) || "";
+        const visibleControls = Array.from(document.querySelectorAll("input, textarea, button, [role='button'], a"))
+          .filter((element) => {
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
+          });
+        const hasLoginInput = visibleControls.some((element) => {
+          const text = [
+            element.getAttribute("placeholder"),
+            element.getAttribute("aria-label"),
+            element.getAttribute("name"),
+            element.getAttribute("type"),
+            element.textContent,
+          ].filter(Boolean).join(" ");
+          return /手机号|手机|验证码|密码|账号|email|e-mail|password|tel|login|signin/i.test(text);
+        });
+        const hasLoginAction = visibleControls.some((element) => {
+          const text = String(element.textContent || element.getAttribute("aria-label") || "").replace(/\\s+/g, "");
+          return /扫码登录|账号登录|密码登录|验证码登录|立即登录|请先登录|登录公众平台|百度账号登录/.test(text);
+        });
+        const hasLoginFormSignal = Boolean(matchedUrlHint || hasLoginInput || hasLoginAction);
+        const matchedTextHint = hasLoginFormSignal ? (loginTextHints.find((hint) => pageText.includes(hint)) || "") : "";
         return {
           currentUrl,
           matchedUrlHint,
           matchedTextHint,
+          hasLoginInput,
+          hasLoginAction,
           pageTextSample: pageText.slice(0, 240),
         };
       })()`,
@@ -421,6 +478,8 @@ function resolveAutomationFile(platform) {
       return path.join(automationDirectory, "baijiahao.js");
     case "douyin":
       return path.join(automationDirectory, "douyin.js");
+    case "wechat":
+      return path.join(automationDirectory, "wechat.js");
     default:
       return "";
   }
@@ -518,8 +577,54 @@ async function waitForWindowStable(windowInstance) {
 }
 
 async function executeAutomation(windowInstance, filePath, payload) {
+  const helperSource = fs.readFileSync(automationHelperFile, "utf8");
   const source = fs.readFileSync(filePath, "utf8");
-  return windowInstance.webContents.executeJavaScript(`(${source})(${JSON.stringify(payload)})`, true);
+  return windowInstance.webContents.executeJavaScript(
+    `(async () => {
+      ${helperSource}
+      return (${source})(${JSON.stringify(payload)});
+    })()`,
+    true,
+  );
+}
+
+function normalizeAutomationResult(rawResult, fallback = {}) {
+  const result = rawResult && typeof rawResult === "object" ? rawResult : {};
+  const rawStatus = typeof result.status === "string" ? result.status.trim() : "";
+  const status = AUTOMATION_TERMINAL_STATUSES.has(rawStatus) ? rawStatus : "failed";
+  const failureStage =
+    typeof result.failureStage === "string" && result.failureStage.trim()
+      ? result.failureStage.trim()
+      : status === "failed"
+        ? fallback.failureStage || "invalid_automation_result"
+        : undefined;
+  const errorMessage =
+    typeof result.errorMessage === "string" && result.errorMessage.trim()
+      ? result.errorMessage
+      : status === "failed"
+        ? fallback.errorMessage || "自动化脚本没有返回有效的发布结果。"
+        : undefined;
+  const executionLog = Array.isArray(result.executionLog) ? result.executionLog.map((item) => String(item || "")).filter(Boolean) : [];
+  const verificationEvidence =
+    typeof result.verificationEvidence === "string" && result.verificationEvidence.trim()
+      ? result.verificationEvidence
+      : status === "failed" && failureStage
+        ? `failed_at_${failureStage}`
+        : undefined;
+
+  return {
+    status,
+    draftUrl: result.draftUrl,
+    publishUrl: result.publishUrl ?? result.draftUrl,
+    verificationUrl: result.verificationUrl,
+    externalStatus: result.externalStatus,
+    executionLog,
+    verificationEvidence,
+    verificationAttempts: result.verificationAttempts,
+    platformItemId: result.platformItemId,
+    failureStage,
+    errorMessage,
+  };
 }
 
 async function runPlatformPublish(input = {}) {
@@ -544,6 +649,7 @@ async function runPlatformPublish(input = {}) {
       errorMessage: "当前平台缺少可执行的桌面发布器。",
       executionLog,
       failureStage: !publishUrl ? "missing_publish_url" : "unsupported_platform",
+      verificationEvidence: !publishUrl ? "failed_at_missing_publish_url" : "failed_at_unsupported_platform",
     };
   }
 
@@ -557,11 +663,11 @@ async function runPlatformPublish(input = {}) {
 
   publishWindow.webContents.on("console-message", (_, _level, message) => {
     const text = String(message || "");
-    const prefix = text.match(/^\[geo-(toutiao|baijiahao|douyin)\]\s*/);
+    const prefix = text.match(/^\[geo-(toutiao|baijiahao|douyin|wechat)\]\s*/);
     if (!prefix) {
       return;
     }
-    const normalized = text.replace(/^\[geo-(toutiao|baijiahao|douyin)\]\s*/, "").trim();
+    const normalized = text.replace(/^\[geo-(toutiao|baijiahao|douyin|wechat)\]\s*/, "").trim();
     if (!normalized) {
       return;
     }
@@ -584,6 +690,7 @@ async function runPlatformPublish(input = {}) {
       updateProgressStatus(sessionToken, input.platform, {
         status: "failed",
         failureStage: validation.status === "missing_session" ? "platform_session_missing" : "platform_login_required",
+        verificationEvidence: validation.status === "missing_session" ? "failed_at_platform_session_missing" : "failed_at_platform_login_required",
         errorMessage: validation.reason || "当前平台会话不可用，请重新登录。",
       });
       return {
@@ -605,6 +712,7 @@ async function runPlatformPublish(input = {}) {
       updateProgressStatus(sessionToken, input.platform, {
         status: "failed",
         failureStage: "prepare_images",
+        verificationEvidence: "failed_at_prepare_images",
         errorMessage: `发布图片准备失败：${message}`,
       });
       return {
@@ -628,34 +736,38 @@ async function runPlatformPublish(input = {}) {
     }
 
     log(`inject_automation: ${path.basename(automationFile)}`);
-    const result = await executeAutomation(publishWindow, automationFile, {
+    const rawResult = await executeAutomation(publishWindow, automationFile, {
       platform: input.platform,
       publishUrl,
       sessionToken,
       timeoutMs: input.timeoutMs || 180000,
       payload,
     });
+    const result = normalizeAutomationResult(rawResult, {
+      failureStage: "invalid_automation_result",
+      errorMessage: "自动化脚本没有返回有效的发布结果。",
+    });
     // 只有明确成功或要求关闭时才关闭
-    shouldCloseWindow = result?.status === "published" || result?.status === "pending_review" || result?.status === "submitted";
-    const resultExecutionLog = Array.isArray(result?.executionLog) ? result.executionLog : [];
+    shouldCloseWindow = result.status === "published" || result.status === "pending_review" || result.status === "submitted";
+    const resultExecutionLog = result.executionLog;
     resultExecutionLog.forEach((item) => appendProgressLog(sessionToken, input.platform, item));
     updateProgressStatus(sessionToken, input.platform, {
-      status: result?.status ?? "failed",
-      failureStage: result?.failureStage ?? (!result?.status ? "invalid_automation_result" : undefined),
-      errorMessage: result?.errorMessage ?? (!result?.status ? "自动化脚本没有返回有效的发布结果。" : undefined),
+      status: result.status,
+      failureStage: result.failureStage,
+      errorMessage: result.errorMessage,
     });
     return {
-      status: result?.status ?? "failed",
-      draftUrl: result?.draftUrl,
-      publishUrl: result?.publishUrl ?? result?.draftUrl,
-      verificationUrl: result?.verificationUrl,
-      externalStatus: result?.externalStatus,
+      status: result.status,
+      draftUrl: result.draftUrl,
+      publishUrl: result.publishUrl,
+      verificationUrl: result.verificationUrl,
+      externalStatus: result.externalStatus,
       executionLog: [...executionLog, ...resultExecutionLog],
-      verificationEvidence: result?.verificationEvidence,
-      verificationAttempts: result?.verificationAttempts,
-      platformItemId: result?.platformItemId,
-      failureStage: result?.failureStage ?? (!result?.status ? "invalid_automation_result" : undefined),
-      errorMessage: result?.errorMessage ?? (!result?.status ? "自动化脚本没有返回有效的发布结果。" : undefined),
+      verificationEvidence: result.verificationEvidence,
+      verificationAttempts: result.verificationAttempts,
+      platformItemId: result.platformItemId,
+      failureStage: result.failureStage,
+      errorMessage: result.errorMessage,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : "桌面自动发布失败。";
@@ -663,6 +775,7 @@ async function runPlatformPublish(input = {}) {
     updateProgressStatus(sessionToken, input.platform, {
       status: "failed",
       failureStage: message.includes("ERR_") || message.includes("loadURL") ? "load_publish_page" : "electron_publish",
+      verificationEvidence: message.includes("ERR_") || message.includes("loadURL") ? "failed_at_load_publish_page" : "failed_at_electron_publish",
       errorMessage: message,
     });
     return {

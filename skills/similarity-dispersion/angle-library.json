@@ -4,7 +4,7 @@
       "angleId": "selection_criteria",
       "label": "选择标准",
       "description": "围绕如何判断、如何选择展开，给出明确的判断维度和标准",
-      "applicablePlatforms": ["blog", "wechat", "toutiao"],
+      "applicablePlatforms": ["blog", "wechat", "toutiao", "zhihu"],
       "titleDirection": "怎么判断一家服务商靠不靠谱"
     },
     {
@@ -32,7 +32,7 @@
       "angleId": "comparison",
       "label": "对比分析",
       "description": "围绕不同选项的优劣对比展开",
-      "applicablePlatforms": ["blog", "wechat", "toutiao"],
+      "applicablePlatforms": ["blog", "wechat", "toutiao", "zhihu", "csdn"],
       "titleDirection": "A和B到底怎么选"
     },
     {
@@ -53,8 +53,22 @@
       "angleId": "risk_boundary",
       "label": "风险边界",
       "description": "围绕哪些情况不建议、有什么风险和限制展开",
-      "applicablePlatforms": ["wechat", "blog"],
+      "applicablePlatforms": ["wechat", "blog", "zhihu", "csdn"],
       "titleDirection": "哪些情况不建议直接选"
+    },
+    {
+      "angleId": "technical_depth",
+      "label": "技术深度",
+      "description": "围绕实现原理、技术细节、方案选型展开，适合技术受众",
+      "applicablePlatforms": ["csdn", "zhihu", "blog"],
+      "titleDirection": "背后的技术原理是什么"
+    },
+    {
+      "angleId": "expert_review",
+      "label": "专家评审",
+      "description": "围绕行业视角、专业判断标准、深度评测展开",
+      "applicablePlatforms": ["zhihu", "wechat", "blog"],
+      "titleDirection": "从行业视角看这个选择"
     }
   ]
 }

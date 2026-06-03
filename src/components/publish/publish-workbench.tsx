@@ -36,6 +36,25 @@ function platformLabel(platform: string) {
   return publishPlatformDescriptors.find((item) => item.key === platform)?.label ?? platform;
 }
 
+function routeAvailabilityBadge(platform: string) {
+  const descriptor = publishPlatformDescriptors.find((item) => item.key === platform);
+  if (!descriptor) return null;
+  const config = {
+    official_api_ready: { label: "官方 API 可用", className: "bg-emerald-500/15 text-emerald-300 border border-emerald-500/20" },
+    official_api_unavailable: { label: "官方 API 不可用", className: "bg-orange-500/15 text-orange-300 border border-orange-500/20" },
+    electron_ready: { label: "Electron 自动化", className: "bg-sky-500/15 text-sky-300 border border-sky-500/20" },
+    manual_required: { label: "手动发布", className: "bg-slate-500/15 text-slate-300 border border-slate-500/20" },
+  };
+  const c = config[descriptor.routeAvailability];
+  return (
+    <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${c.className}`}>{c.label}</span>
+  );
+}
+
+function platformRouteHint(platform: string) {
+  return publishPlatformDescriptors.find((item) => item.key === platform)?.hint ?? null;
+}
+
 function accountOptions(accounts: PlatformAccountRecord[], platform: string) {
   return accounts.filter((item) => item.platform === platform && item.loginStatus === "authenticated");
 }
@@ -44,7 +63,7 @@ function platformAutomationLabel(platform: string) {
   const status = publishPlatformDescriptors.find((item) => item.key === platform)?.automationStatus;
   if (status === "ready") return "已自动化";
   if (status === "manual_only") return "手动发布";
-  return "计划接入";
+  return "未接入";
 }
 
 function groupAccountDraftsByPlatform(data: PublishWorkbenchData | null) {
@@ -1020,16 +1039,22 @@ export function PublishWorkbench({
                         <h3 className="font-display text-base font-bold text-ink">{platformLabel(platform)}</h3>
                         <p className="mt-1 text-xs text-muted">{publishPlatformDescriptors.find((item) => item.key === platform)?.contentProfile}</p>
                       </div>
-                      <span className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${
-                        platformAutomationLabel(platform) === "已自动化"
-                          ? "bg-emerald-500/15 text-emerald-300"
-                          : platformAutomationLabel(platform) === "手动发布"
-                            ? "bg-cyan-500/15 text-cyan-300"
-                            : "bg-warning/15 text-warning"
-                      }`}>
-                        {platformAutomationLabel(platform)}
-                      </span>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${
+                          platformAutomationLabel(platform) === "已自动化"
+                            ? "bg-emerald-500/15 text-emerald-300"
+                            : platformAutomationLabel(platform) === "手动发布"
+                              ? "bg-cyan-500/15 text-cyan-300"
+                              : "bg-warning/15 text-warning"
+                        }`}>
+                          {platformAutomationLabel(platform)}
+                        </span>
+                        {routeAvailabilityBadge(platform)}
+                      </div>
                     </div>
+                    {platformRouteHint(platform) ? (
+                      <p className="mt-2 text-xs leading-relaxed text-muted">{platformRouteHint(platform)}</p>
+                    ) : null}
 
                     <div className="mt-4 grid gap-4">
                       {drafts.map((draft) => (
@@ -1108,7 +1133,7 @@ export function PublishWorkbench({
                 );
                 return (
                   <div key={draft.id} className="rounded-lg border border-stroke bg-surface/50 p-5 transition-colors hover:border-stroke-strong">
-                    <div className="flex items-center justify-between gap-4 mb-6">
+                    <div className="flex items-center justify-between gap-4 mb-4">
                       <label className="flex cursor-pointer items-center gap-3">
                         <div className="relative flex items-center">
                           <input
@@ -1129,13 +1154,19 @@ export function PublishWorkbench({
                         </div>
                         <span className="font-display text-lg font-bold text-ink">{platformLabel(draft.platform)}</span>
                       </label>
-                      {draft.publishEntryUrl && (
-                        <a className="flex items-center gap-1.5 rounded-lg bg-accent-muted/30 px-3 py-1.5 text-xs font-medium text-accent transition-colors hover:bg-accent hover:text-surface" href={draft.publishEntryUrl} target="_blank" rel="noreferrer">
-                          <ExternalLink className="h-3.5 w-3.5" />
-                          打开平台入口
-                        </a>
-                      )}
+                      <div className="flex flex-wrap items-center gap-2">
+                        {routeAvailabilityBadge(draft.platform)}
+                        {draft.publishEntryUrl && (
+                          <a className="flex items-center gap-1.5 rounded-lg bg-accent-muted/30 px-3 py-1.5 text-xs font-medium text-accent transition-colors hover:bg-accent hover:text-surface" href={draft.publishEntryUrl} target="_blank" rel="noreferrer">
+                            <ExternalLink className="h-3.5 w-3.5" />
+                            打开平台入口
+                          </a>
+                        )}
+                      </div>
                     </div>
+                    {platformRouteHint(draft.platform) ? (
+                      <p className="mb-4 text-xs leading-relaxed text-muted">{platformRouteHint(draft.platform)}</p>
+                    ) : null}
                     
                     <div className="grid gap-4">
                       <div className="space-y-1.5">

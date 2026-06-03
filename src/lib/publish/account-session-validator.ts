@@ -17,11 +17,11 @@ export function buildDesktopSessionFailureReason(status: string, reason?: string
 
   switch (status) {
     case "expired":
-      return "检测到今日头条登录会话已失效，请重新登录。";
+      return "检测到平台登录会话已失效，请重新登录。";
     case "missing_session":
-      return "未检测到有效的今日头条登录会话，请重新登录。";
+      return "未检测到有效的平台登录会话，请重新登录。";
     case "unknown":
-      return "暂时无法确认当前今日头条登录状态，请重新登录后再发布。";
+      return "暂时无法确认当前平台登录状态，请重新登录后再发布。";
     default:
       return "桌面登录未完成。";
   }
@@ -48,7 +48,7 @@ export async function auditPlatformAccountSession(account: PlatformAccountRecord
       nextLoginStatus: "authenticated",
       nextStatus: "valid",
       lastError: undefined,
-      summary: "真实平台会话可用，可继续用于自动发布。",
+      summary: "真实平台会话可用。",
       validationStatus: result.status,
     };
   }
@@ -69,10 +69,10 @@ export function describeAccountPublishability(account: PlatformAccountRecord, br
     return "当前未连接桌面桥，暂时无法复核真实会话。";
   }
   if (account.loginStatus === "authenticated" && account.status === "valid") {
-    return "真实平台会话可用，可用于自动发布。";
+    return "真实平台会话可用。";
   }
   if (account.loginStatus === "failed" || account.status === "invalid") {
     return account.lastError?.trim() || "真实平台会话已失效，请重新登录。";
   }
-  return "当前不可用于自动发布。";
+  return "当前平台会话不可用，请重新登录。";
 }

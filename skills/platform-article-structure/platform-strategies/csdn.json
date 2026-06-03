@@ -1,0 +1,31 @@
+{
+  "platform": "csdn",
+  "platformLabel": "CSDN",
+  "title": {
+    "maxLength": 60,
+    "patterns": ["technical_question", "how_to", "comparison", "logical_summary"],
+    "bannedPatterns": ["clickbait_without_answer", "absolute_claim", "vague_claim"],
+    "instructions": "CSDN 标题应准确描述技术问题、解决方案或分析主题，60字以内。避免模糊标题，优先包含具体技术词、产品名或方法论关键词。"
+  },
+  "body": {
+    "preferredStructure": "intro_analysis_conclusion",
+    "paragraphLength": "medium",
+    "maxParagraphChars": 300,
+    "headingStyle": "logical",
+    "sectionCount": { "min": 3, "max": 7 },
+    "ctaStyle": "bookmark_and_share",
+    "instructions": "CSDN 文章应具备完整的技术文档结构：开头明确说明文章解决的问题和适用范围，主体按问题-分析-方案-限制展开，关键决策点用清单或对比表呈现，代码示例或伪代码只写实际可验证的内容，结尾给出总结和延伸阅读方向。技术类内容可以使用 Markdown 表格和代码块。"
+  },
+  "metadata": {
+    "allowPublicTraceId": false,
+    "allowTimestamp": true,
+    "allowMarkdownTable": true,
+    "allowFaq": true,
+    "faqCount": { "min": 0, "max": 5 }
+  },
+  "review": {
+    "riskWords": ["最强", "绝对", "根治", "保赚", "唯一", "100%", "永久", "业界最好"],
+    "mustHave": ["判断标准", "适用边界"],
+    "mustNotHave": ["虚构测试数据", "无来源技术参数", "PGP签名块", "PHP注释头"]
+  }
+}

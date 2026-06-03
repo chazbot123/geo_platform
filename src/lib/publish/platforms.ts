@@ -1,11 +1,26 @@
 import type { PublishPlatform, PublishingExecutionMode, SocialPlatform } from "@/lib/types";
 
+/**
+ * Explicit route availability per platform, aligned with the brainstorm doc taxonomy.
+ *
+ * official_api_ready        – A public, documented write/publish API exists and can be used.
+ * official_api_unavailable  – No confirmed public write API; automation or manual delivery required.
+ * electron_ready            – Electron browser automation is the active route for this platform.
+ * manual_required           – No automation is available; draft must be delivered manually.
+ */
+export type PlatformRouteAvailability =
+  | "official_api_ready"
+  | "official_api_unavailable"
+  | "electron_ready"
+  | "manual_required";
+
 export interface PlatformDescriptor {
   key: PublishPlatform;
   label: string;
   loginSupported: boolean;
   executionMode: PublishingExecutionMode;
   automationStatus: "ready" | "manual_only" | "planned";
+  routeAvailability: PlatformRouteAvailability;
   contentProfile: string;
   publishEntryUrl?: string;
   hint: string;
@@ -18,6 +33,8 @@ export const publishPlatformDescriptors: PlatformDescriptor[] = [
     loginSupported: true,
     executionMode: "electron_automation",
     automationStatus: "ready",
+    // No confirmed public article-publish API for Headline accounts; Electron is the active route.
+    routeAvailability: "electron_ready",
     contentProfile: "长图文分析稿，标题强判断，段落短，适合图文混排。",
     publishEntryUrl: "https://mp.toutiao.com/profile_v4/graphic/publish",
     hint: "当前优先通过 Electron 承接今日头条图文自动发布。",
@@ -28,6 +45,8 @@ export const publishPlatformDescriptors: PlatformDescriptor[] = [
     loginSupported: true,
     executionMode: "electron_automation",
     automationStatus: "ready",
+    // No confirmed public article-publish API for Baijiahao; Electron automation is the active route.
+    routeAvailability: "electron_ready",
     contentProfile: "知识解释型图文，结构接近头条但信息密度更高。",
     publishEntryUrl: "https://baijiahao.baidu.com/builder/rc/edit?type=news",
     hint: "通过 Electron 承接百家号图文自动发布，沿用登录校验、内容填写和结果回录链路。",
@@ -38,59 +57,67 @@ export const publishPlatformDescriptors: PlatformDescriptor[] = [
     loginSupported: true,
     executionMode: "electron_automation",
     automationStatus: "ready",
+    // Douyin is intentionally handled through Electron creator-center automation here.
+    // New or low-trust accounts may still hit platform-side verification/risk controls.
+    routeAvailability: "electron_ready",
     contentProfile: "短标题、短段落、口播或图文脚本，强调前三秒钩子。",
     publishEntryUrl: "https://creator.douyin.com/creator-micro/content/upload",
-    hint: "通过 Electron 承接抖音创作者中心发布，首版按图文/文本内容自动填充并提交。",
+    hint: "通过 Electron 脚本承接抖音创作者中心发布，按图文/文本内容自动填充并提交；新号或低活跃账号容易触发验证/风控，建议使用成熟账号并保留人工验证兜底。",
   },
   {
     key: "wechat",
     label: "微信公众号",
-    loginSupported: false,
-    executionMode: "manual_delivery",
-    automationStatus: "planned",
+    loginSupported: true,
+    executionMode: "electron_automation",
+    automationStatus: "ready",
+    routeAvailability: "electron_ready",
     contentProfile: "长文，逻辑完整，阅读连续性强，适合观点与案例拆解。",
-    publishEntryUrl: "https://mp.weixin.qq.com/",
-    hint: "计划接入微信公众号发布流程，当前先保留账号稿与手动发布能力。",
+    publishEntryUrl: "https://mp.weixin.qq.com/cgi-bin/appmsg?t=media/appmsg_edit&action=edit&type=10",
+    hint: "通过 Electron 承接微信公众号图文发布，登录后在编辑器中自动填充内容并提交。",
   },
   {
     key: "videohao",
     label: "视频号",
-    loginSupported: false,
+    loginSupported: true,
     executionMode: "manual_delivery",
-    automationStatus: "planned",
+    automationStatus: "manual_only",
+    routeAvailability: "manual_required",
     contentProfile: "短文案，节奏型表达，适合配合视频或图文动态。",
-    publishEntryUrl: "https://channels.weixin.qq.com/",
-    hint: "计划接入视频号发布流程，当前先保留账号稿与手动发布能力。",
+    publishEntryUrl: "https://channels.weixin.qq.com/platform/post/create",
+    hint: "视频号账号可通过桌面窗口登录；发布脚本尚未接入，当前按手动交付处理。",
   },
   {
     key: "zhihu",
     label: "知乎",
-    loginSupported: false,
+    loginSupported: true,
     executionMode: "manual_delivery",
-    automationStatus: "planned",
+    automationStatus: "manual_only",
+    routeAvailability: "manual_required",
     contentProfile: "问答体或分析回答体，强调判断依据和边界。",
-    publishEntryUrl: "https://www.zhihu.com/",
-    hint: "计划接入知乎回答或文章发布流程，当前先保留账号稿与手动发布能力。",
+    publishEntryUrl: "https://zhuanlan.zhihu.com/write",
+    hint: "知乎账号可通过桌面窗口登录；发布脚本尚未接入，当前按手动交付处理。",
   },
   {
     key: "weibo",
     label: "微博",
-    loginSupported: false,
+    loginSupported: true,
     executionMode: "manual_delivery",
-    automationStatus: "planned",
+    automationStatus: "manual_only",
+    routeAvailability: "manual_required",
     contentProfile: "短观点，可拆条，强调传播性和轻量互动。",
     publishEntryUrl: "https://weibo.com/",
-    hint: "计划接入微博发布流程，当前先保留账号稿与手动发布能力。",
+    hint: "微博账号可通过桌面窗口登录；发布脚本尚未接入，且权限/登录稳定性需要单独验收。",
   },
   {
     key: "csdn",
     label: "CSDN",
-    loginSupported: false,
+    loginSupported: true,
     executionMode: "manual_delivery",
-    automationStatus: "planned",
+    automationStatus: "manual_only",
+    routeAvailability: "manual_required",
     contentProfile: "经验、技术、方法论结构，适合清晰步骤和复盘。",
     publishEntryUrl: "https://editor.csdn.net/md/",
-    hint: "计划接入 CSDN 文章发布流程，当前先保留账号稿与手动发布能力。",
+    hint: "CSDN 账号可通过桌面窗口登录和会话校验；发布脚本尚未接入，当前按手动交付处理。",
   },
 ];
 

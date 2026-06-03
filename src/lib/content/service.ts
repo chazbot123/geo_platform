@@ -1,11 +1,11 @@
 import { getAppConfig } from "@/lib/config/service";
-import { runContentModel } from "@/lib/integrations/content/client";
-import { saveContent } from "@/lib/storage/data-store";
-import { getTaskBundle, markTaskFailed, updateTaskStatus } from "@/lib/tasks/service";
+import { getPromptVersion, normalizeAiScenario, normalizePlatform } from "@/lib/content/prompt-loader";
 import { reviewContent, type ReviewResult } from "@/lib/content/review-service";
 import { planDispersion } from "@/lib/content/dispersion-service";
-import { listAllContentDrafts } from "@/lib/storage/data-store";
-import type { ContentDraft } from "@/lib/types";
+import { runContentModel } from "@/lib/integrations/content/client";
+import { listAllContentDrafts, saveContent } from "@/lib/storage/data-store";
+import { getTaskBundle, markTaskFailed, updateTaskStatus } from "@/lib/tasks/service";
+import type { ContentDraft, TaskBundle } from "@/lib/types";
 
 function splitParagraphs(content: string) {
   return content
@@ -56,14 +56,60 @@ export interface ContentGenerationOptions {
 
 export interface ContentGenerationResult {
   content: ContentDraft;
-  reviewResult?: ReviewResult;
+  reviewResult: ReviewResult;
   dispersionPlan?: { newAngle: string; usedAngles: string[] };
 }
 
-export async function generateContentForTask(taskId: string, options?: ContentGenerationOptions): Promise<ContentDraft> {
+function getSelectedQuestionsForReview(bundle: TaskBundle) {
+  const selectedKeywords = Array.isArray(bundle.theme?.selectedKeywords) ? bundle.theme.selectedKeywords : [];
+  const selectedBundle = bundle.theme?.selectedQuestionBundle?.selectedQuestionBundle;
+  const selectedBundleQuestions = selectedBundle
+    ? [
+        selectedBundle.mainQuestion.question,
+        ...selectedBundle.supportingQuestions.map((question) => question.question),
+      ]
+    : [];
+
+  return [...selectedBundleQuestions, ...selectedKeywords].map((question) => question.trim()).filter(Boolean);
+}
+
+function normalizeGeneratedDraft(
+  draft: ContentDraft,
+  options: { platform: string; aiScenario: string; contentAngle: string },
+): ContentDraft {
+  const platform = normalizePlatform(options.platform);
+  const aiScenario = normalizeAiScenario(options.aiScenario);
+  return {
+    ...draft,
+    platform,
+    aiScenario,
+    contentAngle: options.contentAngle,
+    promptVersion: draft.promptVersion ?? getPromptVersion(platform, aiScenario),
+  };
+}
+
+function buildReviewFailure(error: unknown): ReviewResult {
+  return {
+    passed: false,
+    blockingIssues: [
+      {
+        code: "CONTENT_REVIEW_FAILED",
+        message: error instanceof Error ? error.message : "Content review failed",
+      },
+    ],
+    warnings: [],
+    scores: {
+      platformFit: 0,
+      complianceFit: 0,
+      questionCoverage: 0,
+    },
+  };
+}
+
+export async function generateContentForTask(taskId: string, options?: ContentGenerationOptions): Promise<ContentGenerationResult> {
   const bundle = await getTaskBundle(taskId);
   if (!bundle?.theme) {
-    throw new Error("提问主题尚未准备完成");
+    throw new Error("Question theme is not ready");
   }
 
   try {
@@ -71,44 +117,43 @@ export async function generateContentForTask(taskId: string, options?: ContentGe
     const platform = options?.platform ?? "toutiao";
     const aiScenario = options?.aiScenario ?? "doubao_plain_answer";
     let contentAngle = options?.contentAngle ?? "selection_criteria";
+    let dispersionPlan: ContentGenerationResult["dispersionPlan"];
 
-    // 离散规划：如果没有指定角度，自动选一个未用过的
     if (!options?.contentAngle) {
       try {
         const historyDrafts = await listAllContentDrafts();
-        const samePlatformDrafts = historyDrafts.filter((d) => d.platform === platform);
+        const samePlatformDrafts = historyDrafts.filter((draft) => draft.platform === platform);
         if (samePlatformDrafts.length > 0) {
           const plan = await planDispersion(platform, samePlatformDrafts);
           contentAngle = plan.newAngle.angleId;
+          dispersionPlan = { newAngle: plan.newAngle.angleId, usedAngles: plan.usedAngles };
         }
       } catch {
-        // 离散规划失败不阻塞生成
+        // Dispersion planning should not block local draft generation.
       }
     }
 
-    const draft = await runContentModel(bundle.product, bundle.theme, config.contentModelApiConfig, {
-      aiScenario,
-      platform,
-      contentAngle,
-    });
+    const content = normalizeGeneratedDraft(
+      await runContentModel(bundle.product, bundle.theme, config.contentModelApiConfig, {
+        aiScenario,
+        platform,
+        contentAngle,
+      }),
+      { aiScenario, platform, contentAngle },
+    );
 
-    // 质检
+    let reviewResult: ReviewResult;
     try {
-      const review = await reviewContent(draft, platform, bundle.theme.selectedKeywords);
-      if (review.warnings.length > 0 || !review.passed) {
-        // 质检结果存入 draft 备查（不阻塞保存）
-        (draft as ContentDraft & { _reviewWarnings?: string[] })._reviewWarnings =
-          [...review.blockingIssues, ...review.warnings].map((i) => i.message);
-      }
-    } catch {
-      // 质检失败不阻塞生成
+      reviewResult = await reviewContent(content, platform, getSelectedQuestionsForReview(bundle));
+    } catch (error) {
+      reviewResult = buildReviewFailure(error);
     }
 
-    await saveContent(draft);
+    await saveContent(content);
     await updateTaskStatus(taskId, "content_generated");
-    return draft;
+    return { content, reviewResult, dispersionPlan };
   } catch (error) {
-    await markTaskFailed(taskId, "content", error instanceof Error ? error.message : "内容生成失败");
+    await markTaskFailed(taskId, "content", error instanceof Error ? error.message : "Content generation failed");
     throw error;
   }
 }
@@ -116,7 +161,7 @@ export async function generateContentForTask(taskId: string, options?: ContentGe
 export async function updateContentDraft(taskId: string, patch: Pick<ContentDraft, "title" | "summary" | "cta" | "content">) {
   const bundle = await getTaskBundle(taskId);
   if (!bundle?.content) {
-    throw new Error("内容草稿不存在");
+    throw new Error("Content draft does not exist");
   }
 
   const patchedDraft: ContentDraft = {

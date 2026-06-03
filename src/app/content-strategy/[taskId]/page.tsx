@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { LoaderCircle, Sparkles, ChevronDown } from "lucide-react";
+import { LoaderCircle, Sparkles, ChevronDown, XCircle, AlertTriangle } from "lucide-react";
+import type { ReviewResult } from "@/lib/content/review-service";
 
 const AI_SCENARIOS = [
   { id: "doubao_plain_answer", label: "豆包 - 普通用户答疑" },
@@ -38,6 +39,7 @@ export default function ContentStrategyPage({ params }: { params: { taskId: stri
   const [angles, setAngles] = useState<AngleItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [reviewResult, setReviewResult] = useState<ReviewResult | null>(null);
 
   useEffect(() => {
     fetch("/api/content/angles")
@@ -60,6 +62,7 @@ export default function ContentStrategyPage({ params }: { params: { taskId: stri
   async function handleGenerate() {
     setLoading(true);
     setError("");
+    setReviewResult(null);
     try {
       const response = await fetch("/api/content/generate", {
         method: "POST",
@@ -68,13 +71,23 @@ export default function ContentStrategyPage({ params }: { params: { taskId: stri
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error ?? "内容生成失败");
-      router.push(`/reports/${taskId}`);
+      if (payload.reviewResult) {
+        setReviewResult(payload.reviewResult as ReviewResult);
+        if (payload.reviewResult.passed) {
+          router.push(`/reports/${taskId}`);
+        }
+      } else {
+        router.push(`/reports/${taskId}`);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "生成失败");
     } finally {
       setLoading(false);
     }
   }
+
+  const hasBlockingIssues = (reviewResult?.blockingIssues?.length ?? 0) > 0;
+  const hasWarnings = (reviewResult?.warnings?.length ?? 0) > 0;
 
   return (
     <div className="mx-auto max-w-2xl px-6 py-12">
@@ -142,6 +155,71 @@ export default function ContentStrategyPage({ params }: { params: { taskId: stri
             <div className="rounded-[12px] bg-red-500/10 px-4 py-3 text-sm text-red-400">{error}</div>
           )}
 
+          {/* 审核结果 */}
+          {reviewResult && !reviewResult.passed && (
+            <div className={`rounded-[20px] border p-5 ${hasBlockingIssues ? "border-danger/30 bg-danger/5" : "border-warning/30 bg-warning/5"}`}>
+              <div className="mb-4 flex items-center gap-2">
+                {hasBlockingIssues
+                  ? <XCircle className="h-5 w-5 text-danger" />
+                  : <AlertTriangle className="h-5 w-5 text-warning" />}
+                <span className="font-semibold text-sm text-ink">
+                  {hasBlockingIssues ? "内容审核未通过，存在阻断问题" : "内容审核通过，但存在警告"}
+                </span>
+              </div>
+              {reviewResult.blockingIssues.length > 0 && (
+                <ul className="mb-3 space-y-2">
+                  {reviewResult.blockingIssues.map((issue, i) => (
+                    <li key={i} className="rounded-[12px] border border-danger/20 bg-danger/10 px-3 py-2 text-xs text-slate-200">
+                      <span className="font-medium text-danger">[{issue.code}]</span> {issue.message}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {reviewResult.warnings.length > 0 && (
+                <ul className="space-y-2">
+                  {reviewResult.warnings.map((issue, i) => (
+                    <li key={i} className="rounded-[12px] border border-warning/20 bg-warning/10 px-3 py-2 text-xs text-slate-300">
+                      <span className="font-medium text-warning">[{issue.code}]</span> {issue.message}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {reviewResult.scores && (
+                <div className="mt-4 grid grid-cols-3 gap-3 rounded-[16px] border border-stroke bg-surface/50 p-3 text-center text-xs">
+                  <div>
+                    <p className="text-muted">平台适配</p>
+                    <p className={`mt-1 font-bold text-base ${reviewResult.scores.platformFit >= 80 ? "text-emerald-400" : reviewResult.scores.platformFit >= 50 ? "text-warning" : "text-danger"}`}>
+                      {reviewResult.scores.platformFit}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-muted">合规度</p>
+                    <p className={`mt-1 font-bold text-base ${reviewResult.scores.complianceFit >= 80 ? "text-emerald-400" : reviewResult.scores.complianceFit >= 50 ? "text-warning" : "text-danger"}`}>
+                      {reviewResult.scores.complianceFit}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-muted">问题覆盖</p>
+                    <p className={`mt-1 font-bold text-base ${reviewResult.scores.questionCoverage >= 80 ? "text-emerald-400" : reviewResult.scores.questionCoverage >= 60 ? "text-warning" : "text-danger"}`}>
+                      {reviewResult.scores.questionCoverage}%
+                    </p>
+                  </div>
+                </div>
+              )}
+              {hasWarnings && !hasBlockingIssues && (
+                <button
+                  className="mt-4 w-full rounded-[16px] border border-stroke bg-surface/50 px-4 py-3 text-sm font-medium text-muted hover:text-ink transition-colors"
+                  onClick={() => router.push(`/reports/${taskId}`)}
+                >
+                  忽略警告，继续查看报告 →
+                </button>
+              )}
+              {hasBlockingIssues && (
+                <p className="mt-3 text-xs text-muted">请修正上述阻断问题后重新生成，或调整生成策略后再试。</p>
+              )}
+            </div>
+          )}
+
           {/* 生成按钮 */}
           <button
             className="group relative flex w-full items-center justify-center gap-2 overflow-hidden rounded-[20px] bg-accent px-6 py-4 text-sm font-bold text-surface shadow-glow transition-all hover:bg-accent-soft disabled:opacity-50 disabled:shadow-none"
@@ -170,3 +248,4 @@ export default function ContentStrategyPage({ params }: { params: { taskId: stri
     </div>
   );
 }
+

@@ -10,6 +10,11 @@ export function getPlatformPublisher(platform: string): PlatformPublisher | null
       return toutiaoPublisher;
     case "baijiahao":
     case "douyin":
+    case "wechat":
+    case "videohao":
+    case "zhihu":
+    case "weibo":
+    case "csdn":
       return electronBrowserPublisher;
     default:
       return null;

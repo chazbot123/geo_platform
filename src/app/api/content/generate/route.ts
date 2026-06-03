@@ -21,12 +21,12 @@ export async function POST(request: Request) {
       platform?: string;
       contentAngle?: string;
     };
-    const content = await generateContentForTask(body.taskId, {
+    const result = await generateContentForTask(body.taskId, {
       aiScenario: body.aiScenario,
       platform: body.platform,
       contentAngle: body.contentAngle,
     });
-    return NextResponse.json({ content });
+    return NextResponse.json(result);
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("CONTENT_API_PROBE_FAILED@")) {
       return NextResponse.json({ error: `内容模型自动探测失败。已尝试：${formatProbeDetails(error.message)}` }, { status: 500 });

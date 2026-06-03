@@ -1,15 +1,18 @@
 import { defaultAppConfig } from "@/lib/config/defaults";
 import { normalizeApiKey } from "@/lib/integrations/auth";
-import { isNewApiAutoProvider, resolveOpenAICompatibleEndpoint } from "@/lib/integrations/openai-compatible";
+import {
+  isNewApiAutoProvider,
+  isVolcengineArkProvider,
+  normalizeOpenAICompatibleProviderName,
+  resolveArkEndpoint,
+  resolveOpenAICompatibleEndpoint,
+  resolveSkyEndpoint,
+} from "@/lib/integrations/openai-compatible";
 import { ensureStorageReady, getConfig, saveConfig } from "@/lib/storage/data-store";
 import type { AppConfig } from "@/lib/types";
 
 function normalizeProviderName(provider: string) {
-  const normalized = provider.trim().toLowerCase();
-  if (normalized === "sky") {
-    return "newapi-auto";
-  }
-  return provider.trim();
+  return normalizeOpenAICompatibleProviderName(provider);
 }
 
 function isOpenAICompatibleProvider(provider: string) {
@@ -42,8 +45,12 @@ function normalizeBaseUrl(provider: string, baseUrl: string) {
     return trimmed;
   }
 
+  if (isVolcengineArkProvider(normalizedProvider)) {
+    return resolveArkEndpoint(trimmed);
+  }
+
   if (isOpenAICompatibleProvider(normalizedProvider)) {
-    return resolveOpenAICompatibleEndpoint(trimmed);
+    return resolveSkyEndpoint(trimmed);
   }
 
   if (normalizedProvider === "vidu") {
@@ -55,7 +62,7 @@ function normalizeBaseUrl(provider: string, baseUrl: string) {
     }
   }
 
-  return trimmed;
+  return resolveOpenAICompatibleEndpoint(trimmed);
 }
 
 function normalizeConfig(config: AppConfig): AppConfig {

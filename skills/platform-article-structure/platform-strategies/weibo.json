@@ -1,0 +1,31 @@
+{
+  "platform": "weibo",
+  "platformLabel": "微博",
+  "title": {
+    "maxLength": 40,
+    "patterns": ["question", "insight", "hook"],
+    "bannedPatterns": ["clickbait_without_answer", "absolute_claim"],
+    "instructions": "微博标题应简洁有力，40字以内。对于长文用简练的钩子标题吸引点击；对于短帖直接起正文。"
+  },
+  "body": {
+    "preferredStructure": "hook_then_points",
+    "paragraphLength": "short",
+    "maxParagraphChars": 120,
+    "headingStyle": "minimal",
+    "sectionCount": { "min": 2, "max": 4 },
+    "ctaStyle": "share_and_discuss",
+    "instructions": "微博内容应简洁直接。短帖（140字以内）给出核心观点和最关键的判断理由；长文（1500字以内）用 2-4 个短小节展开，每节围绕一个判断点，语言接近口语但不低质，适合快速消费和转发。避免长篇正式报告结构。"
+  },
+  "metadata": {
+    "allowPublicTraceId": false,
+    "allowTimestamp": false,
+    "allowMarkdownTable": false,
+    "allowFaq": false,
+    "faqCount": { "min": 0, "max": 0 }
+  },
+  "review": {
+    "riskWords": ["最强", "绝对", "根治", "保赚", "唯一", "100%", "永久"],
+    "mustHave": ["核心观点"],
+    "mustNotHave": ["完整hash", "PGP签名块", "PHP注释", "大量Markdown表格"]
+  }
+}

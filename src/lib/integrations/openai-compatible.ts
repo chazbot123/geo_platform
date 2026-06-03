@@ -11,6 +11,9 @@ interface OpenAICompatibleResponseShape {
     message?: {
       content?: string | Array<{ type?: string; text?: string }>;
     };
+    delta?: {
+      content?: string | Array<{ type?: string; text?: string }>;
+    };
   }>;
 }
 
@@ -18,6 +21,21 @@ export interface OpenAICompatibleTextResult {
   endpoint: string;
   status: number;
   rawText: string;
+}
+
+export type OpenAICompatibleProviderProfileId =
+  | "newapi-auto"
+  | "volcengine-ark"
+  | "dashscope-qwen"
+  | "tencent-hunyuan"
+  | "deepseek"
+  | "openai"
+  | "generic-compatible";
+
+export interface OpenAICompatibleProviderProfile {
+  id: OpenAICompatibleProviderProfileId;
+  provider: string;
+  endpointMode: "newapi-probe" | "ark-chat" | "dashscope-qwen" | "hunyuan-chat" | "openai-v1" | "generic-chat";
 }
 
 export class OpenAICompatibleHttpError extends Error {
@@ -28,6 +46,16 @@ export class OpenAICompatibleHttpError extends Error {
     super(`HTTP_${status}@${endpoint}`);
     this.name = "OpenAICompatibleHttpError";
     this.status = status;
+    this.endpoint = endpoint;
+  }
+}
+
+export class OpenAICompatibleResponseParseError extends Error {
+  endpoint: string;
+
+  constructor(endpoint: string) {
+    super(`BAD_JSON@${endpoint}`);
+    this.name = "OpenAICompatibleResponseParseError";
     this.endpoint = endpoint;
   }
 }
@@ -56,6 +84,82 @@ interface ProbeCacheEntry {
 
 const probeCache = new Map<string, ProbeCacheEntry>();
 
+export function normalizeOpenAICompatibleProviderName(provider: string) {
+  const normalized = provider.trim().toLowerCase();
+  if (normalized === "sky") {
+    return "newapi-auto";
+  }
+  if (["volcengine", "volcengine-ark", "ark", "doubao", "doubao-ark"].includes(normalized)) {
+    return "volcengine-ark";
+  }
+  if (["tongyi", "qwen", "dashscope", "dashscope-qwen", "aliyun-qwen"].includes(normalized)) {
+    return "dashscope-qwen";
+  }
+  // yuanbao is the consumer app; API-backed generation uses Tencent Hunyuan
+  if (["hunyuan", "tencent-hunyuan", "tencent_hunyuan", "yuanbao"].includes(normalized)) {
+    return "tencent-hunyuan";
+  }
+  return provider.trim();
+}
+
+export function getOpenAICompatibleProviderProfile(provider: string): OpenAICompatibleProviderProfile {
+  const normalized = normalizeOpenAICompatibleProviderName(provider).toLowerCase();
+
+  if (normalized === "newapi-auto") {
+    return {
+      id: "newapi-auto",
+      provider: "newapi-auto",
+      endpointMode: "newapi-probe",
+    };
+  }
+
+  if (normalized === "volcengine-ark") {
+    return {
+      id: "volcengine-ark",
+      provider: "volcengine-ark",
+      endpointMode: "ark-chat",
+    };
+  }
+
+  if (normalized === "dashscope-qwen") {
+    return {
+      id: "dashscope-qwen",
+      provider: "dashscope-qwen",
+      endpointMode: "dashscope-qwen",
+    };
+  }
+
+  if (normalized === "tencent-hunyuan") {
+    return {
+      id: "tencent-hunyuan",
+      provider: "tencent-hunyuan",
+      endpointMode: "hunyuan-chat",
+    };
+  }
+
+  if (normalized === "deepseek") {
+    return {
+      id: "deepseek",
+      provider: "deepseek",
+      endpointMode: "openai-v1",
+    };
+  }
+
+  if (normalized === "open ai" || normalized === "openai" || normalized.includes("open") || normalized.includes("gpt")) {
+    return {
+      id: "openai",
+      provider: normalized === "open ai" ? "openai" : normalizeOpenAICompatibleProviderName(provider),
+      endpointMode: "openai-v1",
+    };
+  }
+
+  return {
+    id: "generic-compatible",
+    provider: normalizeOpenAICompatibleProviderName(provider),
+    endpointMode: "generic-chat",
+  };
+}
+
 function isAbortLikeError(error: unknown) {
   if (!(error instanceof Error)) {
     return false;
@@ -67,7 +171,7 @@ function isAbortLikeError(error: unknown) {
   );
 }
 
-export function resolveOpenAICompatibleEndpoint(baseUrl: string) {
+function appendChatCompletionsPath(baseUrl: string, defaultRootPath: "/chat/completions" | "/v1/chat/completions") {
   const normalized = sanitizeBaseUrl(baseUrl).replace(/\/+$/g, "");
   if (!normalized) {
     return normalized;
@@ -85,7 +189,7 @@ export function resolveOpenAICompatibleEndpoint(baseUrl: string) {
   const path = parsed.pathname.replace(/\/+$/g, "");
 
   if (!path || path === "/") {
-    parsed.pathname = "/chat/completions";
+    parsed.pathname = defaultRootPath;
     return parsed.toString();
   }
 
@@ -93,7 +197,88 @@ export function resolveOpenAICompatibleEndpoint(baseUrl: string) {
   return parsed.toString();
 }
 
+export function resolveOpenAICompatibleEndpoint(baseUrl: string) {
+  return appendChatCompletionsPath(baseUrl, "/chat/completions");
+}
+
 export function resolveSkyEndpoint(baseUrl: string) {
+  return appendChatCompletionsPath(baseUrl, "/v1/chat/completions");
+}
+
+export function resolveDashscopeQwenEndpoint(baseUrl: string) {
+  const normalized = sanitizeBaseUrl(baseUrl).replace(/\/+$/g, "");
+  if (!normalized) {
+    return normalized;
+  }
+
+  if (/\/chat\/completions$/i.test(normalized)) {
+    return normalized;
+  }
+
+  if (/\/v1$/i.test(normalized) || /\/compatible-mode\/v1$/i.test(normalized)) {
+    return `${normalized}/chat/completions`;
+  }
+
+  const parsed = new URL(normalized);
+  const urlPath = parsed.pathname.replace(/\/+$/g, "");
+
+  if (!urlPath || urlPath === "/") {
+    parsed.pathname = "/compatible-mode/v1/chat/completions";
+    return parsed.toString();
+  }
+
+  parsed.pathname = `${urlPath}/chat/completions`;
+  return parsed.toString();
+}
+
+export function resolveArkEndpoint(baseUrl: string) {
+  const normalized = sanitizeBaseUrl(baseUrl).replace(/\/+$/g, "");
+  if (!normalized) {
+    return normalized;
+  }
+
+  if (/\/chat\/completions$/i.test(normalized)) {
+    return normalized;
+  }
+
+  if (/\/api\/v3$/i.test(normalized) || /\/v1$/i.test(normalized)) {
+    return `${normalized}/chat/completions`;
+  }
+
+  const parsed = new URL(normalized);
+  const path = parsed.pathname.replace(/\/+$/g, "");
+
+  if (!path || path === "/") {
+    parsed.pathname = "/api/v3/chat/completions";
+    return parsed.toString();
+  }
+
+  parsed.pathname = `${path}/chat/completions`;
+  return parsed.toString();
+}
+
+export function isNewApiAutoProvider(provider: string) {
+  return getOpenAICompatibleProviderProfile(provider).id === "newapi-auto";
+}
+
+export function isVolcengineArkProvider(provider: string) {
+  return getOpenAICompatibleProviderProfile(provider).id === "volcengine-ark";
+}
+
+export function isDashscopeQwenProvider(provider: string) {
+  return getOpenAICompatibleProviderProfile(provider).id === "dashscope-qwen";
+}
+
+export function isTencentHunyuanProvider(provider: string) {
+  return getOpenAICompatibleProviderProfile(provider).id === "tencent-hunyuan";
+}
+
+/**
+ * Normalizes a caller-supplied base URL to the Tencent Hunyuan chat completions endpoint.
+ * Accepts the root domain, /v1, or the full /v1/chat/completions path.
+ * Falls back to https://api.hunyuan.cloud.tencent.com/v1/chat/completions when given only the host.
+ */
+export function resolveHunyuanEndpoint(baseUrl: string) {
   const normalized = sanitizeBaseUrl(baseUrl).replace(/\/+$/g, "");
   if (!normalized) {
     return normalized;
@@ -108,20 +293,35 @@ export function resolveSkyEndpoint(baseUrl: string) {
   }
 
   const parsed = new URL(normalized);
-  const path = parsed.pathname.replace(/\/+$/g, "");
+  const urlPath = parsed.pathname.replace(/\/+$/g, "");
 
-  if (!path || path === "/") {
+  if (!urlPath || urlPath === "/") {
     parsed.pathname = "/v1/chat/completions";
     return parsed.toString();
   }
 
-  parsed.pathname = `${path}/v1/chat/completions`;
+  parsed.pathname = `${urlPath}/chat/completions`;
   return parsed.toString();
 }
 
-export function isNewApiAutoProvider(provider: string) {
-  const normalized = provider.trim().toLowerCase();
-  return normalized === "sky" || normalized === "newapi-auto";
+export function resolveConfiguredOpenAICompatibleEndpoint(provider: string, baseUrl: string) {
+  const profile = getOpenAICompatibleProviderProfile(provider);
+
+  switch (profile.endpointMode) {
+    case "ark-chat":
+      return resolveArkEndpoint(baseUrl);
+    case "dashscope-qwen":
+      return resolveDashscopeQwenEndpoint(baseUrl);
+    case "hunyuan-chat":
+      return resolveHunyuanEndpoint(baseUrl);
+    case "openai-v1":
+      return resolveSkyEndpoint(baseUrl);
+    case "newapi-probe":
+      return sanitizeBaseUrl(baseUrl).replace(/\/+$/g, "");
+    case "generic-chat":
+    default:
+      return resolveOpenAICompatibleEndpoint(baseUrl);
+  }
 }
 
 function sanitizeBaseUrl(baseUrl: string) {
@@ -220,6 +420,42 @@ function extractMessageContent(content?: string | Array<{ type?: string; text?: 
     .trim();
 }
 
+function parseOpenAICompatiblePayload(rawBody: string): OpenAICompatibleResponseShape {
+  const trimmed = rawBody.trim();
+  if (!trimmed) {
+    return {};
+  }
+
+  if (!trimmed.startsWith("data:")) {
+    return JSON.parse(trimmed) as OpenAICompatibleResponseShape;
+  }
+
+  const contentChunks: string[] = [];
+  for (const line of trimmed.split(/\r?\n/)) {
+    const eventPayload = line.trim().replace(/^data:\s*/i, "");
+    if (!eventPayload || eventPayload === "[DONE]") {
+      continue;
+    }
+
+    const event = JSON.parse(eventPayload) as OpenAICompatibleResponseShape;
+    const choice = event.choices?.[0];
+    const content = extractMessageContent(choice?.delta?.content ?? choice?.message?.content);
+    if (content) {
+      contentChunks.push(content);
+    }
+  }
+
+  return {
+    choices: [
+      {
+        message: {
+          content: contentChunks.join(""),
+        },
+      },
+    ],
+  };
+}
+
 export function extractJsonString(rawText: string) {
   const fencedMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fencedMatch?.[1]) {
@@ -274,6 +510,7 @@ async function performTextRequest(
           model: config.modelName,
           messages,
           temperature: 0.3,
+          stream: false,
         }),
         signal: controller.signal,
       });
@@ -288,7 +525,8 @@ async function performTextRequest(
       throw new OpenAICompatibleHttpError(response.status, endpoint);
     }
 
-    const payload = (await response.json()) as OpenAICompatibleResponseShape;
+    const rawBody = await response.text();
+    const payload = parseOpenAICompatiblePayload(rawBody);
     const rawText = extractMessageContent(payload.choices?.[0]?.message?.content);
     return {
       endpoint,
@@ -305,6 +543,30 @@ export async function callOpenAICompatibleTextModel(
   messages: OpenAICompatibleMessage[],
 ) {
   const endpoint = resolveOpenAICompatibleEndpoint(config.baseUrl);
+  return performTextRequest(endpoint, buildJsonAuthHeaders(config.apiKey), config, messages);
+}
+
+export async function callArkTextModel(
+  config: ModelApiConfig,
+  messages: OpenAICompatibleMessage[],
+) {
+  const endpoint = resolveArkEndpoint(config.baseUrl);
+  return performTextRequest(endpoint, buildJsonAuthHeaders(config.apiKey), config, messages);
+}
+
+export async function callDashscopeQwenTextModel(
+  config: ModelApiConfig,
+  messages: OpenAICompatibleMessage[],
+) {
+  const endpoint = resolveDashscopeQwenEndpoint(config.baseUrl);
+  return performTextRequest(endpoint, buildJsonAuthHeaders(config.apiKey), config, messages);
+}
+
+export async function callHunyuanTextModel(
+  config: ModelApiConfig,
+  messages: OpenAICompatibleMessage[],
+) {
+  const endpoint = resolveHunyuanEndpoint(config.baseUrl);
   return performTextRequest(endpoint, buildJsonAuthHeaders(config.apiKey), config, messages);
 }
 
@@ -370,6 +632,15 @@ export async function callConfiguredTextModel(
 ) {
   if (isNewApiAutoProvider(config.provider)) {
     return callNewApiAutoDetectTextModel(config, messages);
+  }
+  if (isVolcengineArkProvider(config.provider)) {
+    return callArkTextModel(config, messages);
+  }
+  if (isDashscopeQwenProvider(config.provider)) {
+    return callDashscopeQwenTextModel(config, messages);
+  }
+  if (isTencentHunyuanProvider(config.provider)) {
+    return callHunyuanTextModel(config, messages);
   }
   return callOpenAICompatibleTextModel(config, messages);
 }

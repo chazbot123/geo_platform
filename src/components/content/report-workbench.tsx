@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { ArrowRight, FileText, Image as ImageIcon, LoaderCircle, Save, ShieldCheck, AlertTriangle } from "lucide-react";
+import { ArrowRight, FileText, Image as ImageIcon, LoaderCircle, Save, ShieldCheck, AlertTriangle, XCircle } from "lucide-react";
 import type { ContentDraft, ImageAsset, ReviewResult, TaskBundle } from "@/lib/types";
+import type { ReviewResult as ContentReviewResult } from "@/lib/content/review-service";
 import { reviewDraft } from "@/lib/review/service";
 
 const REQUIRED_IMAGE_COUNT = 5;
@@ -140,6 +141,7 @@ export function ReportWorkbench({
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [activeStep, setActiveStep] = useState<1 | 2 | 3 | 4>(1);
+  const [reviewResult, setReviewResult] = useState<ContentReviewResult | null>(null);
 
   const imageItems = useMemo(() => getRenderableImages(image), [image]);
   const imageAssetState = useMemo(() => getImageAssetState(image), [image]);
@@ -166,6 +168,9 @@ export function ReportWorkbench({
       }
       if (target === "content") {
         setContent(payload.content);
+        if (payload.reviewResult) {
+          setReviewResult(payload.reviewResult);
+        }
         setMessage("权威报告已生成。");
       } else {
         setImage(payload.image);
@@ -465,6 +470,54 @@ export function ReportWorkbench({
             ) : null}
           </ul>
         </div>
+
+        {reviewResult && (reviewResult.blockingIssues.length > 0 || reviewResult.warnings.length > 0) && (
+          <div className={`rounded-[32px] border p-8 shadow-panel backdrop-blur-xl ${reviewResult.blockingIssues.length > 0 ? "border-danger/30 bg-danger/5" : "border-warning/30 bg-warning/5"}`}>
+            <div className="mb-6 flex items-center gap-3">
+              <XCircle className={`h-6 w-6 ${reviewResult.blockingIssues.length > 0 ? "text-danger" : "text-warning"}`} />
+              <h2 className="font-display text-xl font-bold tracking-tight text-ink">内容策略审核</h2>
+            </div>
+            {reviewResult.blockingIssues.length > 0 && (
+              <div className="mb-4">
+                <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-danger">阻断问题（{reviewResult.blockingIssues.length}）</p>
+                <ul className="space-y-2">
+                  {reviewResult.blockingIssues.map((issue, i) => (
+                    <li key={`b-${i}`} className="rounded-[14px] border border-danger/20 bg-danger/10 px-4 py-3 text-sm leading-relaxed text-slate-200">
+                      <span className="font-medium text-danger">[{issue.code}]</span> {issue.message}
+                      {issue.evidence ? <span className="ml-2 font-mono text-xs text-muted">「{issue.evidence}」</span> : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {reviewResult.warnings.length > 0 && (
+              <div>
+                <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-warning">警告（{reviewResult.warnings.length}）</p>
+                <ul className="space-y-2">
+                  {reviewResult.warnings.map((issue, i) => (
+                    <li key={`w-${i}`} className="rounded-[14px] border border-warning/20 bg-warning/10 px-4 py-3 text-sm leading-relaxed text-slate-300">
+                      <span className="font-medium text-warning">[{issue.code}]</span> {issue.message}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <div className="mt-5 grid grid-cols-3 gap-3 rounded-[16px] border border-stroke bg-surface/50 p-4 text-center text-xs">
+              <div>
+                <p className="text-muted">平台适配</p>
+                <p className={`mt-1 font-bold text-lg ${reviewResult.scores.platformFit >= 80 ? "text-emerald-400" : reviewResult.scores.platformFit >= 50 ? "text-warning" : "text-danger"}`}>{reviewResult.scores.platformFit}</p>
+              </div>
+              <div>
+                <p className="text-muted">合规度</p>
+                <p className={`mt-1 font-bold text-lg ${reviewResult.scores.complianceFit >= 80 ? "text-emerald-400" : reviewResult.scores.complianceFit >= 50 ? "text-warning" : "text-danger"}`}>{reviewResult.scores.complianceFit}</p>
+              </div>
+              <div>
+                <p className="text-muted">问题覆盖</p>
+                <p className={`mt-1 font-bold text-lg ${reviewResult.scores.questionCoverage >= 80 ? "text-emerald-400" : reviewResult.scores.questionCoverage >= 60 ? "text-warning" : "text-danger"}`}>{reviewResult.scores.questionCoverage}%</p>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className={`rounded-[32px] border border-stroke p-8 shadow-panel backdrop-blur-xl transition-all duration-300 ${activeStep === 4 ? "bg-panel/80" : "bg-panel/30 opacity-60"}`}>
           <h3 className="font-display text-2xl font-bold text-ink">下一步</h3>

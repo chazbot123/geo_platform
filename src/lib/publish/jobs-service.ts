@@ -10,18 +10,22 @@ import {
 import { updatePlatformAccountRecord } from "@/lib/publish/accounts-service";
 import { buildManualDeliveryNotes } from "@/lib/publish/manual-delivery-service";
 import { getPlatformDescriptor } from "@/lib/publish/platforms";
+import { validateDraftForPlatform } from "@/lib/publish/draft-builders";
 import type { PublishPlatform, PublishingDraft, PublishingExecutionMode, PublishingJobRecord, PublishingJobStatus } from "@/lib/types";
 
 function now() {
   return new Date().toISOString();
 }
 
-function resolveExecutionMode(_platform: PublishPlatform): PublishingExecutionMode {
-  return "electron_automation";
+function resolveExecutionMode(platform: PublishPlatform): PublishingExecutionMode {
+  const descriptor = getPlatformDescriptor(platform);
+  return descriptor?.executionMode ?? "manual_delivery";
 }
 
-function resolveInitialStatus(_platform: PublishPlatform): PublishingJobStatus {
-  return "queued";
+function resolveInitialStatus(platform: PublishPlatform): PublishingJobStatus {
+  const descriptor = getPlatformDescriptor(platform);
+  if (!descriptor) return "manual_pending";
+  return descriptor.automationStatus === "ready" ? "queued" : "manual_pending";
 }
 
 async function syncAccountPublishSnapshot(job: PublishingJobRecord, status: PublishingJobStatus, errorMessage?: string) {
@@ -50,6 +54,10 @@ export async function createPublishingJob(input: {
   const draft = await getPublishingDraft(input.draftId);
   if (!draft) {
     throw new Error("草稿不存在");
+  }
+  const validationErrors = validateDraftForPlatform(draft, draft.platform);
+  if (validationErrors.length > 0) {
+    throw new Error(`草稿不符合 ${draft.platform} 发布要求：${validationErrors.map((e) => e.message).join("；")}`);
   }
 
   const account = input.accountId ? await getPlatformAccount(input.accountId) : null;
@@ -100,9 +108,17 @@ export async function createAccountPublishingJob(input: {
   if (!draft) {
     throw new Error("账号发布稿不存在");
   }
+  const validationErrors = validateDraftForPlatform(draft, draft.platform);
+  if (validationErrors.length > 0) {
+    throw new Error(`账号发布稿不符合 ${draft.platform} 发布要求：${validationErrors.map((e) => e.message).join("；")}`);
+  }
 
   const account = await getPlatformAccount(draft.accountId);
   const descriptor = getPlatformDescriptor(draft.platform);
+
+  if (descriptor?.automationStatus === "ready" && !account) {
+    throw new Error("自动化发布需要关联账号，但未找到有效账号");
+  }
   const job: PublishingJobRecord = {
     id: createRecordId(),
     taskId: input.taskId,
@@ -154,6 +170,55 @@ export async function updatePublishingJobRecord(jobId: string, patch: Partial<Pu
     updatedAt: now(),
   };
   return savePublishingJob(next);
+}
+
+export async function transitionJobToRunning(jobId: string): Promise<PublishingJobRecord> {
+  return updatePublishingJobRecord(jobId, { status: "running", startedAt: now() });
+}
+
+export async function transitionJobToSubmitted(jobId: string, opts?: { draftUrl?: string; platformItemId?: string }): Promise<PublishingJobRecord> {
+  return updatePublishingJobRecord(jobId, {
+    status: "submitted",
+    submittedAt: now(),
+    draftUrl: opts?.draftUrl,
+    platformItemId: opts?.platformItemId,
+  });
+}
+
+export async function transitionJobToPublished(
+  jobId: string,
+  opts: { publishUrl?: string; verificationEvidence?: string; platformItemId?: string },
+): Promise<PublishingJobRecord> {
+  const job = await updatePublishingJobRecord(jobId, {
+    status: "published",
+    publishUrl: opts.publishUrl,
+    verificationEvidence: opts.verificationEvidence,
+    platformItemId: opts.platformItemId ?? undefined,
+    verifiedAt: now(),
+    finishedAt: now(),
+    publishedAt: now(),
+  });
+  await syncAccountPublishSnapshot(job, "published");
+  return job;
+}
+
+export async function transitionJobToFailed(
+  jobId: string,
+  opts: { failureStage?: string; errorMessage?: string; executionLog?: string[] },
+): Promise<PublishingJobRecord> {
+  const job = await updatePublishingJobRecord(jobId, {
+    status: "failed",
+    failureStage: opts.failureStage,
+    errorMessage: opts.errorMessage,
+    executionLog: opts.executionLog,
+    finishedAt: now(),
+  });
+  await syncAccountPublishSnapshot(job, "failed", opts.errorMessage);
+  return job;
+}
+
+export async function transitionJobToManualPending(jobId: string, notes?: string): Promise<PublishingJobRecord> {
+  return updatePublishingJobRecord(jobId, { status: "manual_pending", notes });
 }
 
 export async function recordPublishingJobResult(input: {
@@ -218,7 +283,49 @@ export async function listTaskPublishingJobs(taskId: string) {
 }
 
 export async function getDraftForJob(job: PublishingJobRecord): Promise<PublishingDraft | null> {
-  const drafts = await getPublishingJobsByTask(job.taskId);
-  void drafts;
+  if (job.accountPublishingDraftId) {
+    const accountDraft = await getAccountPublishingDraft(job.accountPublishingDraftId);
+    if (accountDraft) {
+      return {
+        id: accountDraft.id,
+        taskId: accountDraft.taskId,
+        platform: accountDraft.platform,
+        title: accountDraft.title,
+        body: accountDraft.body,
+        tags: accountDraft.tags,
+        coverImageUrl: accountDraft.coverImageUrl,
+        imageUrls: accountDraft.imageUrls,
+        localImagePaths: accountDraft.localImagePaths,
+        publishMode: accountDraft.publishMode,
+        publishEntryUrl: accountDraft.publishEntryUrl,
+        accountId: accountDraft.accountId,
+        updatedAt: accountDraft.updatedAt,
+      };
+    }
+  }
+
+  // Look up by the draft fields snapshotted on the job itself — the job stores title/body/tags
+  // at creation time, so fall back to reconstructing a minimal draft shape from the job record.
+  const directDraft = await getPublishingDraft(job.id);
+  if (directDraft) return directDraft;
+
+  // Reconstruct from the snapshot stored in the job record so callers always get a usable draft.
+  if (job.draftTitle || job.draftBody) {
+    return {
+      id: job.id,
+      taskId: job.taskId,
+      platform: job.platform,
+      title: job.draftTitle ?? "",
+      body: job.draftBody ?? "",
+      tags: job.draftTags ?? [],
+      imageUrls: job.draftImages ?? [],
+      localImagePaths: job.draftImagePaths ?? [],
+      publishMode: job.publishMode ?? "text_only",
+      publishEntryUrl: job.publishEntryUrl,
+      accountId: job.accountId,
+      updatedAt: job.updatedAt,
+    };
+  }
+
   return null;
 }

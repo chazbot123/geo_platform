@@ -1,4 +1,4 @@
-import { loadPlatformStrategy, loadRiskWords } from "@/lib/content/prompt-loader";
+import { loadPlatformStrategy, loadRiskWords, StrategyAssetValidationError } from "@/lib/content/prompt-loader";
 import type { ContentDraft } from "@/lib/types";
 
 export interface ReviewIssue {
@@ -18,6 +18,40 @@ export interface ReviewResult {
   };
 }
 
+function toAssetIssue(error: unknown, code: string): ReviewIssue {
+  if (error instanceof StrategyAssetValidationError) {
+    return {
+      code,
+      message: `Content strategy asset validation failed: ${error.issues.join("; ")}`,
+      evidence: error.assetPath,
+    };
+  }
+  return {
+    code,
+    message: error instanceof Error ? error.message : "Content strategy asset validation failed",
+  };
+}
+
+function getDraftText(draft: ContentDraft) {
+  return [
+    draft.title,
+    draft.summary,
+    draft.content,
+    draft.reportIntroduction,
+    draft.reportConclusion,
+    draft.cta,
+    ...(draft.faq ?? []),
+    ...(draft.reportSections ?? []).flatMap((section) => [
+      section.question,
+      section.heading,
+      section.summary,
+      section.body,
+    ]),
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
 export async function reviewContent(
   draft: ContentDraft,
   platform: string,
@@ -25,69 +59,131 @@ export async function reviewContent(
 ): Promise<ReviewResult> {
   const blockingIssues: ReviewIssue[] = [];
   const warnings: ReviewIssue[] = [];
-  const fullText = [draft.title, draft.summary, draft.content, draft.cta].filter(Boolean).join(" ");
+  const fullText = getDraftText(draft);
 
-  // 1. 风险词扫描
-  const riskConfig = await loadRiskWords();
+  let riskConfig = null;
+  try {
+    riskConfig = await loadRiskWords();
+  } catch (error) {
+    blockingIssues.push(toAssetIssue(error, "RISK_WORD_ASSET_INVALID"));
+  }
+
   if (riskConfig) {
     for (const word of riskConfig.blockingWords) {
       if (fullText.includes(word)) {
         blockingIssues.push({
           code: "RISK_WORD_BLOCKING",
-          message: `包含高风险词：${word}`,
+          message: `Blocking risk word found: ${word}`,
           evidence: word,
         });
       }
     }
+
     for (const word of riskConfig.warningWords) {
       if (fullText.includes(word)) {
         warnings.push({
           code: "RISK_WORD_WARNING",
-          message: `包含警告词：${word}`,
+          message: `Warning risk word found: ${word}`,
           evidence: word,
+        });
+      }
+    }
+
+    for (const rule of riskConfig.contextualRules) {
+      const matched = fullText.match(new RegExp(rule.pattern));
+      if (!matched) {
+        continue;
+      }
+      const issue: ReviewIssue = {
+        code: rule.risk === "blocking" ? "CONTEXTUAL_RISK_BLOCKING" : "CONTEXTUAL_RISK_WARNING",
+        message: rule.reason,
+        evidence: matched[0],
+      };
+      if (rule.risk === "blocking") {
+        blockingIssues.push(issue);
+      } else {
+        warnings.push(issue);
+      }
+    }
+  }
+
+  let platformFit = 100;
+  let strategy = null;
+  try {
+    strategy = await loadPlatformStrategy(platform);
+  } catch (error) {
+    blockingIssues.push(toAssetIssue(error, "PLATFORM_STRATEGY_ASSET_INVALID"));
+  }
+
+  if (strategy && draft.title) {
+    if (draft.title.length > strategy.title.maxLength) {
+      blockingIssues.push({
+        code: "TITLE_TOO_LONG",
+        message: `Title exceeds ${strategy.title.maxLength} characters (current ${draft.title.length})`,
+      });
+      platformFit -= 30;
+    }
+
+    for (const word of strategy.review.riskWords) {
+      if (fullText.includes(word)) {
+        blockingIssues.push({
+          code: "PLATFORM_RISK_WORD",
+          message: `Platform strategy risk word found: ${word}`,
+          evidence: word,
+        });
+      }
+    }
+
+    for (const required of strategy.review.mustHave) {
+      if (!fullText.includes(required)) {
+        warnings.push({
+          code: "PLATFORM_MUST_HAVE_MISSING",
+          message: `Platform strategy expects this content signal: ${required}`,
+          evidence: required,
+        });
+        platformFit -= 10;
+      }
+    }
+
+    for (const forbidden of strategy.review.mustNotHave) {
+      if (fullText.includes(forbidden)) {
+        blockingIssues.push({
+          code: "PLATFORM_MUST_NOT_HAVE",
+          message: `Platform strategy forbids this content signal: ${forbidden}`,
+          evidence: forbidden,
         });
       }
     }
   }
 
-  // 2. 标题长度检查
-  const strategy = await loadPlatformStrategy(platform);
-  let platformFit = 100;
-  if (strategy && draft.title) {
-    if (draft.title.length > strategy.title.maxLength) {
-      blockingIssues.push({
-        code: "TITLE_TOO_LONG",
-        message: `标题超过${strategy.title.maxLength}字（当前${draft.title.length}字）`,
-      });
-      platformFit -= 30;
-    }
-  }
-
-  // 3. 必答问题覆盖率
   let questionCoverage = 100;
   if (selectedQuestions && selectedQuestions.length > 0) {
     const sections = draft.reportSections ?? [];
-    const sectionQuestions = sections.map((s) => s.question).filter(Boolean);
-    const covered = selectedQuestions.filter((q) =>
-      sectionQuestions.some((sq) => sq.includes(q) || q.includes(sq)) ||
-      fullText.includes(q),
+    const sectionQuestions = sections.map((section) => section.question).filter(Boolean);
+    const covered = selectedQuestions.filter((question) =>
+      sectionQuestions.some((sectionQuestion) => sectionQuestion.includes(question) || question.includes(sectionQuestion)) ||
+      fullText.includes(question),
     );
     questionCoverage = Math.round((covered.length / selectedQuestions.length) * 100);
     if (questionCoverage < 60) {
-      warnings.push({
+      blockingIssues.push({
         code: "LOW_QUESTION_COVERAGE",
-        message: `必答问题覆盖率仅 ${questionCoverage}%（${covered.length}/${selectedQuestions.length}）`,
+        message: `Selected question coverage is ${questionCoverage}% (${covered.length}/${selectedQuestions.length})`,
+      });
+    } else if (questionCoverage < 80) {
+      warnings.push({
+        code: "QUESTION_COVERAGE_WARNING",
+        message: `Selected question coverage is ${questionCoverage}% (${covered.length}/${selectedQuestions.length})`,
       });
     }
   }
 
-  // 4. 公开标记泄露检查
   const leakPatterns = ["sha256:", "PGP SIGNATURE", "<?php", "GEO_CONTENT_ID:", "GEO_PROMPT_VERSION:"];
   for (const pattern of leakPatterns) {
     if (fullText.includes(pattern)) {
       blockingIssues.push({
         code: "INTERNAL_MARKER_LEAK",
-        message: `正文中包含不应公开的内部标记：${pattern}`,
+        message: `Draft contains an internal marker that must not be published: ${pattern}`,
       });
     }
   }
@@ -99,7 +195,7 @@ export async function reviewContent(
     blockingIssues,
     warnings,
     scores: {
-      platformFit,
+      platformFit: Math.max(0, platformFit),
       complianceFit,
       questionCoverage,
     },

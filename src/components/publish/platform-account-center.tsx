@@ -11,6 +11,19 @@ import type { AccountPublishedJobsGroup, PlatformAccountRecord, PublishingJobRec
 const TOUTIAO_PLATFORM = "toutiao";
 const TOUTIAO_LABEL = "今日头条";
 
+function routeAvailabilityBadge(availability: import("@/lib/publish/platforms").PlatformRouteAvailability) {
+  const config = {
+    official_api_ready: { label: "官方 API 可用", className: "bg-emerald-500/15 text-emerald-300 border border-emerald-500/20" },
+    official_api_unavailable: { label: "官方 API 不可用", className: "bg-orange-500/15 text-orange-300 border border-orange-500/20" },
+    electron_ready: { label: "Electron 自动化", className: "bg-sky-500/15 text-sky-300 border border-sky-500/20" },
+    manual_required: { label: "手动发布", className: "bg-slate-500/15 text-slate-300 border border-slate-500/20" },
+  };
+  const c = config[availability];
+  return (
+    <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${c.className}`}>{c.label}</span>
+  );
+}
+
 function platformLabel(platform: string) {
   return publishPlatformDescriptors.find((item) => item.key === platform)?.label ?? platform;
 }
@@ -49,9 +62,11 @@ function accountPublishabilityText(account: PlatformAccountRecord, isBridgeReady
     return describeAccountPublishability(account, isBridgeReady);
   }
   if (descriptor?.automationStatus === "manual_only") {
-    return "当前平台按手动发布账号记录使用。";
+    return account.loginStatus === "authenticated"
+      ? "账号会话已校验；当前平台发布脚本未接入，发布任务会走手动交付。"
+      : "当前平台支持桌面登录；发布脚本未接入，登录后先用于手动交付。";
   }
-  return "当前平台仍在计划接入阶段，暂按账号记录使用。";
+  return "当前平台尚未开放账号登录。";
 }
 
 function buildPublishedJobsMap(groups: AccountPublishedJobsGroup[]) {
@@ -121,7 +136,7 @@ export function PlatformAccountCenter({
     () =>
       accounts.filter((item) => {
         const descriptor = platformDescriptor(item.platform);
-        return descriptor?.automationStatus === "ready" && item.loginStatus === "authenticated";
+        return descriptor?.loginSupported && item.loginStatus === "authenticated";
       }),
     [accounts],
   );
@@ -377,7 +392,7 @@ export function PlatformAccountCenter({
             <p className="page-section-desc">
               {isBridgeReady
                 ? "当前页面已连接桌面桥，已自动化的平台可以使用桌面登录窗校验真实平台会话。"
-                : "当前页面尚未连接本机桌面桥，仍可先创建手动发布账号记录。"}
+                : "当前页面尚未连接本机桌面桥，请先启动 GEO 桌面版后再登录平台账号。"}
             </p>
             <div className={`mt-4 rounded-lg border p-4 text-xs leading-relaxed ${
               isBridgeReady
@@ -430,7 +445,7 @@ export function PlatformAccountCenter({
                 ? "当前运行在桌面版，账号中心会使用内置登录桥打开已接入平台的登录窗，并在窗口关闭后校验真实平台会话。"
                 : isBridgeReady
                   ? "当前运行在浏览器中，但账号中心已经连接到本机 localhost 桌面桥，可以调用桌面版完成登录与校验。"
-                  : "当前未检测到本机桌面桥，未自动化平台仍可创建账号记录用于手动发布。"}
+                  : "当前未检测到本机桌面桥；平台账号登录需要通过 GEO 桌面版完成。"}
             </p>
             <p className="flex items-center gap-2">
               <span className="relative flex h-2 w-2">
@@ -462,21 +477,22 @@ export function PlatformAccountCenter({
                             ? "bg-cyan-500/15 text-cyan-300"
                             : "bg-warning/15 text-warning"
                       }`}>
-                        {descriptor.automationStatus === "ready" ? "已自动化" : descriptor.automationStatus === "manual_only" ? "手动发布" : "计划接入"}
+                        {descriptor.automationStatus === "ready" ? "已自动化" : descriptor.automationStatus === "manual_only" ? "账号登录" : "未接入"}
                       </span>
+                      {routeAvailabilityBadge(descriptor.routeAvailability)}
                     </div>
                     <p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted">{descriptor.hint}</p>
                     <p className="mt-1 max-w-3xl text-xs leading-relaxed text-slate-400">{descriptor.contentProfile}</p>
                   </div>
                   <div className="flex min-w-[260px] flex-col gap-2">
-                    {descriptor.automationStatus === "ready" ? (
+                    {descriptor.loginSupported ? (
                       <button
                         className="flex items-center justify-center gap-2 rounded-lg bg-accent-muted px-4 py-2.5 text-xs font-bold text-accent transition-colors hover:bg-accent hover:text-surface disabled:opacity-50"
                         onClick={() => startLogin(descriptor.key)}
                         disabled={loadingKey === descriptor.key || !isBridgeReady}
                       >
                         {loadingKey === descriptor.key ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <LogIn className="h-3.5 w-3.5" />}
-                        登录{descriptor.label}
+                        登录{descriptor.label}账号
                       </button>
                     ) : (
                       <div className="grid gap-2">
@@ -491,7 +507,7 @@ export function PlatformAccountCenter({
                           onClick={() => createManualAccount(descriptor.key)}
                           disabled={loadingKey === `create-${descriptor.key}`}
                         >
-                          {loadingKey === `create-${descriptor.key}` ? "创建中..." : "创建手动账号"}
+                          {loadingKey === `create-${descriptor.key}` ? "创建中..." : "创建账号记录"}
                         </button>
                       </div>
                     )}
@@ -733,7 +749,7 @@ export function PlatformAccountCenter({
               </div>
               <p className="mt-4 font-medium text-ink">暂无已保存账号</p>
               <p className="mt-2 max-w-md text-sm text-muted">
-                可先登录今日头条，或为计划接入平台创建手动发布账号记录。
+                请先启动 GEO 桌面版，然后在对应平台卡片里登录账号。
               </p>
             </div>
           )}

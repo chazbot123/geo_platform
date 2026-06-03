@@ -53,7 +53,17 @@ export interface RiskWordsConfig {
   contextualRules: Array<{ pattern: string; risk: "warning" | "blocking"; reason: string }>;
 }
 
-const SUPPORTED_PLATFORMS = ["toutiao", "wechat", "blog", "xiaohongshu", "douyin"] as const;
+export class StrategyAssetValidationError extends Error {
+  constructor(
+    public readonly assetPath: string,
+    public readonly issues: string[],
+  ) {
+    super(`Invalid content strategy asset ${assetPath}: ${issues.join("; ")}`);
+    this.name = "StrategyAssetValidationError";
+  }
+}
+
+const SUPPORTED_PLATFORMS = ["toutiao", "wechat", "blog", "xiaohongshu", "douyin", "zhihu", "weibo", "csdn"] as const;
 const SUPPORTED_AI_SCENARIOS = [
   "doubao_plain_answer",
   "deepseek_logic",
@@ -90,11 +100,196 @@ export function normalizeAiScenario(value: string | undefined): SupportedAiScena
   return isSupportedAiScenario(value) ? value : "doubao_plain_answer";
 }
 
-async function readJsonFile<T>(filePath: string): Promise<T | null> {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return Number.isInteger(value) && Number(value) > 0;
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return Number.isInteger(value) && Number(value) >= 0;
+}
+
+function requireRecord(value: unknown, pathLabel: string, issues: string[]): Record<string, unknown> {
+  if (!isRecord(value)) {
+    issues.push(`${pathLabel} must be an object`);
+    return {};
+  }
+  return value;
+}
+
+function requireString(value: unknown, pathLabel: string, issues: string[]) {
+  if (typeof value !== "string" || !value.trim()) {
+    issues.push(`${pathLabel} must be a non-empty string`);
+  }
+}
+
+function requireStringArray(value: unknown, pathLabel: string, issues: string[]) {
+  if (!isStringArray(value)) {
+    issues.push(`${pathLabel} must be an array of strings`);
+  }
+}
+
+function requireBoolean(value: unknown, pathLabel: string, issues: string[]) {
+  if (typeof value !== "boolean") {
+    issues.push(`${pathLabel} must be a boolean`);
+  }
+}
+
+function requirePositiveInteger(value: unknown, pathLabel: string, issues: string[]) {
+  if (!isPositiveInteger(value)) {
+    issues.push(`${pathLabel} must be a positive integer`);
+  }
+}
+
+function requireNonNegativeInteger(value: unknown, pathLabel: string, issues: string[]) {
+  if (!isNonNegativeInteger(value)) {
+    issues.push(`${pathLabel} must be a non-negative integer`);
+  }
+}
+
+function requireRange(value: unknown, pathLabel: string, issues: string[]) {
+  const range = requireRecord(value, pathLabel, issues);
+  requirePositiveInteger(range.min, `${pathLabel}.min`, issues);
+  requirePositiveInteger(range.max, `${pathLabel}.max`, issues);
+  if (isPositiveInteger(range.min) && isPositiveInteger(range.max) && range.min > range.max) {
+    issues.push(`${pathLabel}.min must be less than or equal to ${pathLabel}.max`);
+  }
+}
+
+function requireNonNegativeRange(value: unknown, pathLabel: string, issues: string[]) {
+  const range = requireRecord(value, pathLabel, issues);
+  requireNonNegativeInteger(range.min, `${pathLabel}.min`, issues);
+  requireNonNegativeInteger(range.max, `${pathLabel}.max`, issues);
+  if (isNonNegativeInteger(range.min) && isNonNegativeInteger(range.max) && range.min > range.max) {
+    issues.push(`${pathLabel}.min must be less than or equal to ${pathLabel}.max`);
+  }
+}
+
+function assertValidPlatformStrategy(value: unknown, filePath: string): PlatformStrategy {
+  const issues: string[] = [];
+  const root = requireRecord(value, "platform strategy", issues);
+  requireString(root.platform, "platform", issues);
+  if (typeof root.platform === "string" && !isSupportedPlatform(root.platform)) {
+    issues.push(`platform must be one of ${SUPPORTED_PLATFORMS.join(", ")}`);
+  }
+  requireString(root.platformLabel, "platformLabel", issues);
+
+  const title = requireRecord(root.title, "title", issues);
+  requirePositiveInteger(title.maxLength, "title.maxLength", issues);
+  requireStringArray(title.patterns, "title.patterns", issues);
+  requireStringArray(title.bannedPatterns, "title.bannedPatterns", issues);
+  requireString(title.instructions, "title.instructions", issues);
+
+  const body = requireRecord(root.body, "body", issues);
+  requireString(body.preferredStructure, "body.preferredStructure", issues);
+  requireString(body.paragraphLength, "body.paragraphLength", issues);
+  requirePositiveInteger(body.maxParagraphChars, "body.maxParagraphChars", issues);
+  requireString(body.headingStyle, "body.headingStyle", issues);
+  requireRange(body.sectionCount, "body.sectionCount", issues);
+  requireString(body.ctaStyle, "body.ctaStyle", issues);
+  requireString(body.instructions, "body.instructions", issues);
+
+  const metadata = requireRecord(root.metadata, "metadata", issues);
+  requireBoolean(metadata.allowPublicTraceId, "metadata.allowPublicTraceId", issues);
+  requireBoolean(metadata.allowTimestamp, "metadata.allowTimestamp", issues);
+  requireBoolean(metadata.allowMarkdownTable, "metadata.allowMarkdownTable", issues);
+  requireBoolean(metadata.allowFaq, "metadata.allowFaq", issues);
+  requireNonNegativeRange(metadata.faqCount, "metadata.faqCount", issues);
+
+  const review = requireRecord(root.review, "review", issues);
+  requireStringArray(review.riskWords, "review.riskWords", issues);
+  requireStringArray(review.mustHave, "review.mustHave", issues);
+  requireStringArray(review.mustNotHave, "review.mustNotHave", issues);
+
+  if (issues.length) {
+    throw new StrategyAssetValidationError(filePath, issues);
+  }
+  return value as PlatformStrategy;
+}
+
+function assertValidAngleLibrary(value: unknown, filePath: string): AngleLibrary {
+  const issues: string[] = [];
+  const root = requireRecord(value, "angle library", issues);
+  if (!Array.isArray(root.angles)) {
+    issues.push("angles must be an array");
+  } else {
+    root.angles.forEach((angle, index) => {
+      const item = requireRecord(angle, `angles[${index}]`, issues);
+      requireString(item.angleId, `angles[${index}].angleId`, issues);
+      requireString(item.label, `angles[${index}].label`, issues);
+      requireString(item.description, `angles[${index}].description`, issues);
+      requireStringArray(item.applicablePlatforms, `angles[${index}].applicablePlatforms`, issues);
+      if (isStringArray(item.applicablePlatforms)) {
+        for (const platform of item.applicablePlatforms) {
+          if (platform && !isSupportedPlatform(platform)) {
+            issues.push(`angles[${index}].applicablePlatforms includes unsupported platform ${platform}`);
+          }
+        }
+      }
+      requireString(item.titleDirection, `angles[${index}].titleDirection`, issues);
+    });
+  }
+
+  if (issues.length) {
+    throw new StrategyAssetValidationError(filePath, issues);
+  }
+  return value as AngleLibrary;
+}
+
+function assertValidRiskWords(value: unknown, filePath: string): RiskWordsConfig {
+  const issues: string[] = [];
+  const root = requireRecord(value, "risk words config", issues);
+  requireString(root.version, "version", issues);
+  requireString(root.description, "description", issues);
+  requireStringArray(root.blockingWords, "blockingWords", issues);
+  requireStringArray(root.warningWords, "warningWords", issues);
+  if (!Array.isArray(root.contextualRules)) {
+    issues.push("contextualRules must be an array");
+  } else {
+    root.contextualRules.forEach((rule, index) => {
+      const item = requireRecord(rule, `contextualRules[${index}]`, issues);
+      requireString(item.pattern, `contextualRules[${index}].pattern`, issues);
+      if (typeof item.pattern === "string") {
+        try {
+          new RegExp(item.pattern);
+        } catch {
+          issues.push(`contextualRules[${index}].pattern must be a valid regular expression`);
+        }
+      }
+      if (item.risk !== "warning" && item.risk !== "blocking") {
+        issues.push(`contextualRules[${index}].risk must be warning or blocking`);
+      }
+      requireString(item.reason, `contextualRules[${index}].reason`, issues);
+    });
+  }
+
+  if (issues.length) {
+    throw new StrategyAssetValidationError(filePath, issues);
+  }
+  return value as RiskWordsConfig;
+}
+
+async function readJsonFile(filePath: string): Promise<unknown | null> {
   try {
     const text = await fs.readFile(filePath, "utf-8");
-    return JSON.parse(text) as T;
-  } catch {
+    try {
+      return JSON.parse(text) as unknown;
+    } catch (error) {
+      throw new StrategyAssetValidationError(filePath, [
+        `JSON parse failed: ${error instanceof Error ? error.message : "unknown parse error"}`,
+      ]);
+    }
+  } catch (error) {
+    if (error instanceof StrategyAssetValidationError) {
+      throw error;
+    }
     return null;
   }
 }
@@ -110,19 +305,24 @@ async function readTextFile(filePath: string): Promise<string | null> {
 export async function loadPlatformStrategy(platform: string | undefined): Promise<PlatformStrategy | null> {
   const normalized = normalizePlatform(platform);
   const file = path.join(getSkillsDir(), "platform-article-structure", "platform-strategies", `${normalized}.json`);
-  return readJsonFile<PlatformStrategy>(file);
+  const data = await readJsonFile(file);
+  return data ? assertValidPlatformStrategy(data, file) : null;
 }
 
 export async function loadAiScenarioTemplate(scenario: string | undefined): Promise<string | null> {
   const normalized = normalizeAiScenario(scenario);
   const file = path.join(getSkillsDir(), "ai-answer-structure", "templates", `${normalized}.md`);
-  return readTextFile(file);
+  const template = await readTextFile(file);
+  if (template !== null && !template.trim()) {
+    throw new StrategyAssetValidationError(file, ["AI scenario template must not be empty"]);
+  }
+  return template;
 }
 
 export async function loadAngleLibrary(): Promise<AngleLibrary> {
   const file = path.join(getSkillsDir(), "similarity-dispersion", "angle-library.json");
-  const data = await readJsonFile<AngleLibrary>(file);
-  return data ?? { angles: [] };
+  const data = await readJsonFile(file);
+  return data ? assertValidAngleLibrary(data, file) : { angles: [] };
 }
 
 export async function loadAngleDefinition(angleId: string | undefined): Promise<AngleDefinition | null> {
@@ -133,7 +333,8 @@ export async function loadAngleDefinition(angleId: string | undefined): Promise<
 
 export async function loadRiskWords(): Promise<RiskWordsConfig | null> {
   const file = path.join(getSkillsDir(), "geo-content-review", "risk-words.json");
-  return readJsonFile<RiskWordsConfig>(file);
+  const data = await readJsonFile(file);
+  return data ? assertValidRiskWords(data, file) : null;
 }
 
 export function renderPlatformStrategyInstructions(strategy: PlatformStrategy | null): string {

@@ -1,0 +1,31 @@
+{
+  "platform": "zhihu",
+  "platformLabel": "知乎",
+  "title": {
+    "maxLength": 50,
+    "patterns": ["question", "comparison", "insight", "logical_summary"],
+    "bannedPatterns": ["clickbait_without_answer", "absolute_claim", "low_quality_question"],
+    "instructions": "标题应是一个真实用户会在知乎提问的完整问句，或者一个有明确观点的文章标题。避免标题党和无意义的情感化表述。"
+  },
+  "body": {
+    "preferredStructure": "conclusion_first_then_analysis",
+    "paragraphLength": "medium",
+    "maxParagraphChars": 300,
+    "headingStyle": "logical",
+    "sectionCount": { "min": 3, "max": 6 },
+    "ctaStyle": "invite_discussion",
+    "instructions": "知乎回答/文章应结论前置：开头直接给出判断，然后展开分析和依据，最后给出适用边界和限制说明。要有明确的逻辑骨架，鼓励使用对比维度、判断标准列表和小节分段。语言不要过于口语化，保持客观分析感，但不要过度学术堆砌。"
+  },
+  "metadata": {
+    "allowPublicTraceId": false,
+    "allowTimestamp": true,
+    "allowMarkdownTable": true,
+    "allowFaq": false,
+    "faqCount": { "min": 0, "max": 0 }
+  },
+  "review": {
+    "riskWords": ["最强", "绝对", "根治", "保赚", "唯一", "100%", "永久", "业界第一"],
+    "mustHave": ["判断标准", "结论"],
+    "mustNotHave": ["完整hash", "PGP签名块", "PHP注释", "品牌宣传稿"]
+  }
+}

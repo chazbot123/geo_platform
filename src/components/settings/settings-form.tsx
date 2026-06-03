@@ -1,8 +1,23 @@
 ﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿"use client";
 
 import { useState } from "react";
+import { LoaderCircle, CheckCircle, XCircle } from "lucide-react";
 import type { AppConfig } from "@/lib/types";
 import { formatConfigFieldLabel, formatConfigGroupLabel } from "@/lib/utils";
+
+interface ProbeOutcome {
+  ok: boolean;
+  endpoint?: string;
+  error?: string;
+  attempts?: Array<{ endpoint?: string; authMode?: string; error?: string }>;
+  isMockFallback?: boolean;
+  provider?: string;
+}
+
+interface ProbeResult {
+  stage1: ProbeOutcome;
+  content: ProbeOutcome;
+}
 
 function getConfigDescription(key: string, provider: string) {
   const normalizedProvider = provider.trim().toLowerCase();
@@ -36,6 +51,8 @@ function getConfigDescription(key: string, provider: string) {
 export function SettingsForm({ initialConfig }: { initialConfig: AppConfig }) {
   const [config, setConfig] = useState(initialConfig);
   const [message, setMessage] = useState("");
+  const [probing, setProbing] = useState(false);
+  const [probeResult, setProbeResult] = useState<ProbeResult | null>(null);
 
   async function save() {
     const response = await fetch("/api/config", {
@@ -45,6 +62,20 @@ export function SettingsForm({ initialConfig }: { initialConfig: AppConfig }) {
     });
     const payload = await response.json();
     setMessage(response.ok ? "配置已保存。" : payload.error ?? "保存失败。");
+  }
+
+  async function probe() {
+    setProbing(true);
+    setProbeResult(null);
+    try {
+      const response = await fetch("/api/config/probe", { method: "POST" });
+      const payload = await response.json() as ProbeResult;
+      setProbeResult(payload);
+    } catch {
+      setProbeResult({ stage1: { ok: false, error: "请求失败" }, content: { ok: false, error: "请求失败" } });
+    } finally {
+      setProbing(false);
+    }
   }
 
   return (
@@ -109,6 +140,62 @@ export function SettingsForm({ initialConfig }: { initialConfig: AppConfig }) {
       <button className="rounded-2xl bg-accent px-5 py-4 text-sm font-semibold text-slate-950" onClick={save}>
         保存本地配置
       </button>
+      <button
+        className="flex items-center justify-center gap-2 rounded-2xl border border-stroke bg-white/5 px-5 py-4 text-sm font-semibold text-ink transition-colors hover:bg-white/10 disabled:opacity-50"
+        onClick={probe}
+        disabled={probing}
+      >
+        {probing ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}
+        {probing ? "探测中..." : "测试模型连接"}
+      </button>
+      {probeResult && (
+        <div className="col-span-full rounded-2xl border border-stroke bg-white/5 p-5 space-y-3">
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted">模型探测结果</p>
+          {(["stage1", "content"] as const).map((key) => {
+            const outcome = probeResult[key];
+            const label = key === "stage1" ? "第一阶段模型" : "内容模型";
+            return (
+              <div key={key} className={`rounded-xl border p-4 ${outcome.ok ? "border-emerald-500/20 bg-emerald-500/5" : "border-danger/20 bg-danger/5"}`}>
+                <div className="flex items-center gap-2 mb-2">
+                  {outcome.ok
+                    ? <CheckCircle className="h-4 w-4 text-emerald-400" />
+                    : <XCircle className="h-4 w-4 text-danger" />}
+                  <span className="text-sm font-semibold text-ink">{label}</span>
+                  <span className={`ml-auto text-xs font-medium ${outcome.ok ? "text-emerald-400" : "text-danger"}`}>
+                    {outcome.ok ? "连接正常" : "连接失败"}
+                  </span>
+                </div>
+                {outcome.isMockFallback && (
+                  <div className="mb-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-1.5 text-xs text-warning">
+                    当前结果来自模拟回退（mock fallback），未连接到真实 API
+                  </div>
+                )}
+                {outcome.provider && (
+                  <p className="text-[11px] text-muted mb-1">供应商：{outcome.provider}</p>
+                )}
+                {outcome.endpoint && (
+                  <p className="font-mono text-[11px] text-muted break-all">{outcome.endpoint}</p>
+                )}
+                {outcome.attempts && outcome.attempts.length > 0 && (
+                  <p className="mt-1 text-[11px] text-muted">探测尝试：{outcome.attempts.length} 次</p>
+                )}
+                {outcome.error && (
+                  <p className="mt-1 text-xs text-danger">{outcome.error}</p>
+                )}
+                {outcome.attempts && outcome.attempts.length > 0 && (
+                  <ul className="mt-2 space-y-1">
+                    {outcome.attempts.map((attempt, i) => (
+                      <li key={i} className="font-mono text-[10px] text-muted/70">
+                        {attempt.authMode ?? "?"} → {attempt.endpoint ?? "?"} ({attempt.error ?? "UNKNOWN"})
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
       {message ? <p className="text-sm text-slate-300">{message}</p> : null}
     </div>
   );
