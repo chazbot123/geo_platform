@@ -12,7 +12,7 @@ export default async function PublishWorkbenchPage() {
   }));
 
   return (
-    <AppShell title="多平台发布工作台" description="按板块映射展示目标平台和账号级发布稿；已接入脚本的平台走自动发布，未接入脚本的平台按手动交付处理。">
+    <AppShell title="多平台发布工作台" description="按板块映射展示目标平台和账号级发布稿；已登录账号的平台统一通过 Electron 脚本执行自动发布。">
       <PublishWorkbench tasks={tasks} />
     </AppShell>
   );

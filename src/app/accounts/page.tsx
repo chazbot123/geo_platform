@@ -11,7 +11,7 @@ export default async function AccountsPage() {
   return (
     <AppShell
       title="多平台账号中心"
-      description="按发布平台管理账号登录状态和发布历史。支持登录的平台统一走桌面登录桥；未接入发布脚本的平台先按手动交付处理。"
+      description="按发布平台管理账号登录状态和发布历史。支持登录的平台统一走桌面登录桥，发布统一优先走 Electron 脚本自动化。"
     >
       <PlatformAccountCenter initialAccounts={accounts} initialPublishedByAccount={publishedByAccount} />
     </AppShell>

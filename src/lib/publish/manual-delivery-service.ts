@@ -22,7 +22,7 @@ export function buildManualDeliveryPayload(draft: PublishingDraft, account?: Pla
     tags: draft.tags,
     imageUrls: draft.imageUrls,
     accountName: account?.displayName ?? account?.accountName,
-    hint: descriptor?.hint ?? "请复制草稿内容并在平台创作页完成手动发布。",
+    hint: descriptor?.hint ?? "当前平台发布脚本尚未补齐，需先接入 Electron 自动化脚本。",
   };
 }
 

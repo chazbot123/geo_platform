@@ -480,6 +480,14 @@ function resolveAutomationFile(platform) {
       return path.join(automationDirectory, "douyin.js");
     case "wechat":
       return path.join(automationDirectory, "wechat.js");
+    case "videohao":
+      return path.join(automationDirectory, "videohao.js");
+    case "zhihu":
+      return path.join(automationDirectory, "zhihu.js");
+    case "weibo":
+      return path.join(automationDirectory, "weibo.js");
+    case "csdn":
+      return path.join(automationDirectory, "csdn.js");
     default:
       return "";
   }
@@ -569,11 +577,73 @@ async function preparePublishImages(payload = {}, log) {
 async function waitForWindowStable(windowInstance) {
   await sleep(1500);
   if (windowInstance.webContents.isLoading()) {
-    await new Promise((resolve) => {
-      windowInstance.webContents.once("did-finish-load", resolve);
-    });
+    await Promise.race([
+      new Promise((resolve) => {
+        windowInstance.webContents.once("did-finish-load", resolve);
+      }),
+      sleep(12000),
+    ]);
   }
   await sleep(1200);
+}
+
+async function loadWindowUrlWithTimeout(windowInstance, url, timeoutMs = 25000) {
+  let timedOut = false;
+  await Promise.race([
+    windowInstance.loadURL(url),
+    sleep(timeoutMs).then(() => {
+      timedOut = true;
+    }),
+  ]);
+  return timedOut;
+}
+
+function attachPublishNetworkLogger(windowInstance, sessionToken, platform) {
+  const webContents = windowInstance?.webContents;
+  if (!webContents || !sessionToken) return () => {};
+  const seen = new Set();
+  const logNetwork = (message) => appendProgressLog(sessionToken, platform, message);
+  try {
+    if (!webContents.debugger.isAttached()) {
+      webContents.debugger.attach("1.3");
+    }
+    webContents.debugger.sendCommand("Network.enable").catch(() => {});
+    const onDebuggerMessage = (_, method, params = {}) => {
+      if (method !== "Network.requestWillBeSent") return;
+      const request = params.request || {};
+      const resourceType = String(params.type || "").toLowerCase();
+      const url = String(request.url || "");
+      const requestMethod = String(request.method || "GET").toUpperCase();
+      if (!url || !["xhr", "fetch"].includes(resourceType)) return;
+      if (!/csdn|baidu|toutiao|weibo|zhihu|weixin|douyin|byte|creator|mp\./i.test(url)) return;
+      const normalizedUrl = url.replace(/([?&](?:token|access_token|csrf|session|cookie|signature|sign|key|secret)=)[^&]+/gi, "$1***");
+      const key = `${requestMethod} ${normalizedUrl}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      logNetwork(`network_${resourceType}: ${requestMethod} ${normalizedUrl.slice(0, 500)}`);
+      const postData = typeof request.postData === "string" ? request.postData : "";
+      if (postData && /csdn\.net\/blog.*(saveArticle|article|publish|create|save|history-version|get-quality-score)/i.test(url)) {
+        const sanitizedPostData = postData
+          .replace(/("(?:token|access_token|csrf|session|cookie|signature|sign|key|secret)"\s*:\s*")[^"]+"/gi, "$1***\"")
+          .replace(/((?:token|access_token|csrf|session|cookie|signature|sign|key|secret)=)[^&]+/gi, "$1***");
+        logNetwork(`network_${resourceType}_postdata: ${sanitizedPostData.slice(0, 1200)}`);
+      }
+    };
+    webContents.debugger.on("message", onDebuggerMessage);
+    return () => {
+      try {
+        webContents.debugger.off("message", onDebuggerMessage);
+        if (webContents.debugger.isAttached()) {
+          webContents.debugger.detach();
+        }
+      } catch (_) {
+        // ignore debugger cleanup errors
+      }
+    };
+  } catch (error) {
+    logNetwork(`network_logger_failed: ${error instanceof Error ? error.message : "unknown"}`);
+    return () => {};
+  }
 }
 
 async function executeAutomation(windowInstance, filePath, payload) {
@@ -581,8 +651,36 @@ async function executeAutomation(windowInstance, filePath, payload) {
   const source = fs.readFileSync(filePath, "utf8");
   return windowInstance.webContents.executeJavaScript(
     `(async () => {
-      ${helperSource}
-      return (${source})(${JSON.stringify(payload)});
+      try {
+        ${helperSource}
+        const payload = ${JSON.stringify(payload)};
+        const timeoutMs = Number(payload?.timeoutMs) || 180000;
+        return await Promise.race([
+          (${source})(payload),
+          new Promise((resolve) => {
+            setTimeout(() => {
+              resolve({
+                status: "failed",
+                failureStage: "script_timeout",
+                errorMessage: "自动化脚本执行超时，可能卡在平台弹层、编辑器加载或提交确认阶段。",
+                executionLog: ["script_timeout: " + timeoutMs + "ms"],
+                verificationEvidence: "failed_at_script_timeout",
+                draftUrl: window.location.href,
+              });
+            }, timeoutMs);
+          }),
+        ]);
+      } catch (error) {
+        const message = error instanceof Error ? (error.stack || error.message) : String(error || "automation script failed");
+        return {
+          status: "failed",
+          failureStage: "inject_automation",
+          errorMessage: message,
+          executionLog: ["inject_automation_error: " + message],
+          verificationEvidence: "failed_at_inject_automation",
+          draftUrl: window.location.href,
+        };
+      }
     })()`,
     true,
   );
@@ -658,12 +756,13 @@ async function runPlatformPublish(input = {}) {
     sessionPartition: input.sessionPartition,
   });
   let shouldCloseWindow = false;
+  const detachNetworkLogger = attachPublishNetworkLogger(publishWindow, sessionToken, input.platform);
 
   publishWindow.webContents.openDevTools({ mode: 'detach' });
 
   publishWindow.webContents.on("console-message", (_, _level, message) => {
     const text = String(message || "");
-    const prefix = text.match(/^\[geo-(toutiao|baijiahao|douyin|wechat)\]\s*/);
+    const prefix = text.match(/^\[geo-(toutiao|baijiahao|douyin|wechat|videohao|zhihu|weibo|csdn)\]\s*/);
     if (!prefix) {
       return;
     }
@@ -724,7 +823,10 @@ async function runPlatformPublish(input = {}) {
     }
 
     log(`open_publish_page: ${publishUrl}`);
-    await publishWindow.loadURL(publishUrl);
+    const loadTimedOut = await loadWindowUrlWithTimeout(publishWindow, publishUrl, 25000);
+    if (loadTimedOut) {
+      log("open_publish_page_timeout: 页面加载超过 25 秒，继续注入自动化脚本。");
+    }
     await waitForWindowStable(publishWindow);
     
     const isBlank = await publishWindow.webContents.executeJavaScript(`document.body?.innerText.trim().length === 0`);
@@ -785,6 +887,7 @@ async function runPlatformPublish(input = {}) {
       failureStage: message.includes("ERR_") || message.includes("loadURL") ? "load_publish_page" : "electron_publish",
     };
   } finally {
+    detachNetworkLogger();
     if (shouldCloseWindow && !publishWindow.isDestroyed()) {
       const currentUrl = publishWindow.webContents.getURL();
       if (currentUrl && !currentUrl.startsWith("devtools://")) {

@@ -43,7 +43,7 @@ function routeAvailabilityBadge(platform: string) {
     official_api_ready: { label: "官方 API 可用", className: "bg-emerald-500/15 text-emerald-300 border border-emerald-500/20" },
     official_api_unavailable: { label: "官方 API 不可用", className: "bg-orange-500/15 text-orange-300 border border-orange-500/20" },
     electron_ready: { label: "Electron 自动化", className: "bg-sky-500/15 text-sky-300 border border-sky-500/20" },
-    manual_required: { label: "手动发布", className: "bg-slate-500/15 text-slate-300 border border-slate-500/20" },
+    manual_required: { label: "脚本待补齐", className: "bg-slate-500/15 text-slate-300 border border-slate-500/20" },
   };
   const c = config[descriptor.routeAvailability];
   return (
@@ -62,8 +62,17 @@ function accountOptions(accounts: PlatformAccountRecord[], platform: string) {
 function platformAutomationLabel(platform: string) {
   const status = publishPlatformDescriptors.find((item) => item.key === platform)?.automationStatus;
   if (status === "ready") return "已自动化";
-  if (status === "manual_only") return "手动发布";
-  return "未接入";
+  if (status === "manual_only") return "登录可用";
+  return "脚本待补齐";
+}
+
+function isElectronAutomationPlatform(platform: string) {
+  const descriptor = publishPlatformDescriptors.find((item) => item.key === platform);
+  return descriptor?.automationStatus === "ready" && descriptor.executionMode === "electron_automation";
+}
+
+function canRunElectronJob(job: PublishingJobRecord) {
+  return isElectronAutomationPlatform(job.platform) && job.executionMode === "electron_automation" && job.automationStatus === "ready";
 }
 
 function groupAccountDraftsByPlatform(data: PublishWorkbenchData | null) {
@@ -529,7 +538,9 @@ export function PublishWorkbench({
 
   async function createJobs() {
     if (!selectedTaskId || selectedDraftIds.length === 0) return;
-    if (!isBridgeReady) {
+    const selectedDrafts = data?.drafts.filter((draft) => selectedDraftIds.includes(draft.id)) ?? [];
+    const requiresElectronBridge = selectedDrafts.some((draft) => isElectronAutomationPlatform(draft.platform));
+    if (requiresElectronBridge && !isBridgeReady) {
       setMessage(bridgeAvailability.reason ?? "当前未检测到可用桌面桥，请先启动 GEO 桌面版后再创建平台草稿发布任务。");
       return;
     }
@@ -555,6 +566,7 @@ export function PublishWorkbench({
       const createdJobs = payload.jobs as PublishingJobRecord[];
       const jobsWithSession = await Promise.all(
         createdJobs.map(async (job) => {
+          if (!canRunElectronJob(job) || job.status !== "queued") return job;
           const sessionToken = createClientSessionToken();
           return patchJob(job.id, { sessionToken });
         }),
@@ -572,7 +584,9 @@ export function PublishWorkbench({
 
   async function createAccountDraftJobs() {
     if (!selectedTaskId || selectedAccountDraftIds.length === 0) return;
-    if (!isBridgeReady) {
+    const selectedAccountDrafts = data?.accountDrafts?.filter((draft) => selectedAccountDraftIds.includes(draft.id)) ?? [];
+    const requiresElectronBridge = selectedAccountDrafts.some((draft) => isElectronAutomationPlatform(draft.platform));
+    if (requiresElectronBridge && !isBridgeReady) {
       setMessage(bridgeAvailability.reason ?? "当前未检测到可用桌面桥，请先启动 GEO 桌面版后再按账号变体创建发布任务。");
       return;
     }
@@ -592,7 +606,7 @@ export function PublishWorkbench({
       const createdJobs = payload.jobs as PublishingJobRecord[];
       const jobsWithSession = await Promise.all(
         createdJobs.map(async (job) => {
-          if (job.status !== "queued") return job;
+          if (!canRunElectronJob(job) || job.status !== "queued") return job;
           const sessionToken = createClientSessionToken();
           return patchJob(job.id, { sessionToken });
         }),
@@ -711,6 +725,10 @@ export function PublishWorkbench({
   async function executeSocialJob(job: PublishingJobRecord) {
     if (!data) {
       throw new Error("发布工作台数据未加载完成");
+    }
+
+    if (!canRunElectronJob(job)) {
+      return;
     }
 
     if (!job.accountId) {
@@ -838,7 +856,7 @@ export function PublishWorkbench({
   }
 
   async function executeSocialJobs(jobs: PublishingJobRecord[]) {
-    const runnableJobs = jobs.filter((job) => job.status !== "failed");
+    const runnableJobs = jobs.filter((job) => canRunElectronJob(job) && job.status === "queued");
     for (const job of runnableJobs) {
       await executeSocialJob(job);
     }
@@ -1043,7 +1061,7 @@ export function PublishWorkbench({
                         <span className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${
                           platformAutomationLabel(platform) === "已自动化"
                             ? "bg-emerald-500/15 text-emerald-300"
-                            : platformAutomationLabel(platform) === "手动发布"
+                            : platformAutomationLabel(platform) === "登录可用"
                               ? "bg-cyan-500/15 text-cyan-300"
                               : "bg-warning/15 text-warning"
                         }`}>
@@ -1570,12 +1588,12 @@ export function PublishWorkbench({
                       </button>
 
                       <div className="mt-2 space-y-3 border-t border-stroke pt-4">
-                        <p className="text-xs font-medium text-muted uppercase tracking-wider">人工干预</p>
+                        <p className="text-xs font-medium text-muted uppercase tracking-wider">平台阻断记录</p>
                         <input
                           className="input-base w-full text-sm"
                           value={jobLinks[job.id] ?? ""}
                           onChange={(event) => setJobLinks((current) => ({ ...current, [job.id]: event.target.value }))}
-                          placeholder="如已手动发布，可在此粘贴链接..."
+                          placeholder="如脚本已提交但平台列表暂未返回，可粘贴核验链接..."
                         />
                         <div className="flex gap-3">
                           <button
@@ -1583,14 +1601,14 @@ export function PublishWorkbench({
                             onClick={() => updateJob(job.id, "published")}
                             disabled={loading}
                           >
-                            手动补录成功
+                            标记为已核验
                           </button>
                           <button
                             className="flex-1 rounded-lg bg-danger/20 px-4 py-2.5 text-xs font-bold text-danger transition-colors hover:bg-danger/30 disabled:opacity-50"
                             onClick={() => updateJob(job.id, "failed")}
                             disabled={loading}
                           >
-                            人工标记失败
+                            标记为阻断
                           </button>
                         </div>
                       </div>

@@ -16,7 +16,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "不支持的平台。" }, { status: 400 });
     }
     if (!descriptor.loginSupported) {
-      return NextResponse.json({ error: `${descriptor.label} 当前暂未接入桌面登录。` }, { status: 400 });
+      return NextResponse.json({ error: `${descriptor.label} 当前未开放桌面登录能力。` }, { status: 400 });
     }
 
     let account = accountId ? await getPlatformAccount(accountId) : null;

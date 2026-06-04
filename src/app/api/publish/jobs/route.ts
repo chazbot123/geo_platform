@@ -4,6 +4,7 @@ import { createAccountPublishingJob, createPublishingJob, recordPublishingJobRes
 import { updatePublishingDraftRecord } from "@/lib/publish/workbench-service";
 import { getAccountPublishingDraft, getPublishingDraft } from "@/lib/storage/data-store";
 import { getPlatformDescriptor } from "@/lib/publish/platforms";
+import { runQueuedPublishingJob } from "@/lib/publish/server-publish-runner";
 
 export async function POST(request: Request) {
   try {
@@ -55,7 +56,7 @@ export async function POST(request: Request) {
             await recordPublishingJobResult({
               jobId: job.id,
               status: "manual_pending",
-              notes: `${descriptor.label} 暂未接入自动发布，请按平台入口手动发布该账号稿。`,
+              notes: `${descriptor.label} 发布脚本尚未补齐，当前自动发布任务会被阻断。`,
               externalStatus: descriptor.automationStatus,
             }),
           );
@@ -110,7 +111,7 @@ export async function POST(request: Request) {
           await recordPublishingJobResult({
             jobId: job.id,
             status: "manual_pending",
-            notes: `${descriptor.label} 暂未接入自动发布，请按平台入口手动发布该草稿。`,
+            notes: `${descriptor.label} 发布脚本尚未补齐，当前自动发布任务会被阻断。`,
             externalStatus: descriptor.automationStatus,
           }),
         );
@@ -141,7 +142,16 @@ export async function POST(request: Request) {
       jobs.push(job);
     }
 
-    return NextResponse.json({ jobs });
+    const resolvedJobs = [];
+    for (const job of jobs) {
+      if (job.status === "queued" && job.executionMode === "electron_automation" && job.accountId) {
+        resolvedJobs.push(await runQueuedPublishingJob(job.id));
+        continue;
+      }
+      resolvedJobs.push(job);
+    }
+
+    return NextResponse.json({ jobs: resolvedJobs });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "创建发布任务失败。" }, { status: 500 });
   }

@@ -16,7 +16,7 @@ function routeAvailabilityBadge(availability: import("@/lib/publish/platforms").
     official_api_ready: { label: "官方 API 可用", className: "bg-emerald-500/15 text-emerald-300 border border-emerald-500/20" },
     official_api_unavailable: { label: "官方 API 不可用", className: "bg-orange-500/15 text-orange-300 border border-orange-500/20" },
     electron_ready: { label: "Electron 自动化", className: "bg-sky-500/15 text-sky-300 border border-sky-500/20" },
-    manual_required: { label: "手动发布", className: "bg-slate-500/15 text-slate-300 border border-slate-500/20" },
+    manual_required: { label: "脚本待补齐", className: "bg-slate-500/15 text-slate-300 border border-slate-500/20" },
   };
   const c = config[availability];
   return (
@@ -63,8 +63,8 @@ function accountPublishabilityText(account: PlatformAccountRecord, isBridgeReady
   }
   if (descriptor?.automationStatus === "manual_only") {
     return account.loginStatus === "authenticated"
-      ? "账号会话已校验；当前平台发布脚本未接入，发布任务会走手动交付。"
-      : "当前平台支持桌面登录；发布脚本未接入，登录后先用于手动交付。";
+      ? "账号会话已校验；当前平台登录可用，发布脚本需要补齐后自动执行。"
+      : "当前平台支持桌面登录；完成登录后用于后续脚本自动发布。";
   }
   return "当前平台尚未开放账号登录。";
 }
@@ -267,7 +267,7 @@ export function PlatformAccountCenter({
           platform,
           accountName,
           displayName: accountName,
-          remark: descriptor.automationStatus === "ready" ? "自动发布账号" : "手动发布账号",
+          remark: descriptor.automationStatus === "ready" ? "自动发布账号" : "脚本发布账号",
           loginUrl: descriptor.publishEntryUrl,
         }),
       });
@@ -477,7 +477,7 @@ export function PlatformAccountCenter({
                             ? "bg-cyan-500/15 text-cyan-300"
                             : "bg-warning/15 text-warning"
                       }`}>
-                        {descriptor.automationStatus === "ready" ? "已自动化" : descriptor.automationStatus === "manual_only" ? "账号登录" : "未接入"}
+                        {descriptor.automationStatus === "ready" ? "已自动化" : descriptor.automationStatus === "manual_only" ? "登录可用" : "脚本待补齐"}
                       </span>
                       {routeAvailabilityBadge(descriptor.routeAvailability)}
                     </div>

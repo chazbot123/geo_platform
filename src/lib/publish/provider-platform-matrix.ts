@@ -6,28 +6,30 @@ export interface ProviderPublishBundle {
   platforms: SocialPlatform[];
 }
 
+const automatedPlatformOrder: SocialPlatform[] = ["toutiao", "baijiahao", "douyin", "wechat", "videohao", "zhihu", "weibo", "csdn"];
+
 export const providerPublishMatrix: Record<SearchProvider, ProviderPublishBundle> = {
   doubao: {
     searchProvider: "doubao",
     label: "豆包",
-    platforms: ["toutiao", "baijiahao", "douyin"],
+    platforms: automatedPlatformOrder,
   },
   yuanbao: {
     searchProvider: "yuanbao",
     // Consumer app Yuanbao is not a stable API target.
     // API-backed generation uses Tencent Hunyuan (tencent-hunyuan provider profile).
     label: "元宝（混元）",
-    platforms: ["wechat", "videohao"],
+    platforms: automatedPlatformOrder,
   },
   tongyi: {
     searchProvider: "tongyi",
     label: "通义千问",
-    platforms: ["zhihu", "weibo"],
+    platforms: automatedPlatformOrder,
   },
   deepseek: {
     searchProvider: "deepseek",
     label: "DeepSeek",
-    platforms: ["zhihu", "csdn"],
+    platforms: automatedPlatformOrder,
   },
 };
 
@@ -36,5 +38,5 @@ export function getProviderPublishBundle(searchProvider: SearchProvider | undefi
 }
 
 export function getPlatformsBySearchProvider(searchProvider: SearchProvider | undefined): SocialPlatform[] {
-  return getProviderPublishBundle(searchProvider)?.platforms ?? ["toutiao"];
+  return getProviderPublishBundle(searchProvider)?.platforms ?? automatedPlatformOrder;
 }
