@@ -47,18 +47,29 @@ function getValidQuestionCandidates(theme: ThemeSet) {
   return validIds.size ? candidates.filter((candidate) => validIds.has(candidate.id)) : candidates;
 }
 
+function normalizeQuestionKey(value: string) {
+  return value
+    .trim()
+    .replace(/[?？!！。.\s]+$/g, "")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
 function normalizeSelectedQuestions(theme: ThemeSet, selectedKeywords: string[]) {
   const fallbackQuestions = getRecommendedKeywords(theme);
   const validCandidates = getValidQuestionCandidates(theme);
   const candidateById = new Map(validCandidates.map((candidate) => [candidate.id, candidate]));
   const candidateByQuestion = new Map(validCandidates.map((candidate) => [candidate.question, candidate]));
+  const candidateByQuestionKey = new Map(validCandidates.map((candidate) => [normalizeQuestionKey(candidate.question), candidate]));
+  const fallbackQuestionKeys = new Set(fallbackQuestions.map(normalizeQuestionKey));
   const selections = selectedKeywords.map((keyword) => keyword.trim()).filter(Boolean);
   const deduped = Array.from(new Set(selections));
 
   return deduped.map((keyword) => {
-    const candidate = candidateById.get(keyword) ?? candidateByQuestion.get(keyword);
+    const questionKey = normalizeQuestionKey(keyword);
+    const candidate = candidateById.get(keyword) ?? candidateByQuestion.get(keyword) ?? candidateByQuestionKey.get(questionKey);
     const question = candidate?.question ?? keyword;
-    if (!candidate && !fallbackQuestions.includes(question)) {
+    if (!candidate && !fallbackQuestions.includes(question) && !fallbackQuestionKeys.has(questionKey)) {
       throw new Error("所选提问句不在当前推荐列表中");
     }
     return { question, candidate };

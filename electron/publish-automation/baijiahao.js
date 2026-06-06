@@ -28,20 +28,27 @@ async (input) => {
     extractEditableText,
     closestText,
     containsAnyNeedle,
+    getClickableNode,
+    simulateClick,
     focusEditableNode,
     clearEditableNode,
     formatParagraph,
     getParagraphs,
     insertParagraphBlock,
     insertImageWithFallback,
+    uploadImagesViaDocumentInput,
     fail,
     complete,
   } = automation;
 
   const payload = input?.payload ?? {};
   const publishUrl = String(input?.publishUrl || "https://baijiahao.baidu.com/builder/rc/edit?type=news");
-  const draftTitle = normalize(payload.draftTitle || "");
-  const draftBody = String(payload.draftBody || "").replace(/\r\n/g, "\n").trim();
+  const draftTitle = normalize(payload.draftTitle || "").slice(0, 64);
+  const draftBody = String(payload.draftBody || "")
+    .replace(/\\r\\n/g, "\n")
+    .replace(/\\n/g, "\n")
+    .replace(/\r\n/g, "\n")
+    .trim();
   const draftTags = Array.isArray(payload.draftTags) ? payload.draftTags.map(normalize).filter(Boolean) : [];
   const preparedImages = Array.isArray(payload.preparedImages) ? payload.preparedImages.filter(Boolean) : [];
 
@@ -51,6 +58,44 @@ async (input) => {
 
   function isTextArea(node) {
     return node instanceof HTMLTextAreaElement;
+  }
+
+  function isIFrame(node) {
+    return node instanceof HTMLIFrameElement;
+  }
+
+  function resolveEditableNode(node) {
+    if (!isIFrame(node)) return node;
+    try {
+      const doc = node.contentDocument || node.contentWindow?.document;
+      if (!doc) return node;
+      const editables = Array.from(doc.querySelectorAll('[contenteditable="true"], textarea, body[contenteditable="true"]'))
+        .filter((item) => isHtmlElement(item) || isTextArea(item))
+        .map((item) => {
+          const rect = isHtmlElement(item) ? item.getBoundingClientRect() : null;
+          const itemText = normalize([
+            extractEditableText(item),
+            closestText(item),
+            item.getAttribute?.("placeholder") || "",
+            item.getAttribute?.("data-placeholder") || "",
+            item.getAttribute?.("aria-label") || "",
+            item.className || "",
+          ].join(" "));
+          let score = 0;
+          if (["正文", "内容", "文章", "请输入正文", "请输入内容"].some((hint) => itemText.includes(hint))) score += 20;
+          if (itemText.includes("标题") || itemText.includes("18/64") || itemText.includes("64")) score -= 8;
+          if (rect && rect.height > 100) score += 6;
+          if (rect && rect.top > 120) score += 6;
+          if (isHtmlElement(item) && item.isContentEditable) score += 4;
+          return { item, rect, itemText, score };
+        })
+        .sort((left, right) => right.score - left.score);
+      const selected = editables[0]?.item || doc.body || node;
+      log(`iframe_editor_selected: ${editables.slice(0, 5).map((entry) => `${entry.item.tagName};score=${entry.score};rect=${entry.rect ? `${Math.round(entry.rect.left)},${Math.round(entry.rect.top)},${Math.round(entry.rect.width)},${Math.round(entry.rect.height)}` : "na"};text=${entry.itemText.slice(0, 50)}`).join(" | ") || "none"}`);
+      return selected;
+    } catch {
+      return node;
+    }
   }
 
   function getTitleRect() {
@@ -117,8 +162,6 @@ async (input) => {
         if (isHtmlElement(node) && !visible(node)) return false;
         if (isLikelyTitleNode(node)) return false;
         const rect = isHtmlElement(node) ? node.getBoundingClientRect() : null;
-        if (rect && rect.left > window.innerWidth * 0.62 && rect.width < 520) return false;
-        if (rect && rect.width < 360 && rect.height < 120) return false;
         const contextText = normalize(
           [
             extractEditableText(node),
@@ -130,6 +173,11 @@ async (input) => {
           ].join(" "),
         );
         const isBodyHint = ["正文", "内容", "文章", "请输入正文", "请输入内容", "editor", "content"].some((item) => contextText.includes(item));
+        const isExplicitBodyHint = ["正文", "内容", "文章", "请输入正文", "请输入内容"].some((item) => contextText.includes(item));
+        if (rect && rect.left > window.innerWidth * 0.62 && rect.width < 520) return false;
+        if (rect && rect.height < 120 && !isExplicitBodyHint) return false;
+        if (rect && rect.width < 360) return false;
+        if (isIFrame(node)) return !rect || (rect.width >= 360 && rect.height >= 120);
         if (isTextArea(node)) return isBodyHint && (!rect || rect.width >= 360 || rect.height >= 120);
         if (isHtmlElement(node) && node.isContentEditable) return isBodyHint || contextText.length > 0;
         return false;
@@ -152,15 +200,16 @@ async (input) => {
           let score = 0;
           if (["正文", "内容", "文章", "请输入正文", "请输入内容"].some((item) => contextText.includes(item))) score += 8;
           if (String(node.className || "").toLowerCase().includes("editor")) score += 4;
+          if (isIFrame(node)) score += 8;
           if (isHtmlElement(node) && node.isContentEditable) score += 3;
           if (rect && rect.left < window.innerWidth * 0.62) score += 4;
           if (rect && rect.left > window.innerWidth * 0.62) score -= 8;
           if (rect && rect.width > 400) score += 2;
           if (rect && rect.width > 700) score += 3;
           if (rect && rect.width < 360) score -= 8;
-          if (rect && rect.height > 80) score += 3;
+          if (rect && rect.height > 120) score += 3;
           if (rect && rect.height > 180) score += 3;
-          if (rect && rect.height < 80) score -= 6;
+          if (rect && rect.height < 120) score -= 12;
           if (titleRect && rect && rect.top > titleRect.bottom - 10) score += 6;
           if (titleRect && rect && rect.top < titleRect.top + 20) score -= 8;
           if (contextText.includes(draftTitle.slice(0, 8))) score -= 8;
@@ -176,7 +225,18 @@ async (input) => {
         log(
           `body_editor_selected: score=${scored[0].score}; tag=${matched.tagName}; class=${String(matched.className || "").slice(0, 80)}; rect=${rect ? `${Math.round(rect.left)},${Math.round(rect.top)},${Math.round(rect.width)},${Math.round(rect.height)}` : "na"}`,
         );
-        return matched;
+        return resolveEditableNode(matched);
+      }
+      if (Date.now() - startedAt > 20000) {
+        const diagnostics = findBodyEditorCandidates()
+          .filter((node) => isHtmlElement(node) || isTextArea(node))
+          .slice(0, 12)
+          .map((node) => {
+            const rect = isHtmlElement(node) ? node.getBoundingClientRect() : null;
+            return `${node.tagName}; rect=${rect ? `${Math.round(rect.left)},${Math.round(rect.top)},${Math.round(rect.width)},${Math.round(rect.height)}` : "na"}; text=${normalize([extractEditableText(node), closestText(node), node.getAttribute?.("placeholder") || "", node.getAttribute?.("data-placeholder") || "", node.className || ""].join(" ")).slice(0, 80)}`;
+          })
+          .join(" | ");
+        log(`body_editor_candidates: ${diagnostics || "none"}`);
       }
       await sleep(500);
     }
@@ -252,21 +312,104 @@ async (input) => {
   }
 
   async function uploadImages(editorNode) {
-    if (!(editorNode instanceof HTMLElement)) {
-      log("upload_images_not_ready: 当前正文节点不是富文本编辑器，跳过图片上传");
-      return;
+    if (editorNode?.nodeType === 9 && editorNode.body) {
+      editorNode = editorNode.body;
+    }
+    if (!editorNode?.querySelectorAll && editorNode?.ownerDocument?.body) {
+      editorNode = editorNode.ownerDocument.body;
+    }
+    if (!editorNode?.querySelectorAll) {
+      throw new Error("当前正文节点不是富文本编辑器，无法上传百家号图片");
     }
     if (!preparedImages.length) return;
     setStage("upload_images", "上传百家号正文图片");
+    async function revealUploadControl() {
+      const ueditorImageButtons = queryAll(
+        [
+          ".edui-for-simpleupload",
+          ".edui-for-insertimage",
+          ".edui-for-image",
+          ".edui-for-webapp",
+          ".edui-icon-image",
+          ".edui-icon-simpleupload",
+          ".edui-icon-insertimage",
+        ],
+        true,
+      )
+        .map((node) => getClickableNode(node) || node)
+        .filter((node) => node instanceof HTMLElement);
+      for (const button of ueditorImageButtons.slice(0, 4)) {
+        simulateClick(button);
+        log(`upload_images_ueditor_button_clicked: ${String(button.className || "").slice(0, 80)}`);
+        await sleep(1200);
+      }
+      const labels = ["插入", "图片", "上传图片", "本地图片", "图库"];
+      for (const label of labels) {
+        const button = queryAll([`text=${label}`, `button:has-text("${label}")`, `[role="button"]:has-text("${label}")`, `a:has-text("${label}")`], true)
+          .map((node) => ({ node, label: text(node), clickable: getClickableNode(node) }))
+          .filter((item) => item.clickable instanceof HTMLElement && item.label && item.label.length <= 20)
+          .sort((left, right) => left.label.length - right.label.length)[0]?.clickable;
+        if (button instanceof HTMLElement) {
+          simulateClick(button);
+          log(`upload_images_reveal_clicked: ${label}`);
+          await sleep(900);
+        }
+      }
+      const visibleControls = Array.from(document.querySelectorAll("button,[role='button'],a,li,span,div,input"))
+        .filter((node) => node instanceof HTMLElement && visible(node))
+        .map((node) => {
+          const rect = node.getBoundingClientRect();
+          const label = text(node) || node.getAttribute("aria-label") || node.getAttribute("title") || node.getAttribute("placeholder") || "";
+          const accept = node instanceof HTMLInputElement ? node.getAttribute("accept") || "" : "";
+          return `${node.tagName};text=${label.slice(0, 30)};accept=${accept};rect=${Math.round(rect.left)},${Math.round(rect.top)},${Math.round(rect.width)},${Math.round(rect.height)};class=${String(node.className || "").slice(0, 40)}`;
+        })
+        .filter((item) => /图|片|上传|本地|图库|素材|media|image|upload|video|accept=/i.test(item))
+        .slice(0, 80)
+        .join(" | ");
+      log(`upload_images_visible_controls: ${visibleControls || "none"}`);
+      const inputs = Array.from(document.querySelectorAll('input[type="file"]'))
+        .map((node) => `accept=${node.getAttribute("accept") || ""}; class=${node.className || ""}`)
+        .join(" | ");
+      log(`upload_images_file_inputs: ${inputs || "none"}`);
+    }
+
     for (let index = 0; index < preparedImages.length; index += 1) {
       const uploaded = await insertImageWithFallback(editorNode, preparedImages[index], index);
       if (!uploaded) {
-        log(`upload_image_${index + 1}_skipped: 百家号图片控件未接收上传，继续发布纯文本正文`);
-        continue;
+        if (index === 0) {
+          await revealUploadControl();
+          const toolbarButton = queryAll(
+            [
+              'button:has-text("图片")',
+              '[role="button"]:has-text("图片")',
+              'a:has-text("图片")',
+              'button:has-text("插入图片")',
+              '[role="button"]:has-text("插入图片")',
+              '[aria-label*="图片"]',
+              '[title*="图片"]',
+            ],
+            true,
+          )
+            .map((node) => getClickableNode(node))
+            .find((node) => node instanceof HTMLElement && !node.disabled && !String(node.getAttribute?.("aria-disabled") || "").includes("true"));
+          if (toolbarButton) {
+            simulateClick(toolbarButton);
+            log("upload_images_toolbar_clicked");
+            await sleep(1200);
+          }
+          const documentUploaded = await uploadImagesViaDocumentInput(preparedImages, { limit: preparedImages.length, expectedIncrease: 1, waitMs: 60000 });
+          if (documentUploaded.ok) {
+            log("upload_images_verified: document_file_input");
+            return;
+          }
+          log(`upload_images_document_input_failed: ${documentUploaded.reason}`);
+        }
+        throw new Error(`第 ${index + 1} 张百家号图片上传失败（已尝试 file_input / drop / paste 三种策略）`);
       }
       focusEditableNode(editorNode);
-      if (document.queryCommandSupported("insertHTML")) {
-        document.execCommand("insertHTML", false, "<p><br></p>");
+      const editorDocument = editorNode.ownerDocument || document;
+      if (editorDocument.queryCommandSupported?.("insertHTML")) {
+        editorDocument.execCommand("insertHTML", false, "<p><br></p>");
       }
       dispatchInputEvents(editorNode);
       await sleep(500);

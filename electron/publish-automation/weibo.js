@@ -17,6 +17,7 @@ async (input) => {
     extractEditableText,
     getClickableNode,
     simulateClick,
+    uploadImagesViaDocumentInput,
     fail,
     complete,
   } = automation;
@@ -26,6 +27,7 @@ async (input) => {
   const title = normalize(payload.draftTitle || "");
   const body = normalize(payload.draftBody || "");
   const tags = Array.isArray(payload.draftTags) ? payload.draftTags.map(normalize).filter(Boolean).slice(0, 5) : [];
+  const preparedImages = Array.isArray(payload.preparedImages) ? payload.preparedImages.filter(Boolean) : [];
   const textBody = normalize([title, body, tags.map((tag) => `#${tag.replace(/^#+/, "")}#`).join(" ")].filter(Boolean).join("\n\n"));
 
   async function ensurePage() {
@@ -58,6 +60,50 @@ async (input) => {
     if (!written.includes(title.slice(0, Math.min(8, title.length))) && !written.includes(body.slice(0, 10))) {
       throw new Error("微博正文写入后未通过校验");
     }
+  }
+
+  async function revealImageInput() {
+    const candidates = queryAll(
+      [
+        'button:has-text("图片")',
+        '[role="button"]:has-text("图片")',
+        'a:has-text("图片")',
+        'button:has-text("照片")',
+        '[role="button"]:has-text("照片")',
+        'a:has-text("照片")',
+        'button:has-text("相册")',
+        '[role="button"]:has-text("相册")',
+        'a:has-text("相册")',
+        '[aria-label*="图片"]',
+        '[aria-label*="照片"]',
+        '[title*="图片"]',
+        '[title*="照片"]',
+      ],
+      true,
+    )
+      .map((node) => getClickableNode(node))
+      .filter(Boolean);
+    const button = candidates.find((node) => !node.disabled && !String(node.getAttribute?.("aria-disabled") || "").includes("true"));
+    if (button) {
+      simulateClick(button);
+      await sleep(1200);
+    }
+  }
+
+  async function uploadImages() {
+    setStage("upload_images", `upload weibo images ${preparedImages.length}`);
+    if (!preparedImages.length) {
+      throw new Error("微博图文发布至少需要 1 张图片；当前 payload 未提供可上传图片");
+    }
+    await revealImageInput();
+    const uploaded = await uploadImagesViaDocumentInput(preparedImages, { limit: 9, expectedIncrease: 1, waitMs: 60000 });
+    if (!uploaded.ok) {
+      const inputs = Array.from(document.querySelectorAll('input[type="file"]'))
+        .map((node) => `accept=${node.getAttribute("accept") || ""}; class=${node.className || ""}`)
+        .join(" | ");
+      throw new Error(`weibo image upload failed: ${uploaded.reason}; fileInputs=${inputs || "none"}; url=${window.location.href}; page=${pageText().slice(0, 400)}`);
+    }
+    log("upload_images_verified: remote_image_detected");
   }
 
   async function submit() {
@@ -96,6 +142,7 @@ async (input) => {
   try {
     await ensurePage();
     await fillBody();
+    await uploadImages();
     return await submit();
   } catch (error) {
     return fail(error, "微博自动发布失败");

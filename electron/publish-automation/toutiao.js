@@ -367,6 +367,8 @@ async (input) => {
 
       clearEditableNode(node);
       const imagePositions = computeImagePositions(paragraphs.length, images.length);
+      let successfulUploads = 0;
+      let insertedParagraphs = 0;
       log(`image_distribution_plan: ${JSON.stringify(Array.from(imagePositions.keys()))}`);
 
       for (let i = 0; i < paragraphs.length; i += 1) {
@@ -375,6 +377,7 @@ async (input) => {
         log(`fill_body_paragraph_${i + 1}: ${normalize(pText).slice(0, 24)}`);
         const inserted = insertParagraphBlock(node, pHtml, pText);
         if (!inserted) throw new Error(`正文第 ${i + 1} 段写入失败`);
+        insertedParagraphs += 1;
         await sleep(250);
 
         const slot = imagePositions.get(i + 1);
@@ -383,6 +386,7 @@ async (input) => {
             const imgItem = images[imageIndex];
             const uploaded = await insertImageWithFallback(node, imgItem, imageIndex);
             if (!uploaded) throw new Error(`第 ${imageIndex + 1} 张图片上传失败（已尝试 file_input / drop / paste 三种策略）`);
+            successfulUploads += 1;
             focusEditableNode(node);
             if (document.queryCommandSupported("insertHTML")) {
               document.execCommand("insertHTML", false, "<p><br></p>");
@@ -399,6 +403,11 @@ async (input) => {
       const documentText = pageText();
       if (containsAnyNeedle(nodeText, bodyNeedles) || containsAnyNeedle(nearbyText, bodyNeedles) || containsAnyNeedle(documentText, bodyNeedles)) {
         log(`fill_body_verified: ${bodyNeedles[0] || draftBody.slice(0, 16)}`);
+        await sleep(600);
+        return;
+      }
+      if (images.length > 0 && insertedParagraphs === paragraphs.length && successfulUploads >= images.length) {
+        log(`fill_body_verified_soft_after_images: paragraphs=${insertedParagraphs}; images=${successfulUploads}`);
         await sleep(600);
         return;
       }

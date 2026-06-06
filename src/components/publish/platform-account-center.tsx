@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2, ExternalLink, FileImage, LoaderCircle, LogIn, RefreshCcw, Trash2, XCircle } from "lucide-react";
 import { openPlatformLoginWindow, validatePlatformSessionWindow } from "@/lib/publish/electron-login-client";
+import { toDisplayImageItems } from "@/lib/publish/image-display";
 import { detectDesktopBridge, hasElectronDesktopBridge, type DesktopBridgeAvailability } from "@/lib/publish/local-bridge-client";
 import { auditPlatformAccountSession, buildDesktopSessionFailureReason, describeAccountPublishability } from "@/lib/publish/account-session-validator";
 import { publishPlatformDescriptors } from "@/lib/publish/platforms";
@@ -693,17 +694,17 @@ export function PlatformAccountCenter({
                               ))}
                             </div>
                           ) : null}
-                          {job.draftImages.length ? (
+                          {toDisplayImageItems(job.draftImages, job.draftImagePaths).length ? (
                             <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-3">
-                              {job.draftImages.slice(0, 3).map((imageUrl, index) => (
+                              {toDisplayImageItems(job.draftImages, job.draftImagePaths).slice(0, 3).map((image, index) => (
                                 <a
-                                  key={`${job.id}-${imageUrl}-${index}`}
-                                  href={imageUrl}
+                                  key={`${job.id}-${image.key}`}
+                                  href={image.displaySrc}
                                   target="_blank"
                                   rel="noreferrer"
                                   className="group overflow-hidden rounded-lg border border-stroke bg-surface"
                                 >
-                                  <img src={imageUrl} alt={`${job.draftTitle} 配图 ${index + 1}`} className="aspect-[4/3] w-full object-cover transition-transform duration-300 group-hover:scale-105" />
+                                  <img src={image.displaySrc} alt={`${job.draftTitle} 配图 ${index + 1}`} className="aspect-[4/3] w-full object-cover transition-transform duration-300 group-hover:scale-105" onError={(event) => { event.currentTarget.style.display = "none"; }} />
                                 </a>
                               ))}
                             </div>

@@ -1,6 +1,7 @@
 import {
   createRecordId,
   getAccountPublishingDraft,
+  getContent,
   getPlatformAccount,
   getPublishingDraft,
   getPublishingJob,
@@ -11,6 +12,7 @@ import { updatePlatformAccountRecord } from "@/lib/publish/accounts-service";
 import { buildManualDeliveryNotes } from "@/lib/publish/manual-delivery-service";
 import { getPlatformDescriptor } from "@/lib/publish/platforms";
 import { validateDraftForPlatform } from "@/lib/publish/draft-builders";
+import { resolvePublishImagePaths } from "@/lib/publish/publish-image-resolver";
 import type { PublishPlatform, PublishingDraft, PublishingExecutionMode, PublishingJobRecord, PublishingJobStatus } from "@/lib/types";
 
 function now() {
@@ -26,6 +28,17 @@ function resolveInitialStatus(platform: PublishPlatform): PublishingJobStatus {
   const descriptor = getPlatformDescriptor(platform);
   if (!descriptor) return "manual_pending";
   return descriptor.automationStatus === "ready" ? "queued" : "manual_pending";
+}
+
+async function assertContentPackageReady(taskId: string) {
+  const content = await getContent(taskId);
+  const executionPackage = content?.geoExecutionPackage;
+  if (!executionPackage || executionPackage.status === "passed") {
+    return;
+  }
+
+  const firstIssue = executionPackage.blockingIssues[0] ?? "内容质检未通过";
+  throw new Error(`内容执行包未通过生产发布门禁：${firstIssue}`);
 }
 
 async function syncAccountPublishSnapshot(job: PublishingJobRecord, status: PublishingJobStatus, errorMessage?: string) {
@@ -59,9 +72,15 @@ export async function createPublishingJob(input: {
   if (validationErrors.length > 0) {
     throw new Error(`草稿不符合 ${draft.platform} 发布要求：${validationErrors.map((e) => e.message).join("；")}`);
   }
+  await assertContentPackageReady(input.taskId);
 
   const account = input.accountId ? await getPlatformAccount(input.accountId) : null;
   const descriptor = getPlatformDescriptor(draft.platform);
+  const resolvedImagePaths = await resolvePublishImagePaths({
+    taskId: input.taskId,
+    imageUrls: draft.imageUrls,
+    localImagePaths: draft.localImagePaths,
+  });
   const job: PublishingJobRecord = {
     id: createRecordId(),
     taskId: input.taskId,
@@ -75,8 +94,8 @@ export async function createPublishingJob(input: {
     draftBody: draft.body,
     draftTags: draft.tags,
     draftImages: draft.imageUrls,
-    draftImagePaths: draft.localImagePaths,
-    publishMode: draft.publishMode ?? "text_only",
+    draftImagePaths: resolvedImagePaths,
+    publishMode: resolvedImagePaths.length ? "with_images" : (draft.publishMode ?? "text_only"),
     publishEntryUrl: draft.publishEntryUrl,
     notes: buildManualDeliveryNotes({
       id: "",
@@ -112,9 +131,15 @@ export async function createAccountPublishingJob(input: {
   if (validationErrors.length > 0) {
     throw new Error(`账号发布稿不符合 ${draft.platform} 发布要求：${validationErrors.map((e) => e.message).join("；")}`);
   }
+  await assertContentPackageReady(input.taskId);
 
   const account = await getPlatformAccount(draft.accountId);
   const descriptor = getPlatformDescriptor(draft.platform);
+  const resolvedImagePaths = await resolvePublishImagePaths({
+    taskId: input.taskId,
+    imageUrls: draft.imageUrls,
+    localImagePaths: draft.localImagePaths,
+  });
 
   if (descriptor?.automationStatus === "ready" && !account) {
     throw new Error("自动化发布需要关联账号，但未找到有效账号");
@@ -134,8 +159,8 @@ export async function createAccountPublishingJob(input: {
     draftBody: draft.body,
     draftTags: draft.tags,
     draftImages: draft.imageUrls,
-    draftImagePaths: draft.localImagePaths,
-    publishMode: draft.publishMode ?? "text_only",
+    draftImagePaths: resolvedImagePaths,
+    publishMode: resolvedImagePaths.length ? "with_images" : (draft.publishMode ?? "text_only"),
     publishEntryUrl: draft.publishEntryUrl ?? descriptor?.publishEntryUrl,
     notes: buildManualDeliveryNotes({
       id: "",

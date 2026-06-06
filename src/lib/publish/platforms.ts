@@ -65,6 +65,17 @@ export const publishPlatformDescriptors: PlatformDescriptor[] = [
     hint: "通过 Electron 脚本承接抖音创作者中心发布，按图文/文本内容自动填充并提交；新号或低活跃账号容易触发验证/风控，建议使用成熟账号并保留人工验证兜底。",
   },
   {
+    key: "xiaohongshu",
+    label: "小红书",
+    loginSupported: true,
+    executionMode: "electron_automation",
+    automationStatus: "ready",
+    routeAvailability: "electron_ready",
+    contentProfile: "搜索解答型种草笔记，围绕品牌名+产品名的真实问题写卖点、适用人群、场景和避坑，避免硬广口吻。",
+    publishEntryUrl: "https://creator.xiaohongshu.com/publish/publish?from=menu&target=article",
+    hint: "通过 Electron 承接小红书创作者中心图文笔记发布，沿用已登录账号会话，自动填充搜索解答/种草向标题、正文、标签和配图；验证码、风控或发布确认会作为人工兜底返回。",
+  },
+  {
     key: "wechat",
     label: "微信公众号",
     loginSupported: true,

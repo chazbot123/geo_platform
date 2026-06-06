@@ -2,7 +2,16 @@ const http = require("node:http");
 
 const LOCAL_BRIDGE_HOST = "127.0.0.1";
 const LOCAL_BRIDGE_PORT = 3217;
-const ALLOWED_ORIGINS = new Set(["http://127.0.0.1:3000", "http://localhost:3000"]);
+const ALLOWED_ORIGINS = new Set([
+  "http://127.0.0.1:3000",
+  "http://localhost:3000",
+  "http://127.0.0.1:3001",
+  "http://localhost:3001",
+]);
+
+if (process.env.GEO_DEV_SERVER_URL) {
+  ALLOWED_ORIGINS.add(process.env.GEO_DEV_SERVER_URL.replace(/\/+$/g, ""));
+}
 
 function createJsonResponse(response, statusCode, payload, origin) {
   const headers = {

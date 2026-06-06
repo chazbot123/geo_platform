@@ -27,6 +27,8 @@ async (input) => {
     closestText,
     getClickableNode,
     simulateClick,
+    dataUrlToFile,
+    uploadImagesViaDocumentInput,
     fail,
     complete,
   } = automation;
@@ -36,9 +38,57 @@ async (input) => {
   const title = normalize(payload.draftTitle || "");
   const body = String(payload.draftBody || "").replace(/\r\n/g, "\n").trim();
   const tags = Array.isArray(payload.draftTags) ? payload.draftTags.map(normalize).filter(Boolean).slice(0, 5) : [];
+  const preparedImages = Array.isArray(payload.preparedImages) ? payload.preparedImages.filter(Boolean) : [];
   const markdown = [body, tags.length ? `\n\n标签：${tags.join("、")}` : ""].join("");
   const titleNeedles = [title, title.slice(0, 18), title.slice(0, 12)].filter((item) => item.length >= 6);
   const bodyNeedles = [body.slice(0, 28), body.slice(0, 18)].filter((item) => item.length >= 10);
+
+  function countCsdnMarkdownImages() {
+    const text = pageText();
+    const matches = text.match(/https:\/\/i-blog\.csdnimg\.cn\/direct\/[^\s)]+/g) || [];
+    return new Set(matches).size;
+  }
+
+  async function waitForCsdnMarkdownImageIncrease(previousCount, waitMs = 20000) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < waitMs) {
+      const count = countCsdnMarkdownImages();
+      if (count > previousCount) return count;
+      await sleep(800);
+    }
+    return countCsdnMarkdownImages();
+  }
+
+  async function uploadCsdnImageViaEditor(editor, image, index) {
+    if (!image?.dataUrl) return false;
+    const view = editor?.ownerDocument?.defaultView || window;
+    const file = dataUrlToFile(image.dataUrl, image.name || `csdn-${index + 1}.png`, image.mimeType || "image/png");
+    editor.focus?.();
+    const beforeDrop = countCsdnMarkdownImages();
+    try {
+      const dropTransfer = new view.DataTransfer();
+      dropTransfer.items.add(file);
+      editor.dispatchEvent(new view.DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: dropTransfer }));
+      log(`upload_image_${index + 1}_csdn_drop_dispatched`);
+      const afterDrop = await waitForCsdnMarkdownImageIncrease(beforeDrop, 20000);
+      if (afterDrop > beforeDrop) return true;
+    } catch (error) {
+      log(`upload_image_${index + 1}_csdn_drop_failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    const beforePaste = countCsdnMarkdownImages();
+    try {
+      const pasteTransfer = new view.DataTransfer();
+      pasteTransfer.items.add(file);
+      editor.dispatchEvent(new view.ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: pasteTransfer }));
+      log(`upload_image_${index + 1}_csdn_paste_dispatched`);
+      const afterPaste = await waitForCsdnMarkdownImageIncrease(beforePaste, 20000);
+      return afterPaste > beforePaste;
+    } catch (error) {
+      log(`upload_image_${index + 1}_csdn_paste_failed: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    }
+  }
 
   function installCsdnHeaderCapture() {
     if (window.__geoCsdnHeaderCaptureInstalled) return;
@@ -319,6 +369,43 @@ async (input) => {
     if (!bodyNeedles.some((needle) => written.includes(needle) || pageText().includes(needle))) {
       log("fill_body_verify_soft_failed: 编辑器可能使用隐藏 textarea，继续提交前检查页面文本。");
     }
+    return node;
+  }
+
+  async function revealImageInput() {
+    await clickFirstText(["图片", "插入图片", "上传图片", "图像", "相册"], "reveal_image_input");
+    await sleep(1000);
+  }
+
+  async function uploadImages(editor) {
+    setStage("upload_images", `upload CSDN article images ${preparedImages.length}`);
+    if (!preparedImages.length) {
+      throw new Error("CSDN 图文发布至少需要 1 张图片；当前 payload 未提供可上传图片");
+    }
+    const initialMarkdownImageCount = countCsdnMarkdownImages();
+    if (editor instanceof HTMLElement || editor instanceof HTMLTextAreaElement) {
+      let insertedCount = 0;
+      for (let index = 0; index < preparedImages.length; index += 1) {
+        const inserted = await uploadCsdnImageViaEditor(editor, preparedImages[index], index);
+        if (inserted) insertedCount += 1;
+      }
+      const markdownImageIncrease = countCsdnMarkdownImages() - initialMarkdownImageCount;
+      if (insertedCount > 0 || markdownImageIncrease > 0) {
+        log(`upload_images_verified: editor_image_inserted inserted=${insertedCount} markdownLinks=${Math.max(markdownImageIncrease, 0)}`);
+        return;
+      }
+      log("upload_images_editor_insert_failed_try_document_input");
+    }
+    await revealImageInput();
+    const uploaded = await uploadImagesViaDocumentInput(preparedImages, { limit: 9, expectedIncrease: 1, waitMs: 60000 });
+    if (!uploaded.ok) {
+      const inputs = Array.from(document.querySelectorAll('input[type="file"]'))
+        .map((node) => `accept=${node.getAttribute("accept") || ""}; class=${node.className || ""}`)
+        .join(" | ");
+      logDiagnostics("upload_images_failed");
+      throw new Error(`csdn image upload failed: ${uploaded.reason}; fileInputs=${inputs || "none"}; url=${window.location.href}`);
+    }
+    log("upload_images_verified: remote_image_detected");
   }
 
   async function fillPublishSettings() {
@@ -568,12 +655,15 @@ async (input) => {
       { ...basePayload, status: 0, pubStatus: "publish" },
     ];
     for (const requestBody of attempts) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 12000);
       try {
         log(`direct_publish_attempt: status=${requestBody.status}; articleId=${articleId || "new"}`);
         const response = await fetch("https://bizapi.csdn.net/blog-console-api/v3/mdeditor/saveArticle", {
           method: "POST",
           headers: { ...capturedHeaders, "Content-Type": "application/json" },
           credentials: "include",
+          signal: controller.signal,
           body: JSON.stringify(requestBody),
         });
         const text = await response.text();
@@ -602,6 +692,8 @@ async (input) => {
         }
       } catch (error) {
         log(`direct_publish_error_${requestBody.status}: ${error instanceof Error ? error.message : String(error)}`);
+      } finally {
+        clearTimeout(timer);
       }
     }
     return null;
@@ -611,7 +703,8 @@ async (input) => {
     installCsdnHeaderCapture();
     await ensurePage();
     await fillTitle();
-    await fillBody();
+    const editor = await fillBody();
+    await uploadImages(editor);
     return await submit();
   } catch (error) {
     return fail(error, "CSDN 自动发布失败");

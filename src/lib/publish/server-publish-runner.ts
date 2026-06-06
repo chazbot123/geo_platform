@@ -5,6 +5,7 @@ import {
 } from "@/lib/storage/data-store";
 import { recordPublishingJobResult } from "@/lib/publish/jobs-service";
 import { LOCAL_BRIDGE_BASE_URL } from "@/lib/publish/local-bridge-client";
+import { resolvePublishImagePaths } from "@/lib/publish/publish-image-resolver";
 import type {
   AccountPublishingDraft,
   PublishingDraft,
@@ -46,6 +47,24 @@ async function requestLocalBridge<T>(pathname: string, body: unknown, timeoutMs:
       throw new Error(payload.error || payload.reason || "local bridge request failed");
     }
     return payload;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function checkLocalBridgeReady() {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 2500);
+
+  try {
+    const response = await fetch(`${LOCAL_BRIDGE_BASE_URL}/health`, {
+      method: "GET",
+      signal: controller.signal,
+    });
+    const payload = (await response.json().catch(() => ({}))) as { status?: string; ready?: boolean; port?: number };
+    return response.ok && payload.status === "ok" && payload.ready === true;
+  } catch {
+    return false;
   } finally {
     clearTimeout(timer);
   }
@@ -105,6 +124,21 @@ export async function runQueuedPublishingJob(jobId: string) {
   }
 
   const draft = await resolveJobDraft(job);
+  const resolvedImagePaths = await resolvePublishImagePaths({
+    taskId: job.taskId,
+    imageUrls: draft.imageUrls,
+    localImagePaths: job.draftImagePaths?.length ? job.draftImagePaths : draft.localImagePaths,
+  });
+  const bridgeReady = await checkLocalBridgeReady();
+  if (!bridgeReady) {
+    return recordPublishingJobResult({
+      jobId: job.id,
+      status: "failed",
+      failureStage: "electron_bridge",
+      errorMessage: `本地发布代理不可用：请先启动 GEO Desktop / Electron bridge，并确认 ${LOCAL_BRIDGE_BASE_URL}/health 返回 ready。`,
+    });
+  }
+
   await recordPublishingJobResult({
     jobId: job.id,
     status: "running",
@@ -133,6 +167,7 @@ export async function runQueuedPublishingJob(jobId: string) {
         title: `${draft.platform}发布`,
         publishUrl: draft.publishEntryUrl,
         sessionPartition: account.sessionPartition,
+        authPayload: account.authPayload,
         sessionToken,
         timeoutMs: 180000,
         payload: {
@@ -140,8 +175,8 @@ export async function runQueuedPublishingJob(jobId: string) {
           draftBody: job.draftBody,
           draftTags: job.draftTags,
           draftImages: job.draftImages,
-          draftImagePaths: job.draftImagePaths,
-          publishMode: job.publishMode ?? "text_only",
+          draftImagePaths: resolvedImagePaths,
+          publishMode: resolvedImagePaths.length ? "with_images" : (job.publishMode ?? "text_only"),
         },
       },
       185000,

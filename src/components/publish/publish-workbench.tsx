@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ExternalLink, FileImage, FileUp, LoaderCircle, RefreshCcw, Save, Trash2 } from "lucide-react";
 import { auditPlatformAccountSession } from "@/lib/publish/account-session-validator";
 import { getPlatformPublishProgressWindow } from "@/lib/publish/electron-login-client";
+import { toDisplayImageItems } from "@/lib/publish/image-display";
 import { getPlatformPublisher } from "@/lib/publish/platform-publishers";
 import { detectDesktopBridge, hasElectronDesktopBridge, type DesktopBridgeAvailability } from "@/lib/publish/local-bridge-client";
 import { publishPlatformDescriptors } from "@/lib/publish/platforms";
@@ -285,14 +286,14 @@ function taskStatusTone(status?: string) {
 }
 
 function resolveTaskPreviewImages(data: PublishWorkbenchData | null, draft?: PublishingDraft) {
-  if (draft?.imageUrls?.length) {
-    return draft.imageUrls;
+  if (draft?.imageUrls?.length || draft?.localImagePaths?.length) {
+    return toDisplayImageItems(draft.imageUrls, draft.localImagePaths).map((item) => item.displaySrc);
   }
   if (data?.image?.images?.length) {
-    return data.image.images.map((item) => item.publicUrl ?? item.url);
+    return toDisplayImageItems(data.image.images.map((item) => item.publicUrl ?? item.url)).map((item) => item.displaySrc);
   }
   if (data?.image?.url) {
-    return [data.image.url];
+    return toDisplayImageItems([data.image.url]).map((item) => item.displaySrc);
   }
   return [];
 }
@@ -1380,7 +1381,7 @@ export function PublishWorkbench({
                             rel="noreferrer"
                             className="group overflow-hidden rounded-lg border border-stroke bg-panel/60"
                           >
-                            <img src={imageUrl} alt={`${taskPreviewTitle} 配图 ${index + 1}`} className="aspect-[4/3] w-full object-cover transition-transform duration-300 group-hover:scale-105" />
+                            <img src={imageUrl} alt={`${taskPreviewTitle} 配图 ${index + 1}`} className="aspect-[4/3] w-full object-cover transition-transform duration-300 group-hover:scale-105" onError={(event) => { event.currentTarget.style.display = "none"; }} />
                           </a>
                         ))}
                       </div>

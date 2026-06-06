@@ -4,11 +4,13 @@
     let currentStage = "init";
     const platform = String(options?.platform || input?.platform || "publish");
     const prefix = `[geo-${platform}]`;
+    window.__geoPublishAutomationLogs = logs;
 
     const log = (message) => {
       const normalizedMessage = String(message || "").trim();
       if (!normalizedMessage) return;
       logs.push(normalizedMessage);
+      window.__geoPublishAutomationLogs = logs;
       console.log(`${prefix} ${normalizedMessage}`);
     };
 
@@ -315,6 +317,66 @@
       return fallback instanceof HTMLInputElement ? fallback : null;
     };
 
+    const findDocumentFileInput = (acceptNeedles = ["image", "*"]) => {
+      const inputs = Array.from(document.querySelectorAll('input[type="file"]'));
+      return inputs.find((input) => {
+        const accept = String(input.getAttribute("accept") || "").toLowerCase();
+        if (!accept) return true;
+        return acceptNeedles.some((needle) => {
+          const normalizedNeedle = String(needle).toLowerCase();
+          if (normalizedNeedle === "*") {
+            return accept === "*" || accept === "*/*";
+          }
+          return accept.includes(normalizedNeedle);
+        });
+      }) || null;
+    };
+
+    const countRemoteImages = (root = document) =>
+      Array.from(root.querySelectorAll("img")).filter((img) => {
+        const src = String(img.getAttribute("src") || img.src || "");
+        return src && !src.startsWith("data:") && !src.startsWith("blob:");
+      }).length;
+
+    const waitForDocumentRemoteImages = async (prevCount, expectedIncrease = 1, waitMs = 45000) => {
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < waitMs) {
+        const currentCount = countRemoteImages(document);
+        if (currentCount >= prevCount + expectedIncrease) {
+          return true;
+        }
+        await sleep(800);
+      }
+      return false;
+    };
+
+    const assignFilesToInput = (input, files) => {
+      try {
+        Object.defineProperty(input, "files", { value: files, configurable: true });
+      } catch (_) {
+        try { input.files = files; } catch (__) { return false; }
+      }
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    };
+
+    const uploadImagesViaDocumentInput = async (images, options = {}) => {
+      const input = findDocumentFileInput(options.acceptNeedles || ["image", "*"]);
+      if (!(input instanceof HTMLInputElement)) return { ok: false, reason: "no_file_input" };
+      const selectedImages = (Array.isArray(images) ? images : []).filter((image) => image?.dataUrl).slice(0, options.limit || 9);
+      if (!selectedImages.length) return { ok: false, reason: "no_images" };
+      const dt = new DataTransfer();
+      selectedImages.forEach((image, index) => {
+        dt.items.add(dataUrlToFile(image.dataUrl, image.name || `publish-${index + 1}.png`, image.mimeType || "image/png"));
+      });
+      const prevCount = countRemoteImages(document);
+      if (!assignFilesToInput(input, dt.files)) return { ok: false, reason: "files_assign_failed" };
+      log(`document_file_input_change_dispatched: ${dt.files.length}`);
+      const verified = await waitForDocumentRemoteImages(prevCount, options.expectedIncrease || 1, options.waitMs || 45000);
+      return verified ? { ok: true } : { ok: false, reason: "remote_image_not_detected" };
+    };
+
     const waitForRealImage = (editorNode, prevCount, waitMs = 30000) =>
       new Promise((resolve, reject) => {
         let settled = false;
@@ -494,6 +556,11 @@
       insertParagraphBlock,
       dataUrlToFile,
       findFileInputForEditor,
+      findDocumentFileInput,
+      countRemoteImages,
+      waitForDocumentRemoteImages,
+      assignFilesToInput,
+      uploadImagesViaDocumentInput,
       waitForRealImage,
       uploadViaFileInput,
       uploadViaDrop,

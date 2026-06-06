@@ -77,8 +77,8 @@ function normalizeConfig(config: AppConfig): AppConfig {
     ...config,
     stage1ModelApiConfig: {
       ...config.stage1ModelApiConfig,
-      provider: "newapi-auto",
-      baseUrl: normalizeBaseUrl("newapi-auto", config.stage1ModelApiConfig.baseUrl),
+      provider: normalizeProviderName(config.stage1ModelApiConfig.provider),
+      baseUrl: normalizeBaseUrl(config.stage1ModelApiConfig.provider, config.stage1ModelApiConfig.baseUrl),
       apiKey: normalizeApiKey(config.stage1ModelApiConfig.apiKey),
     },
     contentModelApiConfig: {

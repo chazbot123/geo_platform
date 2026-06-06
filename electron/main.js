@@ -18,6 +18,7 @@ const publishProgressSessions = new Map();
 const PUBLISH_PROGRESS_TTL_MS = 10 * 60 * 1000;
 const AUTOMATION_SUCCESS_STATUSES = new Set(["published", "submitted", "verifying", "pending_review", "verification_failed"]);
 const AUTOMATION_TERMINAL_STATUSES = new Set([...AUTOMATION_SUCCESS_STATUSES, "failed", "unsupported"]);
+let activeBridgeOperations = 0;
 
 const STAGE_LABELS = {
   init: "准备启动",
@@ -280,6 +281,190 @@ function createScopedWindow(input = {}) {
   });
 }
 
+function parseCookieHeader(authPayload) {
+  const normalized = String(authPayload || "").trim();
+  if (normalized.startsWith("[")) {
+    try {
+      const records = JSON.parse(normalized);
+      if (Array.isArray(records)) {
+        return records
+          .map((record) => ({
+            name: String(record?.name || "").trim(),
+            value: String(record?.value || ""),
+            domain: String(record?.domain || "").trim() || undefined,
+            path: String(record?.path || "/").trim() || "/",
+            secure: typeof record?.secure === "boolean" ? record.secure : true,
+            httpOnly: typeof record?.httpOnly === "boolean" ? record.httpOnly : undefined,
+            sameSite: typeof record?.sameSite === "string" ? record.sameSite : undefined,
+            expirationDate: typeof record?.expirationDate === "number" ? record.expirationDate : undefined,
+          }))
+          .filter((cookie) => cookie.name);
+      }
+    } catch (_) {
+      // Fall back to legacy name=value parsing below.
+    }
+  }
+  if (normalized.startsWith("{")) {
+    try {
+      const record = JSON.parse(normalized);
+      if (Array.isArray(record?.cookies)) {
+        return record.cookies
+          .map((cookie) => ({
+            name: String(cookie?.name || "").trim(),
+            value: String(cookie?.value || ""),
+            domain: String(cookie?.domain || "").trim() || undefined,
+            path: String(cookie?.path || "/").trim() || "/",
+            secure: typeof cookie?.secure === "boolean" ? cookie.secure : true,
+            httpOnly: typeof cookie?.httpOnly === "boolean" ? cookie.httpOnly : undefined,
+            sameSite: typeof cookie?.sameSite === "string" ? cookie.sameSite : undefined,
+            expirationDate: typeof cookie?.expirationDate === "number" ? cookie.expirationDate : undefined,
+          }))
+          .filter((cookie) => cookie.name);
+      }
+    } catch (_) {
+      // Fall back to legacy name=value parsing below.
+    }
+  }
+  return normalized
+    .split(";")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const separatorIndex = entry.indexOf("=");
+      if (separatorIndex <= 0) return null;
+      const name = entry.slice(0, separatorIndex).trim();
+      const value = entry.slice(separatorIndex + 1).trim();
+      return name ? { name, value } : null;
+    })
+    .filter(Boolean);
+}
+
+function parseAuthStorage(authPayload) {
+  const normalized = String(authPayload || "").trim();
+  if (!normalized.startsWith("{")) return null;
+  try {
+    const record = JSON.parse(normalized);
+    return {
+      localStorage: record?.localStorage && typeof record.localStorage === "object" ? record.localStorage : {},
+      sessionStorage: record?.sessionStorage && typeof record.sessionStorage === "object" ? record.sessionStorage : {},
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+async function applyAuthStorageToWindow(windowInstance, authPayload, log) {
+  const storage = parseAuthStorage(authPayload);
+  if (!storage) return false;
+  const localStorageEntries = Object.entries(storage.localStorage || {}).filter(([, value]) => typeof value === "string");
+  const sessionStorageEntries = Object.entries(storage.sessionStorage || {}).filter(([, value]) => typeof value === "string");
+  if (!localStorageEntries.length && !sessionStorageEntries.length) return false;
+  try {
+    await windowInstance.webContents.executeJavaScript(
+      `(() => {
+        const localEntries = ${JSON.stringify(localStorageEntries)};
+        const sessionEntries = ${JSON.stringify(sessionStorageEntries)};
+        for (const [key, value] of localEntries) window.localStorage.setItem(key, value);
+        for (const [key, value] of sessionEntries) window.sessionStorage.setItem(key, value);
+        return { local: localEntries.length, session: sessionEntries.length };
+      })()`,
+      true,
+    );
+    if (typeof log === "function") log(`auth_storage_applied: local=${localStorageEntries.length} session=${sessionStorageEntries.length}`);
+    return true;
+  } catch (error) {
+    if (typeof log === "function") log(`auth_storage_failed: ${error instanceof Error ? error.message : "unknown"}`);
+    return false;
+  }
+}
+
+function getCookieTargetUrls(platform, publishUrl) {
+  const urls = new Set([publishUrl].filter(Boolean));
+  switch (String(platform || "")) {
+    case "videohao":
+      urls.add("https://channels.weixin.qq.com/");
+      urls.add("https://mp.weixin.qq.com/");
+      urls.add("https://weixin.qq.com/");
+      break;
+    case "wechat":
+      urls.add("https://mp.weixin.qq.com/");
+      urls.add("https://weixin.qq.com/");
+      break;
+    default:
+      break;
+  }
+  return Array.from(urls);
+}
+
+function getCookieDomainsForUrl(url) {
+  try {
+    const host = new URL(url).hostname;
+    const domains = [undefined];
+    if (host.endsWith("weixin.qq.com")) domains.push(".weixin.qq.com");
+    if (host.endsWith("qq.com")) domains.push(".qq.com");
+    return domains;
+  } catch (_) {
+    return [undefined];
+  }
+}
+
+async function applyAuthPayloadToPartition(input = {}) {
+  const authPayload = String(input.authPayload || "").trim();
+  const partition = typeof input.sessionPartition === "string" ? input.sessionPartition.trim() : "";
+  if (!authPayload || !partition) return { applied: false, count: 0 };
+  const cookies = parseCookieHeader(authPayload);
+  if (!cookies.length) return { applied: false, count: 0 };
+
+  const partitionSession = session.fromPartition(partition);
+  const writes = [];
+  const cookieSpecificTargetUrl = (cookie) => {
+    const domain = String(cookie.domain || "").trim().replace(/^\./, "");
+    if (!domain) return "";
+    return `${cookie.secure === false ? "http" : "https"}://${domain}${cookie.path || "/"}`;
+  };
+  for (const targetUrl of getCookieTargetUrls(input.platform, input.publishUrl)) {
+    for (const cookie of cookies) {
+      if (cookie.domain) {
+        const cookieUrl = cookieSpecificTargetUrl(cookie) || targetUrl;
+        writes.push(
+          partitionSession.cookies
+            .set({
+              url: cookieUrl,
+              name: cookie.name,
+              value: cookie.value,
+              path: cookie.path || "/",
+              secure: cookie.secure !== false,
+              domain: cookie.domain,
+              ...(typeof cookie.httpOnly === "boolean" ? { httpOnly: cookie.httpOnly } : {}),
+              ...(cookie.sameSite ? { sameSite: cookie.sameSite } : {}),
+              ...(cookie.expirationDate ? { expirationDate: cookie.expirationDate } : {}),
+            })
+            .then(() => true)
+            .catch(() => false),
+        );
+        continue;
+      }
+      for (const domain of getCookieDomainsForUrl(targetUrl)) {
+        writes.push(
+          partitionSession.cookies
+            .set({
+              url: targetUrl,
+              name: cookie.name,
+              value: cookie.value,
+              path: "/",
+              secure: true,
+              ...(domain ? { domain } : {}),
+            })
+            .then(() => true)
+            .catch(() => false),
+        );
+      }
+    }
+  }
+  const results = await Promise.all(writes);
+  return { applied: results.some(Boolean), count: results.filter(Boolean).length };
+}
+
 function getPlatformSessionSpec(platform, publishUrl) {
   const normalizedPlatform = String(platform || "").trim();
   switch (normalizedPlatform) {
@@ -301,17 +486,23 @@ function getPlatformSessionSpec(platform, publishUrl) {
         loginUrlHints: ["/login", "passport", "signin", "sso"],
         loginTextHints: ["扫码登录", "请先登录", "验证码登录"],
       };
+    case "xiaohongshu":
+      return {
+        publishUrl: publishUrl || "https://creator.xiaohongshu.com/publish/publish?from=menu&target=article",
+        loginUrlHints: ["/login", "passport", "signin", "sso", "xiaohongshu.com/login"],
+        loginTextHints: ["扫码登录", "验证码登录", "手机号登录", "请先登录", "登录小红书"],
+      };
     case "wechat":
       return {
         publishUrl: publishUrl || "https://mp.weixin.qq.com/cgi-bin/appmsg?t=media/appmsg_edit&action=edit&type=10",
         loginUrlHints: ["/cgi-bin/bizlogin", "/cgi-bin/loginpage", "login.weixin.qq.com", "open.weixin.qq.com/connect/qrconnect"],
-        loginTextHints: ["请使用微信扫码登录", "扫码登录", "微信扫一扫", "账号密码登录", "登录公众平台"],
+        loginTextHints: ["请使用微信扫码登录", "扫码登录", "微信扫一扫", "账号密码登录", "登录公众平台", "请重新登录"],
       };
     case "videohao":
       return {
         publishUrl: publishUrl || "https://channels.weixin.qq.com/platform/post/create",
         loginUrlHints: ["login.weixin.qq.com", "open.weixin.qq.com/connect/qrconnect", "/login"],
-        loginTextHints: ["请使用微信扫码登录", "扫码登录", "微信扫一扫"],
+        loginTextHints: ["请使用微信扫码登录", "扫码登录", "微信扫一扫", "请重新登录", "登录"],
       };
     case "zhihu":
       return {
@@ -352,6 +543,13 @@ async function inspectPlatformSession(input = {}) {
     };
   }
 
+  await applyAuthPayloadToPartition({
+    platform: input.platform,
+    publishUrl: spec.publishUrl,
+    sessionPartition: input.sessionPartition,
+    authPayload: input.authPayload,
+  });
+
   const partitionSession = partition ? session.fromPartition(partition) : session.defaultSession;
   let cookieCount = 0;
   try {
@@ -372,6 +570,11 @@ async function inspectPlatformSession(input = {}) {
   try {
     await validationWindow.loadURL(spec.publishUrl);
     await waitForWindowStable(validationWindow);
+    const storageApplied = await applyAuthStorageToWindow(validationWindow, input.authPayload);
+    if (storageApplied) {
+      await validationWindow.loadURL(spec.publishUrl);
+      await waitForWindowStable(validationWindow);
+    }
     const inspection = await validationWindow.webContents.executeJavaScript(
       `(() => {
         const currentUrl = window.location.href;
@@ -478,6 +681,8 @@ function resolveAutomationFile(platform) {
       return path.join(automationDirectory, "baijiahao.js");
     case "douyin":
       return path.join(automationDirectory, "douyin.js");
+    case "xiaohongshu":
+      return path.join(automationDirectory, "xiaohongshu.js");
     case "wechat":
       return path.join(automationDirectory, "wechat.js");
     case "videohao":
@@ -490,6 +695,15 @@ function resolveAutomationFile(platform) {
       return path.join(automationDirectory, "csdn.js");
     default:
       return "";
+  }
+}
+
+async function trackBridgeOperation(operation) {
+  activeBridgeOperations += 1;
+  try {
+    return await operation();
+  } finally {
+    activeBridgeOperations = Math.max(0, activeBridgeOperations - 1);
   }
 }
 
@@ -550,6 +764,7 @@ async function prepareSinglePublishImageFromLocalPath(imagePath, index) {
     name: `publish-${index + 1}${extension || guessExtensionFromMimeType(mimeType)}`,
     mimeType,
     dataUrl: `data:${mimeType};base64,${buffer.toString("base64")}`,
+    filePath: normalizedPath,
   };
 }
 
@@ -560,7 +775,13 @@ async function preparePublishImages(payload = {}, log) {
     return [];
   }
 
-  const draftImagePaths = Array.isArray(payload.draftImagePaths) ? payload.draftImagePaths : [];
+  const draftImagePaths = [
+    ...(Array.isArray(payload.draftImagePaths) ? payload.draftImagePaths : []),
+    ...(Array.isArray(payload.draftImageUrls) ? payload.draftImageUrls : []).filter((item) => {
+      const value = String(item || "").trim();
+      return value && !/^https?:\/\//i.test(value) && !/^data:/i.test(value);
+    }),
+  ];
   if (draftImagePaths.length === 0) {
     return [];
   }
@@ -585,6 +806,64 @@ async function waitForWindowStable(windowInstance) {
     ]);
   }
   await sleep(1200);
+}
+
+async function resolveWechatTokenizedPublishUrl(windowInstance, fallbackUrl, log) {
+  const extractToken = async () => {
+    try {
+      return await windowInstance.webContents.executeJavaScript(
+        `(() => {
+          const urls = [
+            window.location.href,
+            ...Array.from(document.querySelectorAll("a[href]")).map((node) => node.href || "")
+          ];
+          for (const url of urls) {
+            try {
+              const token = new URL(url, window.location.href).searchParams.get("token");
+              if (token && /^\\d+$/.test(token)) return token;
+            } catch (_) {}
+          }
+          const text = document.body?.innerText || "";
+          const matched = text.match(/token[=:]\\s*(\\d{4,})/i);
+          return matched?.[1] || "";
+        })()`,
+        true,
+      );
+    } catch (_) {
+      return "";
+    }
+  };
+
+  let token = await extractToken();
+  if (!token) {
+    log("wechat_token_resolve: load_home");
+    await loadWindowUrlWithTimeout(windowInstance, "https://mp.weixin.qq.com/cgi-bin/home?t=home/index", 25000);
+    await waitForWindowStable(windowInstance);
+    const startedAt = Date.now();
+    while (!token && Date.now() - startedAt < 10000) {
+      token = await extractToken();
+      if (token) break;
+      await sleep(500);
+    }
+  }
+
+  if (!token) {
+    const currentUrl = windowInstance.webContents.getURL() || fallbackUrl;
+    try {
+      token = new URL(currentUrl).searchParams.get("token") || "";
+    } catch (_) {
+      token = "";
+    }
+  }
+
+  if (!token) {
+    log(`wechat_token_resolve_failed_url: ${windowInstance.webContents.getURL() || fallbackUrl}`);
+    return fallbackUrl;
+  }
+
+  const tokenizedUrl = `https://mp.weixin.qq.com/cgi-bin/appmsg?t=media/appmsg_edit&action=edit&type=10&token=${token}&lang=zh_CN`;
+  log(`wechat_token_resolved: ${tokenizedUrl.replace(/token=\\d+/, "token=***")}`);
+  return tokenizedUrl;
 }
 
 async function loadWindowUrlWithTimeout(windowInstance, url, timeoutMs = 25000) {
@@ -615,7 +894,7 @@ function attachPublishNetworkLogger(windowInstance, sessionToken, platform) {
       const url = String(request.url || "");
       const requestMethod = String(request.method || "GET").toUpperCase();
       if (!url || !["xhr", "fetch"].includes(resourceType)) return;
-      if (!/csdn|baidu|toutiao|weibo|zhihu|weixin|douyin|byte|creator|mp\./i.test(url)) return;
+      if (!/csdn|baidu|toutiao|weibo|zhihu|weixin|douyin|xiaohongshu|xhscdn|byte|creator|mp\./i.test(url)) return;
       const normalizedUrl = url.replace(/([?&](?:token|access_token|csrf|session|cookie|signature|sign|key|secret)=)[^&]+/gi, "$1***");
       const key = `${requestMethod} ${normalizedUrl}`;
       if (seen.has(key)) return;
@@ -649,7 +928,8 @@ function attachPublishNetworkLogger(windowInstance, sessionToken, platform) {
 async function executeAutomation(windowInstance, filePath, payload) {
   const helperSource = fs.readFileSync(automationHelperFile, "utf8");
   const source = fs.readFileSync(filePath, "utf8");
-  return windowInstance.webContents.executeJavaScript(
+  const timeoutMs = Number(payload?.timeoutMs) || 180000;
+  const scriptPromise = windowInstance.webContents.executeJavaScript(
     `(async () => {
       try {
         ${helperSource}
@@ -659,11 +939,12 @@ async function executeAutomation(windowInstance, filePath, payload) {
           (${source})(payload),
           new Promise((resolve) => {
             setTimeout(() => {
+              const pageLogs = Array.isArray(window.__geoPublishAutomationLogs) ? window.__geoPublishAutomationLogs : [];
               resolve({
                 status: "failed",
                 failureStage: "script_timeout",
                 errorMessage: "自动化脚本执行超时，可能卡在平台弹层、编辑器加载或提交确认阶段。",
-                executionLog: ["script_timeout: " + timeoutMs + "ms"],
+                executionLog: [...pageLogs, "script_timeout: " + timeoutMs + "ms"],
                 verificationEvidence: "failed_at_script_timeout",
                 draftUrl: window.location.href,
               });
@@ -684,6 +965,382 @@ async function executeAutomation(windowInstance, filePath, payload) {
     })()`,
     true,
   );
+  return Promise.race([
+    scriptPromise,
+    new Promise((resolve) => {
+      setTimeout(async () => {
+        let pageLogs = [];
+        let draftUrl = "";
+        try {
+          draftUrl = windowInstance.webContents.getURL();
+          pageLogs = await windowInstance.webContents.executeJavaScript(
+            "Array.isArray(window.__geoPublishAutomationLogs) ? window.__geoPublishAutomationLogs : []",
+            true,
+          );
+        } catch (_) {
+          pageLogs = [];
+        }
+        resolve({
+          status: "failed",
+          failureStage: "script_timeout",
+          errorMessage: "自动化脚本执行超时，可能卡在平台弹层、编辑器加载或页面跳转阶段。",
+          executionLog: [...(Array.isArray(pageLogs) ? pageLogs : []), `script_timeout_outer: ${timeoutMs}ms`],
+          verificationEvidence: "failed_at_script_timeout",
+          draftUrl,
+        });
+      }, timeoutMs + 5000);
+    }),
+  ]);
+}
+
+async function connectCdpWebSocket(webSocketDebuggerUrl) {
+  if (typeof WebSocket !== "function") {
+    throw new Error("当前 Electron 运行时不支持 WebSocket CDP fallback。");
+  }
+  const socket = new WebSocket(webSocketDebuggerUrl);
+  let messageId = 0;
+  const pending = new Map();
+  socket.onmessage = (event) => {
+    try {
+      const message = JSON.parse(event.data);
+      if (message.id && pending.has(message.id)) {
+        pending.get(message.id)(message);
+        pending.delete(message.id);
+      }
+    } catch (_) {
+      // Ignore malformed CDP messages.
+    }
+  };
+  await new Promise((resolve, reject) => {
+    socket.onopen = resolve;
+    socket.onerror = () => reject(new Error("无法连接外部 Edge CDP WebSocket。"));
+  });
+  return {
+    send(method, params = {}) {
+      return new Promise((resolve) => {
+        const id = ++messageId;
+        pending.set(id, resolve);
+        socket.send(JSON.stringify({ id, method, params }));
+      });
+    },
+    close() {
+      try {
+        socket.close();
+      } catch (_) {
+        // Ignore close errors.
+      }
+    },
+  };
+}
+
+async function fetchJsonWithTimeout(url, timeoutMs = 2500) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function findExternalVideohaoTarget() {
+  const targets = await fetchJsonWithTimeout("http://127.0.0.1:9223/json", 2500);
+  return Array.isArray(targets)
+    ? targets.find((target) => target.type === "page" && String(target.url || "").includes("channels.weixin.qq.com"))
+    : null;
+}
+
+function buildVideohaoTextBody(payload = {}) {
+  const title = String(payload.draftTitle || "").trim();
+  const body = String(payload.draftBody || "").trim();
+  const tags = Array.isArray(payload.draftTags)
+    ? payload.draftTags
+        .map((tag) => String(tag || "").trim().replace(/^#+/, ""))
+        .filter(Boolean)
+        .slice(0, 5)
+        .map((tag) => `#${tag}`)
+        .join(" ")
+    : "";
+  return [body, tags].filter(Boolean).join("\n\n").slice(0, 1200);
+}
+
+async function runExternalEdgeVideohaoPublish(input = {}, preparedImages = [], log = () => {}) {
+  const target = await findExternalVideohaoTarget();
+  if (!target?.webSocketDebuggerUrl) {
+    throw new Error("未检测到已开启 9223 调试端口的外部 Edge 视频号页面。");
+  }
+  const cdp = await connectCdpWebSocket(target.webSocketDebuggerUrl);
+  const title = String(input.payload?.draftTitle || "").trim().slice(0, 22) || "图文动态";
+  const body = buildVideohaoTextBody(input.payload);
+  const imagePaths = preparedImages
+    .map((image) => String(image?.filePath || image?.path || "").trim())
+    .filter(Boolean)
+    .slice(0, 9);
+  if (!imagePaths.length) {
+    cdp.close();
+    throw new Error("视频号图文发布至少需要 1 张本地图片。");
+  }
+
+  try {
+    log("videohao_external_cdp_detected");
+    await cdp.send("Page.enable");
+    await cdp.send("DOM.enable");
+    let initialVideoCount = null;
+    try {
+      await cdp.send("Page.navigate", { url: "https://channels.weixin.qq.com/platform" });
+      await sleep(7000);
+      const countResult = await cdp.send("Runtime.evaluate", {
+        expression: `(() => {
+          const text = String(document.body?.innerText || '').replace(/\\s+/g, ' ').trim();
+          const matched = text.match(/\\u89c6\\u9891\\s*(\\d+)/);
+          return matched ? Number(matched[1]) : null;
+        })()`,
+        returnByValue: true,
+        awaitPromise: true,
+      });
+      const countValue = countResult.result?.result?.value;
+      if (Number.isFinite(countValue)) {
+        initialVideoCount = countValue;
+        log(`videohao_external_initial_video_count: ${initialVideoCount}`);
+      }
+    } catch (countError) {
+      log(`videohao_external_initial_video_count_failed: ${countError instanceof Error ? countError.message : "unknown"}`);
+    }
+    await cdp.send("Page.navigate", { url: "https://channels.weixin.qq.com/platform/post/finderNewLifeCreate" });
+    await sleep(9000);
+
+    const inputEval = await cdp.send("Runtime.evaluate", {
+      expression: "document.querySelector('wujie-app')?.shadowRoot?.querySelector('input[type=file]')",
+      objectGroup: "geo-videohao",
+    });
+    const objectId = inputEval.result?.result?.objectId;
+    if (!objectId) throw new Error("未找到视频号图文图片上传控件。");
+    await cdp.send("DOM.setFileInputFiles", { objectId, files: imagePaths });
+    log(`videohao_external_upload_files: ${imagePaths.length}`);
+    await sleep(15000);
+
+    const fillExpression = `(() => {
+      const root = document.querySelector('wujie-app')?.shadowRoot;
+      if (!root) return { ok: false, stage: 'shadow_root_missing' };
+      const fire = (el) => {
+        for (const type of ['input', 'change', 'compositionend', 'blur']) {
+          el.dispatchEvent(new Event(type, { bubbles: true, composed: true }));
+        }
+      };
+      const titleInput = Array.from(root.querySelectorAll('input')).find((node) =>
+        String(node.placeholder || '').includes('标题')
+      );
+      if (!titleInput) return { ok: false, stage: 'title_input_missing' };
+      titleInput.focus();
+      titleInput.value = ${JSON.stringify(title)};
+      fire(titleInput);
+      const candidates = Array.from(
+        root.querySelectorAll('textarea,[contenteditable=true],[role=textbox],.input-editor,.rich-editor')
+      ).map((node) => ({ node, placeholder: node.getAttribute('placeholder') || '', rect: node.getBoundingClientRect(), text: String(node.innerText || node.value || node.textContent || '') }));
+      const desc = (
+        candidates.find((item) => item.placeholder.includes('描述')) ||
+        candidates.find((item) => item.text.includes('#话题')) ||
+        candidates.find((item) => item.rect.width > 100 && item.rect.height > 40) ||
+        {}
+      ).node;
+      if (desc) {
+        desc.focus();
+        if (desc.tagName === 'TEXTAREA' || desc.tagName === 'INPUT') {
+          desc.value = ${JSON.stringify(body)};
+          fire(desc);
+        } else {
+          desc.innerText = ${JSON.stringify(body)};
+          desc.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: ${JSON.stringify(body)} }));
+          desc.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+          desc.dispatchEvent(new Event('blur', { bubbles: true, composed: true }));
+        }
+      }
+      const button = Array.from(root.querySelectorAll('button')).find((node) => String(node.innerText || '').trim() === '发表');
+      return {
+        ok: true,
+        descFound: Boolean(desc),
+        publishDisabled: Boolean(button?.disabled || String(button?.className || '').includes('disabled')),
+        imageVisible: Array.from(root.querySelectorAll('img')).some((img) => String(img.src || '').startsWith('blob:') && img.getBoundingClientRect().width > 20),
+      };
+    })()`;
+    const fillResult = await cdp.send("Runtime.evaluate", { expression: fillExpression, returnByValue: true, awaitPromise: true });
+    const fillValue = fillResult.result?.result?.value;
+    if (!fillValue?.ok || fillValue.publishDisabled || !fillValue.imageVisible) {
+      throw new Error(`视频号外部 Edge 填充校验失败：${JSON.stringify(fillValue)}`);
+    }
+    log("videohao_external_fill_verified");
+
+    const submitResult = await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const root = document.querySelector('wujie-app')?.shadowRoot;
+        const button = Array.from(root?.querySelectorAll('button') || []).find((node) => String(node.innerText || '').trim() === '发表');
+        if (!button) return { ok: false, stage: 'submit_button_missing' };
+        button.click();
+        return { ok: true, url: location.href };
+      })()`,
+      returnByValue: true,
+      awaitPromise: true,
+    });
+    if (!submitResult.result?.result?.value?.ok) {
+      throw new Error(`视频号外部 Edge 点击发表失败：${JSON.stringify(submitResult.result?.result?.value)}`);
+    }
+    log("videohao_external_submit_clicked");
+    await sleep(2500);
+
+    const confirmResult = await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const root = document.querySelector('wujie-app')?.shadowRoot;
+        const buttons = Array.from(root?.querySelectorAll('button') || []).filter((button) => {
+          const rect = button.getBoundingClientRect();
+          const text = String(button.innerText || '').trim();
+          const disabled = button.disabled || String(button.className || '').includes('disabled');
+          return rect.width > 0 && rect.height > 0 && !disabled && /^(发表|确定|确认)$/.test(text);
+        });
+        const button = buttons[buttons.length - 1];
+        if (!button) return { clicked: false };
+        button.click();
+        return { clicked: true, text: String(button.innerText || '').trim() };
+      })()`,
+      returnByValue: true,
+      awaitPromise: true,
+    });
+    if (confirmResult.result?.result?.value?.clicked) {
+      log(`videohao_external_confirm_clicked: ${confirmResult.result.result.value.text || "confirm"}`);
+    }
+    await sleep(12000);
+
+    await cdp.send("Page.navigate", { url: "https://channels.weixin.qq.com/platform/post/finderNewLifePostList" });
+    await sleep(12000);
+
+    const robustVerificationAttempts = [];
+    let robustVerifyValue = {};
+    const robustVerifyStartedAt = Date.now();
+    for (let attempt = 1; attempt <= 30; attempt += 1) {
+      const robustVerifyResult = await cdp.send("Runtime.evaluate", {
+        expression: `(() => {
+          const root = document.querySelector('wujie-app')?.shadowRoot;
+          const shadowText = String(root?.innerText || '').replace(/\\s+/g, ' ').trim();
+          const bodyText = String(document.body?.innerText || '').replace(/\\s+/g, ' ').trim();
+          const text = shadowText || bodyText;
+          const sample = text.slice(0, 600);
+          return {
+            url: location.href,
+            hasShadowRoot: Boolean(root),
+            textLength: text.length,
+            containsTitle: text.includes(${JSON.stringify(title)}),
+            hasPublished: /\\u5df2\\u53d1\\u8868|\\u56fe\\u6587\\s*\\(\\d+\\)|\\u53d1\\u8868\\u6210\\u529f|\\u53d1\\u5e03\\u6210\\u529f|\\u5ba1\\u6838/.test(text),
+            hasBlocking: /\\u9a8c\\u8bc1\\u7801|\\u4e0d\\u80fd\\u4e3a\\u7a7a|\\u5931\\u8d25|\\u8fdd\\u89c4|\\u9519\\u8bef/.test(text),
+            sample,
+          };
+        })()`,
+        returnByValue: true,
+        awaitPromise: true,
+      });
+      robustVerifyValue = robustVerifyResult.result?.result?.value || {};
+      if (robustVerifyValue.sample) robustVerificationAttempts.push(robustVerifyValue.sample);
+      if (robustVerifyValue.hasBlocking || robustVerifyValue.containsTitle || robustVerifyValue.hasPublished) break;
+      if (Date.now() - robustVerifyStartedAt >= 75000) break;
+      await sleep(2500);
+    }
+    robustVerificationAttempts.splice(6);
+    if (robustVerifyValue.hasBlocking) {
+      return {
+        status: "verification_failed",
+        failureStage: "external_edge_verify",
+        errorMessage: "Videohao external Edge returned blocking text after submit.",
+        publishUrl: robustVerifyValue.url,
+        verificationEvidence: "videohao_external_edge_blocking_text",
+        verificationAttempts: robustVerificationAttempts,
+      };
+    }
+    if (robustVerifyValue.containsTitle || robustVerifyValue.hasPublished) {
+      return {
+        status: "published",
+        publishUrl: robustVerifyValue.url,
+        verificationEvidence: "videohao_external_edge_published_list",
+        verificationAttempts: robustVerificationAttempts,
+      };
+    }
+
+    if (Number.isFinite(initialVideoCount)) {
+      const countVerificationAttempts = [];
+      await cdp.send("Page.navigate", { url: "https://channels.weixin.qq.com/platform" });
+      await sleep(5000);
+      for (let attempt = 1; attempt <= 20; attempt += 1) {
+        const countResult = await cdp.send("Runtime.evaluate", {
+          expression: `(() => {
+            const text = String(document.body?.innerText || '').replace(/\\s+/g, ' ').trim();
+            const matched = text.match(/\\u89c6\\u9891\\s*(\\d+)/);
+            const videoCount = matched ? Number(matched[1]) : null;
+            return {
+              url: location.href,
+              videoCount,
+              increased: Number.isFinite(videoCount) && videoCount > ${JSON.stringify(initialVideoCount)},
+              sample: text.slice(0, 600),
+            };
+          })()`,
+          returnByValue: true,
+          awaitPromise: true,
+        });
+        const countValue = countResult.result?.result?.value || {};
+        if (countValue.sample) countVerificationAttempts.push(countValue.sample);
+        if (countValue.increased) {
+          return {
+            status: "published",
+            publishUrl: "https://channels.weixin.qq.com/platform/post/finderNewLifePostList",
+            verificationEvidence: "videohao_external_edge_home_count_incremented",
+            verificationAttempts: [...robustVerificationAttempts, ...countVerificationAttempts].slice(0, 8),
+          };
+        }
+        await sleep(3000);
+      }
+    }
+
+    const verifyResult = await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const root = document.querySelector('wujie-app')?.shadowRoot;
+        const text = String(root?.innerText || document.body?.innerText || '').replace(/\\s+/g, ' ').trim();
+        return {
+          url: location.href,
+          containsTitle: text.includes(${JSON.stringify(title)}),
+          hasPublished: /已发表|发表成功|发布成功|审核/.test(text),
+          hasBlocking: /验证码|不能为空|失败|违规|错误/.test(text),
+          sample: text.slice(0, 600),
+        };
+      })()`,
+      returnByValue: true,
+      awaitPromise: true,
+    });
+    const verifyValue = verifyResult.result?.result?.value || {};
+    if (verifyValue.hasBlocking) {
+      return {
+        status: "verification_failed",
+        failureStage: "external_edge_verify",
+        errorMessage: "视频号外部 Edge 提交后出现阻断提示。",
+        publishUrl: verifyValue.url,
+        verificationEvidence: "videohao_external_edge_blocking_text",
+        verificationAttempts: [verifyValue.sample].filter(Boolean),
+      };
+    }
+    if (verifyValue.containsTitle || verifyValue.hasPublished) {
+      return {
+        status: verifyValue.hasPublished ? "published" : "submitted",
+        publishUrl: verifyValue.url,
+        verificationEvidence: "videohao_external_edge_published_list",
+        verificationAttempts: [verifyValue.sample].filter(Boolean),
+      };
+    }
+    return {
+      status: "submitted",
+      publishUrl: verifyValue.url,
+      verificationEvidence: "videohao_external_edge_submit_clicked",
+      verificationAttempts: [verifyValue.sample].filter(Boolean),
+    };
+  } finally {
+    cdp.close();
+  }
 }
 
 function normalizeAutomationResult(rawResult, fallback = {}) {
@@ -725,8 +1382,22 @@ function normalizeAutomationResult(rawResult, fallback = {}) {
   };
 }
 
+function detectBrokenPublishText(payload = {}) {
+  const values = [
+    payload.draftTitle,
+    payload.draftBody,
+    ...(Array.isArray(payload.draftTags) ? payload.draftTags : []),
+  ]
+    .map((item) => String(item || ""))
+    .filter(Boolean);
+  const brokenPattern = /�|\?{3,}|鍥|涓|绗|鏍|濉|寰|鐧|姝|彂|熶|叆|堕|煡|獙/;
+  const matched = values.find((value) => brokenPattern.test(value));
+  return matched ? matched.slice(0, 120) : "";
+}
+
 async function runPlatformPublish(input = {}) {
   const publishUrl = typeof input.publishUrl === "string" ? input.publishUrl.trim() : "";
+  let effectivePublishUrl = publishUrl;
   const automationFile = resolveAutomationFile(input.platform);
   const executionLog = [];
   const sessionToken = typeof input.sessionToken === "string" ? input.sessionToken.trim() : "";
@@ -758,15 +1429,17 @@ async function runPlatformPublish(input = {}) {
   let shouldCloseWindow = false;
   const detachNetworkLogger = attachPublishNetworkLogger(publishWindow, sessionToken, input.platform);
 
-  publishWindow.webContents.openDevTools({ mode: 'detach' });
+  if (process.env.GEO_OPEN_PUBLISH_DEVTOOLS === "1") {
+    publishWindow.webContents.openDevTools({ mode: "detach" });
+  }
 
   publishWindow.webContents.on("console-message", (_, _level, message) => {
     const text = String(message || "");
-    const prefix = text.match(/^\[geo-(toutiao|baijiahao|douyin|wechat|videohao|zhihu|weibo|csdn)\]\s*/);
+    const prefix = text.match(/^\[geo-(toutiao|baijiahao|douyin|xiaohongshu|wechat|videohao|zhihu|weibo|csdn)\]\s*/);
     if (!prefix) {
       return;
     }
-    const normalized = text.replace(/^\[geo-(toutiao|baijiahao|douyin|wechat)\]\s*/, "").trim();
+    const normalized = text.replace(/^\[geo-(toutiao|baijiahao|douyin|xiaohongshu|wechat|videohao|zhihu|weibo|csdn)\]\s*/, "").trim();
     if (!normalized) {
       return;
     }
@@ -781,11 +1454,36 @@ async function runPlatformPublish(input = {}) {
   try {
     const validation = await inspectPlatformSession({
       platform: input.platform,
-      publishUrl,
+      publishUrl: effectivePublishUrl,
       sessionPartition: input.sessionPartition,
+      authPayload: input.authPayload,
     });
     log(`validate_session: ${validation.status}${validation.reason ? ` (${validation.reason})` : ""}`);
     if (validation.status !== "authenticated") {
+      if (String(input.platform || "") === "videohao") {
+        try {
+          const fallbackPayload = { ...(input.payload || {}) };
+          fallbackPayload.preparedImages = await preparePublishImages(fallbackPayload, log);
+          const fallbackResult = await runExternalEdgeVideohaoPublish(
+            { ...input, payload: fallbackPayload },
+            fallbackPayload.preparedImages,
+            log,
+          );
+          const normalizedFallback = normalizeAutomationResult(fallbackResult, {
+            executionLog,
+            draftUrl: fallbackResult.publishUrl,
+            verificationEvidence: fallbackResult.verificationEvidence,
+          });
+          normalizedFallback.executionLog = [
+            ...executionLog,
+            ...(Array.isArray(normalizedFallback.executionLog) ? normalizedFallback.executionLog : []),
+          ];
+          updateProgressStatus(sessionToken, input.platform, normalizedFallback);
+          return normalizedFallback;
+        } catch (fallbackError) {
+          log(`videohao_external_cdp_failed: ${fallbackError instanceof Error ? fallbackError.message : "unknown"}`);
+        }
+      }
       updateProgressStatus(sessionToken, input.platform, {
         status: "failed",
         failureStage: validation.status === "missing_session" ? "platform_session_missing" : "platform_login_required",
@@ -803,6 +1501,24 @@ async function runPlatformPublish(input = {}) {
     const payload = {
       ...(input.payload || {}),
     };
+    const brokenText = detectBrokenPublishText(payload);
+    if (brokenText) {
+      const message = `发布文案疑似编码损坏，已阻断提交：${brokenText}`;
+      log(`payload_encoding_error: ${message}`);
+      updateProgressStatus(sessionToken, input.platform, {
+        status: "failed",
+        failureStage: "payload_encoding_error",
+        verificationEvidence: "failed_at_payload_encoding_error",
+        errorMessage: message,
+      });
+      return {
+        status: "failed",
+        errorMessage: message,
+        executionLog,
+        failureStage: "payload_encoding_error",
+        verificationEvidence: "failed_at_payload_encoding_error",
+      };
+    }
     try {
       payload.preparedImages = await preparePublishImages(payload, log);
     } catch (error) {
@@ -822,12 +1538,33 @@ async function runPlatformPublish(input = {}) {
       };
     }
 
-    log(`open_publish_page: ${publishUrl}`);
-    const loadTimedOut = await loadWindowUrlWithTimeout(publishWindow, publishUrl, 25000);
+    log(`open_publish_page: ${effectivePublishUrl}`);
+    const loadTimedOut = await loadWindowUrlWithTimeout(publishWindow, effectivePublishUrl, 25000);
     if (loadTimedOut) {
       log("open_publish_page_timeout: 页面加载超过 25 秒，继续注入自动化脚本。");
     }
     await waitForWindowStable(publishWindow);
+    const publishStorageApplied = await applyAuthStorageToWindow(publishWindow, input.authPayload, log);
+    if (publishStorageApplied) {
+      log("auth_storage_reload_publish_entry");
+      const storageReloadTimedOut = await loadWindowUrlWithTimeout(publishWindow, effectivePublishUrl, 25000);
+      if (storageReloadTimedOut) {
+        log("auth_storage_reload_timeout: publish entry reload exceeded 25s; continue automation injection");
+      }
+      await waitForWindowStable(publishWindow);
+    }
+
+    if (String(input.platform || "") === "wechat") {
+      const tokenizedUrl = await resolveWechatTokenizedPublishUrl(publishWindow, effectivePublishUrl, log);
+      if (tokenizedUrl && tokenizedUrl !== effectivePublishUrl) {
+        effectivePublishUrl = tokenizedUrl;
+        const tokenizedLoadTimedOut = await loadWindowUrlWithTimeout(publishWindow, effectivePublishUrl, 25000);
+        if (tokenizedLoadTimedOut) {
+          log("open_publish_page_tokenized_timeout: wechat tokenized editor load exceeded 25s; continue automation injection");
+        }
+        await waitForWindowStable(publishWindow);
+      }
+    }
     
     const isBlank = await publishWindow.webContents.executeJavaScript(`document.body?.innerText.trim().length === 0`);
     if (isBlank) {
@@ -905,9 +1642,9 @@ app.whenReady().then(async () => {
   localBridge = createLocalBridge({
     isReady: () => app.isReady(),
     getVersion: () => app.getVersion(),
-    openPlatformLogin: (input) => openPlatformLoginWindow(input),
-    validatePlatformSession: (input) => inspectPlatformSession(input),
-    runPlatformPublish: (input) => runPlatformPublish(input),
+    openPlatformLogin: (input) => trackBridgeOperation(() => openPlatformLoginWindow(input)),
+    validatePlatformSession: (input) => trackBridgeOperation(() => inspectPlatformSession(input)),
+    runPlatformPublish: (input) => trackBridgeOperation(() => runPlatformPublish(input)),
     getPlatformPublishProgress: (input) => getPlatformPublishProgress(input),
   });
 
@@ -926,6 +1663,10 @@ ipcMain.handle("geo:run-platform-publish", async (_, input) => runPlatformPublis
 ipcMain.handle("geo:get-platform-publish-progress", async (_, input) => getPlatformPublishProgress(input));
 
 app.on("window-all-closed", () => {
+  if (activeBridgeOperations > 0) {
+    return;
+  }
+
   if (server) {
     server.close();
   }

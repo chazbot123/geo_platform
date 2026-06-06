@@ -23,6 +23,7 @@ export interface ElectronPlatformSessionValidationRequest {
   platform: string;
   publishUrl?: string;
   sessionPartition?: string;
+  authPayload?: string;
 }
 
 export interface ElectronPlatformSessionValidationResult {
@@ -37,6 +38,7 @@ export interface ElectronPlatformPublishRequest {
   title: string;
   publishUrl?: string;
   sessionPartition?: string;
+  authPayload?: string;
   sessionToken?: string;
   timeoutMs?: number;
   payload: {

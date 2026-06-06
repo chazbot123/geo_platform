@@ -2,6 +2,7 @@ import { getAppConfig } from "@/lib/config/service";
 import { getPromptVersion, normalizeAiScenario, normalizePlatform } from "@/lib/content/prompt-loader";
 import { reviewContent, type ReviewResult } from "@/lib/content/review-service";
 import { planDispersion } from "@/lib/content/dispersion-service";
+import { buildGeoContentExecutionPackage } from "@/lib/content/execution-package";
 import { runContentModel } from "@/lib/integrations/content/client";
 import { listAllContentDrafts, saveContent } from "@/lib/storage/data-store";
 import { getTaskBundle, markTaskFailed, updateTaskStatus } from "@/lib/tasks/service";
@@ -133,7 +134,7 @@ export async function generateContentForTask(taskId: string, options?: ContentGe
       }
     }
 
-    const content = normalizeGeneratedDraft(
+    const generatedContent = normalizeGeneratedDraft(
       await runContentModel(bundle.product, bundle.theme, config.contentModelApiConfig, {
         aiScenario,
         platform,
@@ -144,10 +145,23 @@ export async function generateContentForTask(taskId: string, options?: ContentGe
 
     let reviewResult: ReviewResult;
     try {
-      reviewResult = await reviewContent(content, platform, getSelectedQuestionsForReview(bundle));
+      reviewResult = await reviewContent(generatedContent, platform, getSelectedQuestionsForReview(bundle));
     } catch (error) {
       reviewResult = buildReviewFailure(error);
     }
+
+    const content: ContentDraft = {
+      ...generatedContent,
+      geoExecutionPackage: buildGeoContentExecutionPackage({
+        bundle,
+        content: generatedContent,
+        reviewResult,
+        platform,
+        aiScenario,
+        contentAngle,
+        dispersionPlan,
+      }),
+    };
 
     await saveContent(content);
     await updateTaskStatus(taskId, "content_generated");
@@ -169,7 +183,27 @@ export async function updateContentDraft(taskId: string, patch: Pick<ContentDraf
     ...patch,
     updatedAt: new Date().toISOString(),
   };
-  const nextDraft = syncStructuredFieldsFromContent(patchedDraft, patch.content);
+  const syncedDraft = syncStructuredFieldsFromContent(patchedDraft, patch.content);
+  const platform = normalizePlatform(syncedDraft.platform);
+  const aiScenario = normalizeAiScenario(syncedDraft.aiScenario);
+  const contentAngle = syncedDraft.contentAngle ?? "selection_criteria";
+  let reviewResult: ReviewResult;
+  try {
+    reviewResult = await reviewContent(syncedDraft, platform, getSelectedQuestionsForReview(bundle));
+  } catch (error) {
+    reviewResult = buildReviewFailure(error);
+  }
+  const nextDraft: ContentDraft = {
+    ...syncedDraft,
+    geoExecutionPackage: buildGeoContentExecutionPackage({
+      bundle: { ...bundle, content: syncedDraft },
+      content: syncedDraft,
+      reviewResult,
+      platform,
+      aiScenario,
+      contentAngle,
+    }),
+  };
 
   await saveContent(nextDraft);
   return nextDraft;

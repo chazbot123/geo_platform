@@ -6,7 +6,17 @@ export interface ProviderPublishBundle {
   platforms: SocialPlatform[];
 }
 
-const automatedPlatformOrder: SocialPlatform[] = ["toutiao", "baijiahao", "douyin", "wechat", "videohao", "zhihu", "weibo", "csdn"];
+const automatedPlatformOrder: SocialPlatform[] = [
+  "toutiao",
+  "baijiahao",
+  "douyin",
+  "xiaohongshu",
+  "wechat",
+  "videohao",
+  "zhihu",
+  "weibo",
+  "csdn",
+];
 
 export const providerPublishMatrix: Record<SearchProvider, ProviderPublishBundle> = {
   doubao: {

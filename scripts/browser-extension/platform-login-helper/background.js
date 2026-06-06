@@ -84,6 +84,34 @@ async function collectPlatformCookies(platform) {
     .join("; ");
 }
 
+async function collectPlatformCookieRecords(platform) {
+  const domains = platformCookieDomains[platform] ?? [];
+  const cookieMap = new Map();
+
+  for (const domain of domains) {
+    const cookies = await getCookiesByDomain(domain);
+    for (const cookie of cookies) {
+      const key = `${cookie.domain}|${cookie.path}|${cookie.name}`;
+      if (!cookieMap.has(key)) {
+        cookieMap.set(key, {
+          name: cookie.name,
+          value: cookie.value,
+          domain: cookie.domain,
+          path: cookie.path || "/",
+          secure: Boolean(cookie.secure),
+          httpOnly: Boolean(cookie.httpOnly),
+          sameSite: cookie.sameSite || undefined,
+          expirationDate: cookie.expirationDate,
+        });
+      }
+    }
+  }
+
+  return Array.from(cookieMap.values()).sort((left, right) =>
+    `${left.domain}|${left.path}|${left.name}`.localeCompare(`${right.domain}|${right.path}|${right.name}`),
+  );
+}
+
 function buildCookieRemovalUrls(cookie) {
   const normalizedDomain = String(cookie?.domain || "").trim().replace(/^\./, "");
   const normalizedPath = String(cookie?.path || "/").trim() || "/";
@@ -269,7 +297,12 @@ async function syncLoginResult(session, context) {
 
   session.syncing = true;
   try {
-    const authPayload = await collectPlatformCookies(session.platform);
+    const authPayload = JSON.stringify({
+      payloadFormat: "cookie_storage_v2",
+      cookies: await collectPlatformCookieRecords(session.platform),
+      localStorage: context?.authStorage?.localStorage || {},
+      sessionStorage: context?.authStorage?.sessionStorage || {},
+    });
     if (!authPayload || authPayload.length < 20) {
       throw new Error("当前页面还没有可用的登录 Cookie，请先完成平台登录。");
     }
@@ -295,8 +328,10 @@ async function syncLoginResult(session, context) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
+        platform: session.platform,
         sessionToken: session.sessionToken,
         authType: "cookie",
+        payloadFormat: "cookie_storage_v2",
         authPayload,
         accountName,
         displayName,
@@ -347,7 +382,21 @@ function getActiveSessionByPlatform(platform) {
 }
 
 function scheduleSync(platform, context) {
-  const session = getActiveSessionByPlatform(platform);
+  let session = getActiveSessionByPlatform(platform);
+  if (!session && platform === "wechat_mp") {
+    const sessionId = `auto-sync-${platform}-${Date.now()}`;
+    session = {
+      sessionId,
+      sessionToken: sessionId,
+      platform,
+      apiBaseUrl: "http://127.0.0.1:3131",
+      appTabId: null,
+      loginTabId: null,
+      status: "pending",
+      syncing: false,
+    };
+    activeLoginSessions.set(sessionId, session);
+  }
   if (!session) {
     return;
   }

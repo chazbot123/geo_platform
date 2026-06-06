@@ -10,6 +10,7 @@ export const electronBrowserPublisher: PlatformPublisher = {
       title: `${draft.platform}发布`,
       publishUrl: draft.publishEntryUrl,
       sessionPartition: account.sessionPartition,
+      authPayload: account.authPayload,
       sessionToken: job.sessionToken,
       timeoutMs,
       payload: {

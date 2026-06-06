@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "AI SuperWeb Platform Login Helper Videohao Sync",
+  "version": "0.1.3",
+  "description": "Capture platform login cookies and sync them back to AI SuperWeb.",
+  "permissions": ["cookies", "tabs", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["publish-automation.js", "content.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

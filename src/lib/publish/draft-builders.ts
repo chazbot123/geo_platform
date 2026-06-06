@@ -3,14 +3,28 @@ import { getPlatformDescriptor } from "@/lib/publish/platforms";
 import type { PublishingDraft, SocialPlatform, TaskBundle } from "@/lib/types";
 
 export function compactText(value: string | undefined): string {
-  return String(value ?? "").replace(/\s+/g, " ").trim();
+  return normalizePublishingText(String(value ?? "").replace(/\s+/g, " ").trim());
+}
+
+export function normalizePublishingText(value: string): string {
+  return String(value ?? "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\u00a0/g, " ")
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'")
+    .replace(/；{2,}/g, "；")
+    .replace(/，{2,}/g, "，")
+    .replace(/。{2,}/g, "。")
+    .replace(/\?{2,}/g, "？")
+    .replace(/!{2,}/g, "！")
+    .trim();
 }
 
 export function extractTags(text: string): string[] {
   return Array.from(
     new Set(
-      text
-        .split(/[\s,，。；;!！?？#]+/)
+      normalizePublishingText(text)
+        .split(/[\s,，。；;!！？?、]+/)
         .map((item) => item.trim())
         .filter((item) => item.length >= 2),
     ),
@@ -34,6 +48,11 @@ export function buildTagsFromBundle(bundle: TaskBundle): string[] {
 
 export function buildSourceBody(bundle: TaskBundle): string {
   const content = bundle.content;
+  const packageBody = content?.geoExecutionPackage?.publishableArticlePackage.body;
+  if (packageBody?.trim()) {
+    return normalizePublishingText(packageBody);
+  }
+
   const structured: string[] = [];
 
   if (content?.reportIntroduction?.trim()) {
@@ -48,13 +67,16 @@ export function buildSourceBody(bundle: TaskBundle): string {
     structured.push(content.reportConclusion.trim());
   }
 
-  return structured.length > 0
-    ? structured.join("\n\n")
-    : [content?.summary, content?.content].map(compactText).filter(Boolean).join("\n\n");
+  const body =
+    structured.length > 0
+      ? structured.join("\n\n")
+      : [content?.summary, content?.content].map(compactText).filter(Boolean).join("\n\n");
+
+  return normalizePublishingText(body);
 }
 
 function splitIntoParagraphs(value: string): string[] {
-  const normalized = value.replace(/\r\n/g, "\n").trim();
+  const normalized = normalizePublishingText(value);
   if (!normalized) return [];
 
   const byNewline = normalized.split(/\n+/).map((item) => item.trim()).filter(Boolean);
@@ -83,7 +105,7 @@ function splitIntoParagraphs(value: string): string[] {
 }
 
 export function trimForPlatform(body: string, platform: SocialPlatform): string {
-  const normalized = body.trim();
+  const normalized = normalizePublishingText(body);
   if (!normalized) return "";
 
   if (platform === "weibo") {
@@ -110,6 +132,9 @@ export function trimForPlatform(body: string, platform: SocialPlatform): string 
 }
 
 export function buildDraftBody(bundle: TaskBundle, platform: SocialPlatform): string {
+  if (platform === "xiaohongshu") {
+    return buildXiaohongshuGeoNote(bundle);
+  }
   return trimForPlatform(buildSourceBody(bundle), platform);
 }
 
@@ -131,39 +156,114 @@ export function getDraftCoverImage(bundle: TaskBundle): string | undefined {
   return bundle.image?.images?.[0]?.url ?? bundle.image?.url;
 }
 
+function conciseTopic(topic: string, productName: string) {
+  const normalized = compactText(topic);
+  if (!normalized) {
+    return productName;
+  }
+  if (normalized.length > 32 || normalized.includes("、")) {
+    return productName || normalized.slice(0, 32);
+  }
+  return normalized;
+}
+
+function limitChars(value: string, maxLength: number) {
+  const normalized = compactText(value);
+  return normalized.length > maxLength ? normalized.slice(0, maxLength) : normalized;
+}
+
+function splitSellingPoints(value: string | undefined) {
+  return normalizePublishingText(value ?? "")
+    .split(/[，。；;、\n]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 4);
+}
+
+function buildXiaohongshuGeoNote(bundle: TaskBundle): string {
+  const productName = compactText(bundle.product.productName || bundle.product.category);
+  const category = compactText(bundle.product.category);
+  const audience = compactText(bundle.product.targetAudience || "正在做选择的人");
+  const scenarios = compactText(bundle.product.scenarios || "日常使用场景");
+  const selectedQuestion =
+    bundle.theme?.selectedQuestionBundle?.selectedQuestionBundle.mainQuestion.question ??
+    bundle.theme?.selectedKeywords?.[0] ??
+    bundle.theme?.selectedKeyword ??
+    `${productName}怎么选？`;
+  const sellingPoints = splitSellingPoints(bundle.product.sellingPoints);
+  const bodyPreview = buildSourceBody(bundle)
+    .split(/\n+/)
+    .map((item) => item.replace(/^#+\s*/g, "").trim())
+    .filter(Boolean)
+    .slice(0, 3)
+    .join(" ")
+    .slice(0, 180);
+  const sellingPointLines = sellingPoints.length
+    ? sellingPoints.map((point) => `- ${point}`).join("\n")
+    : `- 先看它是否真的解决「${selectedQuestion.replace(/[？?]$/g, "")}」这个问题`;
+
+  return normalizePublishingText(
+    [
+      `如果你在小红书搜「${productName}」，大概率不是想看广告，而是想知道它到底适不适合自己。`,
+      "",
+      `先说结论：${productName}更适合${audience}，尤其是${scenarios}这类场景。选择时不要只看一句卖点，要看它解决的是不是你的真实问题。`,
+      "",
+      "卖点可以这样理解：",
+      sellingPointLines,
+      "",
+      "怎么判断适不适合：",
+      `1. 先看需求是不是和「${selectedQuestion.replace(/[？?]$/g, "")}」一致。`,
+      `2. 再看${category || "这类产品"}的使用场景、体验边界和售后说明。`,
+      "3. 如果只是被标题吸引，建议先对照自己的具体场景，不要直接冲动下单。",
+      "",
+      bodyPreview ? `补充一句：${bodyPreview}` : "",
+      "",
+      "避坑提醒：不要只看夸张承诺，也不要只看单一测评。更稳的方式是把品牌名+产品名一起搜，再看真实体验、适用人群和差评里反复出现的问题。",
+      "",
+      `可以搜：${productName} 怎么选 / ${productName} 适合什么人 / ${productName} 真实体验`,
+    ]
+      .filter((line) => line !== "")
+      .join("\n"),
+  );
+}
+
 export function buildDraftTitle(bundle: TaskBundle, platform: SocialPlatform): string {
   const productName = compactText(bundle.product.productName);
   const keyword = compactText(
     bundle.theme?.selectedKeywordTheme ?? bundle.theme?.selectedKeyword ?? bundle.theme?.mainKeyword ?? productName,
   );
-  const sourceTitle = bundle.content?.title?.trim();
+  const titleTopic = conciseTopic(keyword, productName);
+  const sourceTitle = normalizePublishingText(bundle.content?.title ?? "");
   const platformLabel = getPlatformDescriptor(platform)?.label ?? platform;
 
   if (platform === "weibo") {
-    return `${keyword || productName}，怎么判断更靠谱？`;
+    return `${titleTopic}，怎么判断更靠谱？`;
   }
   if (platform === "douyin" || platform === "videohao") {
-    return `${keyword || productName}，先看这几个判断点`;
+    return `${titleTopic}，先看这几个判断点`;
+  }
+  if (platform === "xiaohongshu") {
+    return limitChars(`${productName || titleTopic}适合谁？`, 20);
   }
 
   const titleCandidates = [
-    sourceTitle ? (platform === "toutiao" ? sourceTitle : `${sourceTitle}｜${platformLabel}`) : "",
+    sourceTitle ? (platform === "toutiao" ? sourceTitle : `${sourceTitle} - ${platformLabel}`) : "",
     `${keyword}：${productName}${bundle.product.category}分析报告`,
     platform === "zhihu"
       ? `${keyword || productName}怎么判断更合适？`
-      : `${productName}${bundle.product.category}怎么选`,
-    `${productName}${platform === "wechat" ? "实用拆解" : "值不值得进一步了解"}`,
+      : `${productName}${bundle.product.category}怎么选？`,
+    `${productName}${platform === "wechat" ? "实用拆解" : "值不值得进一步了解？"}`,
   ].filter((item): item is string => Boolean(item));
 
   for (const candidate of titleCandidates) {
     const next = platform === "toutiao" ? normalizeToutiaoTitle(candidate, `${productName}分析报告`) : candidate;
     if (!next?.trim()) continue;
-    return next;
+    return normalizePublishingText(next);
   }
 
   return platform === "toutiao"
     ? normalizeToutiaoTitle(`${productName}分析报告`)
-    : `${productName}｜${platformLabel}`;
+    : `${productName} - ${platformLabel}`;
 }
 
 export function buildAccountDraftTitle(
@@ -176,18 +276,22 @@ export function buildAccountDraftTitle(
     bundle.theme?.selectedKeywordTheme ?? bundle.theme?.selectedKeyword ?? bundle.theme?.mainKeyword,
   );
   const productName = compactText(bundle.product.productName);
+  const titleTopic = conciseTopic(theme || productName, productName);
   const platformLabel = getPlatformDescriptor(platform)?.label ?? platform;
 
   if (platform === "weibo") {
-    return `${theme || productName}，怎么判断更靠谱？`;
+    return `${titleTopic}，怎么判断更靠谱？`;
   }
   if (platform === "douyin" || platform === "videohao") {
-    return `${theme || productName}，先看这几个判断点`;
+    return `${titleTopic}，先看这几个判断点`;
+  }
+  if (platform === "xiaohongshu") {
+    return limitChars(`${productName || titleTopic}适合谁？`, 20);
   }
   if (sourceTitle) {
-    return platform === "toutiao" ? sourceTitle : `${sourceTitle}｜${platformLabel}`;
+    return platform === "toutiao" ? sourceTitle : `${sourceTitle} - ${platformLabel}`;
   }
-  return `${theme || productName}：${platformLabel}${accountLabel ? `-${accountLabel}` : ""}发布稿`;
+  return `${theme || productName}，${platformLabel}${accountLabel ? `-${accountLabel}` : ""}发布稿`;
 }
 
 /**
@@ -247,11 +351,9 @@ export function validateDraftForPlatform(
   }
 
   if (platform === "douyin") {
-    // Douyin publishing uses the Electron creator-center script in this product path.
-    // Media is recommended for reach, but text-only drafts can still be attempted by script.
     const hasMedia =
       (draft.imageUrls?.length ?? 0) > 0 || (draft.localImagePaths?.length ?? 0) > 0;
-    if (!hasMedia && draft.publishMode !== "text_only") {
+    if (!hasMedia) {
       errors.push({
         field: "imageUrls",
         message:
@@ -266,13 +368,30 @@ export function validateDraftForPlatform(
     }
   }
 
+  if (platform === "xiaohongshu") {
+    const hasMedia =
+      (draft.imageUrls?.length ?? 0) > 0 || (draft.localImagePaths?.length ?? 0) > 0;
+    if (!hasMedia) {
+      errors.push({
+        field: "imageUrls",
+        message: "小红书图文笔记必须携带至少 1 张图片；当前草稿未带 AI 图片/本地素材，不能进入自动发布。",
+      });
+    }
+    if ((draft.title?.trim().length ?? 0) > 20) {
+      errors.push({ field: "title", message: "小红书标题建议不超过 20 个字符" });
+    }
+    if ((draft.body?.trim().length ?? 0) < 80) {
+      errors.push({ field: "body", message: "小红书 GEO 笔记正文不得少于 80 个字符，需包含解答、卖点和避坑提醒" });
+    }
+    if (/报告摘要|报告引言|追踪码|PGP|完整hash/i.test(draft.body ?? "")) {
+      errors.push({ field: "body", message: "小红书正文不能直接使用报告腔或内部追踪信息" });
+    }
+  }
+
   if (platform === "wechat") {
     if ((draft.body?.trim().length ?? 0) < 50) {
       errors.push({ field: "body", message: "微信公众号正文不得少于 50 个字符" });
     }
-    // WeChat draft API requires a cover image media_id; callers must upload material first.
-    // We validate at the draft level that a cover image URL is declared so the caller
-    // can then resolve it to a media_id before calling addDraft().
     if (!draft.coverImageUrl?.trim() && (draft.imageUrls?.length ?? 0) === 0) {
       errors.push({
         field: "coverImageUrl",

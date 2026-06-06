@@ -71,8 +71,10 @@ export async function createPlatformAccount(input: {
   loginUrl?: string;
   loginStatus?: PlatformAccountLoginStatus;
   status?: PlatformAccountStatus;
+  sessionPartition?: string;
 }) {
   const id = createRecordId();
+  const sessionPartition = input.sessionPartition?.trim() || buildSessionPartition(id);
   const record: PlatformAccountRecord = {
     id,
     platform: input.platform,
@@ -82,7 +84,7 @@ export async function createPlatformAccount(input: {
     accountName: input.accountName.trim(),
     displayName: input.displayName?.trim() || input.accountName.trim(),
     loginUrl: input.loginUrl?.trim(),
-    sessionPartition: buildSessionPartition(id),
+    sessionPartition,
     loginStatus: input.loginStatus ?? "idle",
     status: input.status ?? "saved",
     remark: input.remark?.trim(),

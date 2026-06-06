@@ -26,12 +26,16 @@ function getConfigDescription(key: string, provider: string) {
     return "第一阶段模型同时承担关键词生成和文件夹资料解析，DeepSeek 直连支持填写根域名或完整兼容接口地址；系统会自动补全为 chat/completions，接口密钥只填写纯 token。";
   }
 
+  if (key === "stage1ModelApiConfig" && ["doubao", "ark", "volcengine-ark", "volcengine"].includes(normalizedProvider)) {
+    return "第一阶段模型可使用豆包 / Volcano Ark。建议填写 https://ark.cn-beijing.volces.com/api/v3 或完整 chat/completions 地址；系统会规范化到 /api/v3/chat/completions。";
+  }
+
   if (key === "contentModelApiConfig" && normalizedProvider === "deepseek") {
     return "DeepSeek 直连支持填写根域名或完整兼容接口地址；系统会自动补全为 chat/completions，接口密钥只填写纯 token。";
   }
 
   if (key === "stage1ModelApiConfig") {
-    return "第一阶段模型固定使用 newapi-auto 自动探测模式。你只需要填写 API 地址、密钥、模型名称和超时；系统会自动尝试常见的 endpoint 与鉴权头组合，并直接生成 10 条 AI 提问句。建议优先填写纯根域名或 /v1 地址，当前建议超时时间不低于 120000ms。";
+    return "第一阶段模型承担 AI 提问句生成。支持 newapi-auto、doubao / volcengine-ark、deepseek、tongyi / qwen、yuanbao / hunyuan 等 OpenAI-compatible 路径；真实生产建议先点击测试模型连接确认 endpoint 和鉴权。";
   }
 
   if (key === "imageModelApiConfig") {
@@ -88,12 +92,11 @@ export function SettingsForm({ initialConfig }: { initialConfig: AppConfig }) {
           ) : null}
           {key === "stage1ModelApiConfig" ? (
             <p className="mt-3 text-xs font-medium text-sky-300">
-              供应商固定：newapi-auto。示例：`https://xxx.com`、`https://xxx.com/v1`、`https://xxx.com/v1/chat/completions`
+              供应商示例：newapi-auto、doubao、volcengine-ark、deepseek、tongyi、qwen、yuanbao、hunyuan。豆包 Ark 建议 baseUrl 填 `https://ark.cn-beijing.volces.com/api/v3`。
             </p>
           ) : null}
           <div className="space-y-3">
             {Object.entries(value)
-              .filter(([field]) => !(key === "stage1ModelApiConfig" && field === "provider"))
               .map(([field, fieldValue]) => (
               <label key={field}>
                 <span className="label-base">{formatConfigFieldLabel(field)}</span>

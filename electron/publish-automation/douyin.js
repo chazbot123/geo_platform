@@ -20,8 +20,13 @@ async (input) => {
     text,
     findByText,
     query,
+    queryAll,
     waitFor,
     setInputValue,
+    getClickableNode,
+    simulateClick,
+    dataUrlToFile,
+    uploadImagesViaDocumentInput,
     complete,
     fail,
   } = automation;
@@ -29,10 +34,20 @@ async (input) => {
   const draftTitle = normalize(payload.draftTitle || "");
   const draftBody = normalize(payload.draftBody || "");
   const draftTags = Array.isArray(payload.draftTags) ? payload.draftTags.map(normalize).filter(Boolean) : [];
+  const preparedImages = Array.isArray(payload.preparedImages) ? payload.preparedImages.filter(Boolean) : [];
+  const draftImagePaths = Array.isArray(payload.draftImagePaths) ? payload.draftImagePaths.filter(Boolean) : [];
   const douyinText = [draftTitle, draftBody, draftTags.map((tag) => `#${tag.replace(/^#/, "")}`).join(" ")]
     .filter(Boolean)
     .join("\n\n")
     .slice(0, 2200);
+
+  function findMediaInput() {
+    const inputs = Array.from(document.querySelectorAll('input[type="file"]'));
+    return inputs.find((node) => {
+      const accept = String(node.getAttribute("accept") || "").toLowerCase();
+      return !accept || accept.includes("image") || accept.includes("video") || accept.includes("*");
+    }) || null;
+  }
 
   async function ensurePublishPage() {
     setStage("load_publish_page", "进入抖音创作者发布页");
@@ -52,6 +67,19 @@ async (input) => {
       50000,
       false,
     );
+    const imageTab = queryAll(['text=发布图文', 'text=图文'], true)
+      .map((node) => ({ node, label: text(node), clickable: getClickableNode(node) }))
+      .filter((item) => item.clickable instanceof HTMLElement && item.label && item.label.length <= 12)
+      .sort((left, right) => {
+        const leftScore = left.label === "发布图文" ? 0 : left.label.includes("发布图文") ? 1 : 2;
+        const rightScore = right.label === "发布图文" ? 0 : right.label.includes("发布图文") ? 1 : 2;
+        if (leftScore !== rightScore) return leftScore - rightScore;
+        return left.label.length - right.label.length;
+      })[0];
+    if (imageTab?.clickable instanceof HTMLElement) {
+      simulateClick(imageTab.clickable);
+      await sleep(1800);
+    }
   }
 
   async function fillText() {
@@ -73,6 +101,26 @@ async (input) => {
     const written = normalize(node.value || node.innerText || node.textContent);
     if (!written.includes(douyinText.slice(0, 8))) {
       throw new Error("抖音文案写入后未通过校验");
+    }
+  }
+
+  async function uploadMedia() {
+    setStage("upload_images", `上传抖音素材 ${preparedImages.length} 张`);
+    if (!preparedImages.length) {
+      throw new Error("抖音创作者发布至少需要视频或图片素材；当前 payload 未提供可上传素材。");
+    }
+
+    const inputNode = findMediaInput() || await waitFor(['input[type="file"]'], 30000, false);
+    if (!(inputNode instanceof HTMLInputElement)) {
+      throw new Error("未找到抖音素材上传控件");
+    }
+
+    const uploaded = await uploadImagesViaDocumentInput(preparedImages, { acceptNeedles: ["image"], limit: 9, expectedIncrease: 1, waitMs: 70000 });
+    if (!uploaded.ok) {
+      const inputs = Array.from(document.querySelectorAll('input[type="file"]'))
+        .map((node) => `accept=${node.getAttribute("accept") || ""}; class=${node.className || ""}`)
+        .join(" | ");
+      throw new Error(`douyin media upload failed: ${uploaded.reason}; fileInputs=${inputs || "none"}; url=${window.location.href}; page=${text(document.body).slice(0, 400)}`);
     }
   }
 
@@ -119,7 +167,12 @@ async (input) => {
     if (!douyinText) {
       throw new Error("抖音发布文案为空");
     }
+    if (!preparedImages.length && !draftImagePaths.length) {
+      setStage("prepare_images", "validate douyin media materials");
+      throw new Error("抖音创作者发布至少需要视频或图片素材；当前 payload 未提供素材，已在素材阶段拦截。");
+    }
     await ensurePublishPage();
+    await uploadMedia();
     await fillText();
     const result = await submit();
     setStage(result.status, "抖音发布流程已提交");

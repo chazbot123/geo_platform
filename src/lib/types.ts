@@ -208,7 +208,129 @@ export interface ContentDraft {
   platform?: string;
   contentAngle?: string;
   promptVersion?: string;
+  geoExecutionPackage?: GeoContentExecutionPackage;
   updatedAt: string;
+}
+
+export type GeoPipelineStatus = "passed" | "needs_revision" | "blocked";
+export type GeoRewriteLevel = "none" | "L1" | "L2" | "L3";
+
+export interface GeoArticleBrief {
+  briefId: string;
+  taskId: string;
+  targetPlatform: string;
+  primaryAiScenario: string;
+  contentGoal: string;
+  readerRole: string;
+  mustCover: Array<{
+    questionId: string;
+    question: string;
+    requiredArticleUnit: "title" | "summary" | "answerBlock" | "faq";
+    minimumAnswerRequirements: string[];
+  }>;
+  mustAvoid: string[];
+  evidenceBoundaries: Array<{
+    claimArea: string;
+    allowedEvidence: string[];
+    mustUseCautiousLanguage: boolean;
+  }>;
+  draftConstraints: {
+    mustUseAnswerBlocks: boolean;
+    mustIncludeRiskNotes: boolean;
+    mustIncludeEvidenceBoundary: boolean;
+    allowMarkdownTable: boolean;
+    maxTitleLength: number | null;
+  };
+}
+
+export interface GeoStructurePlan {
+  module: "plan_ai_readable_structure" | "plan_platform_structure";
+  passed: boolean;
+  strategyVersion: string;
+  outputs: Record<string, unknown>;
+  blockingIssues: string[];
+  warnings: string[];
+}
+
+export interface GeoSimilarityPlan {
+  module: "plan_similarity_dispersion";
+  passed: boolean;
+  similarityPlan: {
+    newAngle: string;
+    avoidTitlePatterns: string[];
+    avoidIntroPatterns: string[];
+    avoidFaqQuestions: string[];
+    requiredDifferences: string[];
+    rewriteLevel: GeoRewriteLevel;
+  };
+  historyMatches: string[];
+  blockingIssues: string[];
+  warnings: string[];
+}
+
+export interface GeoTrustMarker {
+  module: "attach_trust_marker";
+  passed: boolean;
+  trustMarker: {
+    public: {
+      header: string;
+      footer: string;
+      disclaimer: string;
+      shortTraceId: string;
+    };
+    internal: {
+      traceId: string;
+      taskId: string;
+      questionBundleId: string;
+      contentHash: string;
+      promptVersions: Record<string, string>;
+      strategyVersions: Record<string, string>;
+      generatedAt: string;
+    };
+    exposurePolicy: {
+      showTimestamp: boolean;
+      showShortTraceId: boolean;
+      showFullHash: boolean;
+      showPgpSignature: boolean;
+      showPhpComment: boolean;
+    };
+  };
+  blockingIssues: string[];
+  warnings: string[];
+}
+
+export interface GeoContentExecutionPackage {
+  packageVersion: "geo-keyword-article-exec-v1";
+  taskId: string;
+  status: GeoPipelineStatus;
+  articleBrief: GeoArticleBrief;
+  aiStructurePlan: GeoStructurePlan;
+  platformStructurePlan: GeoStructurePlan;
+  similarityPlan: GeoSimilarityPlan;
+  trustMarker: GeoTrustMarker;
+  publishableArticlePackage: {
+    taskId: string;
+    status: "ready_for_human_review" | "needs_revision" | "blocked";
+    platform: string;
+    aiScenario: string;
+    title: string;
+    summary: string;
+    body: string;
+    faq: string[];
+    tags: string[];
+    cta: string;
+    publicTrace: GeoTrustMarker["trustMarker"]["public"];
+    internalTrace: GeoTrustMarker["trustMarker"]["internal"];
+    reviewReport: unknown;
+    sourceQuestionBundle?: SelectedQuestionBundle["selectedQuestionBundle"];
+  };
+  blockingIssues: string[];
+  warnings: string[];
+  trace: {
+    generatedAt: string;
+    promptVersions: Record<string, string>;
+    strategyVersions: Record<string, string>;
+  };
 }
 
 export interface ArticleImagePlacement {
@@ -262,6 +384,7 @@ export type SocialPlatform =
   | "toutiao"
   | "baijiahao"
   | "douyin"
+  | "xiaohongshu"
   | "wechat"
   | "videohao"
   | "zhihu"

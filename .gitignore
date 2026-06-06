@@ -2,6 +2,7 @@ node_modules/
 .next/
 dist/
 data/
+logs/
 *.tsbuildinfo
 .ccpanes/
 patch_test.txt

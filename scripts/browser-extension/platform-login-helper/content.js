@@ -629,6 +629,13 @@
         displayName: profile.displayName,
         avatarUrl: profile.avatarUrl,
         followerCount: profile.followerCount,
+        authStorage:
+          platform === "wechat_mp"
+            ? {
+                localStorage: Object.fromEntries(Object.keys(window.localStorage || {}).map((key) => [key, window.localStorage.getItem(key) || ""])),
+                sessionStorage: Object.fromEntries(Object.keys(window.sessionStorage || {}).map((key) => [key, window.sessionStorage.getItem(key) || ""])),
+              }
+            : undefined,
       },
     });
   };

@@ -12,6 +12,7 @@ async (input) => {
   }
 
   const {
+    log,
     setStage,
     sleep,
     normalize,
@@ -27,6 +28,7 @@ async (input) => {
     escapeHtml,
     getParagraphs,
     insertImageWithFallback,
+    uploadImagesViaDocumentInput,
     computeImagePositions,
     complete,
     fail,
@@ -75,6 +77,40 @@ async (input) => {
       if (node) return node;
       await sleep(500);
     }
+    const diagnostics = getSearchDocuments()
+      .flatMap((doc, docIndex) =>
+        Array.from(doc.querySelectorAll("input,textarea,[contenteditable='true'],[role='textbox'],iframe,div,span"))
+          .filter((node) => {
+            if (!(node instanceof HTMLElement)) return false;
+            const rect = node.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) return false;
+            const label = normalize([
+              node.id,
+              node.className,
+              node.getAttribute("placeholder"),
+              node.getAttribute("data-placeholder"),
+              node.getAttribute("aria-label"),
+              node.textContent,
+            ].filter(Boolean).join(" "));
+            return /标题|正文|内容|title|editor|js_title|appmsg|ueditor/i.test(label);
+          })
+          .slice(0, 20)
+          .map((node) => {
+            const rect = node.getBoundingClientRect();
+            const label = normalize([
+              node.id,
+              node.className,
+              node.getAttribute("placeholder"),
+              node.getAttribute("data-placeholder"),
+              node.getAttribute("aria-label"),
+              node.textContent,
+            ].filter(Boolean).join(" "));
+            return `doc${docIndex}:${node.tagName};rect=${Math.round(rect.left)},${Math.round(rect.top)},${Math.round(rect.width)},${Math.round(rect.height)};label=${label.slice(0, 100)}`;
+          }),
+      )
+      .slice(0, 80)
+      .join(" | ");
+    log(`wait_for_missing_diagnostics: ${diagnostics || "none"}`);
     throw new Error(`target element not found: ${selectors[0] || "unknown"}`);
   }
 
@@ -85,6 +121,45 @@ async (input) => {
       : `<p>${escapeHtml(draftBody)}</p>`;
   }
 
+  function hasLoginText() {
+    const page = pageText();
+    return ["扫码登录", "请使用微信", "登录公众平台", "账号密码登录", "请重新登录"].some((hint) => page.includes(hint));
+  }
+
+  function extractMpToken() {
+    const urls = [window.location.href, ...Array.from(document.querySelectorAll("a[href]")).map((node) => node.href || "")];
+    for (const url of urls) {
+      try {
+        const token = new URL(url, window.location.href).searchParams.get("token");
+        if (token && /^\d+$/.test(token)) return token;
+      } catch (_) {
+        // Ignore malformed links from page templates.
+      }
+    }
+    const match = pageText().match(/token[=:]\s*(\d{4,})/i);
+    return match?.[1] || "";
+  }
+
+  async function resolveTokenizedEditUrl() {
+    const currentToken = extractMpToken();
+    if (currentToken) {
+      return `https://mp.weixin.qq.com/cgi-bin/appmsg?t=media/appmsg_edit&action=edit&type=10&token=${currentToken}&lang=zh_CN`;
+    }
+    setStage("resolve_publish_token", "进入微信公众号首页解析 token");
+    window.location.href = "https://mp.weixin.qq.com/cgi-bin/home?t=home/index";
+    await sleep(5000);
+    if (hasLoginText()) {
+      throw new Error("微信公众号登录态已失效：首页要求重新登录，无法解析发布 token");
+    }
+    const token = extractMpToken();
+    if (!token) {
+      log(`resolve_publish_token_failed_url: ${window.location.href}`);
+      log(`resolve_publish_token_failed_text: ${pageText().slice(0, 800) || "empty"}`);
+      throw new Error("微信公众号已登录但未能解析发布 token，无法进入图文编辑器");
+    }
+    return `https://mp.weixin.qq.com/cgi-bin/appmsg?t=media/appmsg_edit&action=edit&type=10&token=${token}&lang=zh_CN`;
+  }
+
   async function ensurePublishPage() {
     setStage("load_publish_page", "进入微信公众号图文编辑页");
     if (!window.location.href.includes("mp.weixin.qq.com")) {
@@ -92,9 +167,20 @@ async (input) => {
       await sleep(3500);
     }
 
-    const page = pageText();
-    if (["扫码登录", "请使用微信", "登录公众平台", "账号密码登录"].some((hint) => page.includes(hint))) {
-      throw new Error("微信公众号页面仍停留在登录态，请重新登录后再发布");
+    const currentUrl = window.location.href;
+    const needsTokenizedEntry =
+      hasLoginText() ||
+      !currentUrl.includes("/cgi-bin/appmsg") ||
+      !new URL(currentUrl, window.location.href).searchParams.get("token");
+    if (needsTokenizedEntry) {
+      const tokenizedUrl = await resolveTokenizedEditUrl();
+      log(`load_publish_page_tokenized_url: ${tokenizedUrl.replace(/token=\d+/, "token=***")}`);
+      window.location.href = tokenizedUrl;
+      await sleep(5000);
+    }
+
+    if (hasLoginText()) {
+      throw new Error("微信公众号登录态已失效：页面要求重新登录，无法进入图文编辑器");
     }
 
     await waitFor(
@@ -109,6 +195,28 @@ async (input) => {
       50000,
       false,
     );
+    const controls = Array.from(document.querySelectorAll("input,textarea,button,a,[role='button'],iframe,[contenteditable='true'],div,span"))
+      .filter((node) => node instanceof HTMLElement)
+      .map((node) => {
+        const rect = node.getBoundingClientRect();
+        const label = normalize([
+          node.id,
+          node.className,
+          node.getAttribute("placeholder"),
+          node.getAttribute("data-placeholder"),
+          node.getAttribute("aria-label"),
+          node.getAttribute("title"),
+          node.textContent,
+        ].filter(Boolean).join(" "));
+        return { node, rect, label };
+      })
+      .filter((item) => item.rect.width > 0 && item.rect.height > 0)
+      .slice(0, 80)
+      .map((item) => `${item.node.tagName};rect=${Math.round(item.rect.left)},${Math.round(item.rect.top)},${Math.round(item.rect.width)},${Math.round(item.rect.height)};label=${item.label.slice(0, 100)}`)
+      .join(" | ");
+    log(`load_publish_page_url: ${window.location.href}`);
+    log(`load_publish_page_text: ${pageText().slice(0, 800) || "empty"}`);
+    log(`load_publish_page_controls: ${controls || "none"}`);
   }
 
   async function fillTitle() {
@@ -120,7 +228,14 @@ async (input) => {
         'input[name="title"]',
         'textarea[name="title"]',
         "#title",
+        '#title[contenteditable="true"]',
         ".js_title",
+        '.js_title[contenteditable="true"]',
+        '[id*="title"][contenteditable="true"]',
+        '[class*="title"][contenteditable="true"]',
+        '[class*="title"] input',
+        '[class*="title"] textarea',
+        '[data-placeholder*="请输入标题"]',
         '[contenteditable="true"][data-placeholder*="标题"]',
         '[contenteditable="true"][placeholder*="标题"]',
       ],
@@ -180,6 +295,17 @@ async (input) => {
 
   async function insertImages(editor) {
     if (!images.length) return;
+    const documentUpload = await uploadImagesViaDocumentInput(images, {
+      acceptNeedles: ["image", ".jpg", ".jpeg", ".png", ".webp"],
+      limit: images.length,
+      expectedIncrease: 1,
+      waitMs: 60000,
+    });
+    if (documentUpload.ok) {
+      log("upload_images_verified: document_remote_image_detected");
+      return;
+    }
+    log(`upload_images_document_input_failed: ${documentUpload.reason}`);
     setStage("upload_images", "上传微信公众号正文图片");
     const paragraphs = getParagraphs(draftBodyRaw);
     const imagePositions = computeImagePositions(Math.max(paragraphs.length, 1), images.length);

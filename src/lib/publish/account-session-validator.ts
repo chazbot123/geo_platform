@@ -32,6 +32,7 @@ export async function auditPlatformAccountSession(account: PlatformAccountRecord
     platform: account.platform,
     publishUrl: account.loginUrl,
     sessionPartition: account.sessionPartition,
+    authPayload: account.authPayload,
   });
 
   if (result.status === "unsupported") {
