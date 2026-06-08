@@ -1,142 +1,402 @@
-# GEO Platform Agent Handoff
+# GEO Platform Multi-Agent Handoff
 
 ## Current Baseline
 
 - Local workspace: `D:\geo`
-- Remote repository: `https://github.com/chazbot123/geo_platform.git`
-- Remote branch checked: `origin/main`
-- Remote latest commit inspected: `a4a2871c6e1b9cbfa62b5db1aa079a45c4bcafe4` (`Restore multi-platform draft workbench and publish updates`)
-- Current local state after fetch: `main...origin/main [ahead 2, behind 3]` with many modified, deleted, and untracked files.
-- Do not overwrite or reset local changes. Treat the current workspace as an in-progress merge between earlier local work and the newer GitHub version.
+- Current active branch observed: `production-publish-link-20260606...origin/production-publish-link-20260606`
+- Current working tree observed before this handoff rewrite: `task_plan.md` is untracked; no other dirty files were reported by `git status --short --branch`.
+- Product execution source: `task_plan.md` dated 2026-06-06.
+- Existing implementation shape:
+  - Next.js 14 + React 18 + Electron desktop app.
+  - Main scripts: `npm run check`, `npm run build:web`, `npm run dev:web`, `npm run dev:electron`.
+  - Current UI routes include legacy task, keywords, content strategy, publish, accounts, and settings pages.
+  - Existing service modules already cover tasks, keywords, content, images, publish workbench, accounts, jobs, storage, and model integrations.
 
-## Product Direction
+Do not assume the workspace is clean just because this file records one snapshot. Every agent must run `git status --short --branch` before editing.
 
-The project direction is sound: build a GEO desktop workflow that turns product/material input into AI-search-oriented questions, structured content, images, platform-specific drafts, and publishing assistance.
+## Required Product Direction
 
-The intended flow is:
+The first implementation phase is now:
 
-1. Create a task from product, brand, region, audience, scenario, and optional local materials.
-2. Generate AI-search questions for providers such as Doubao, Yuanbao, Tongyi, and DeepSeek.
-3. Review and select question bundles.
-4. Generate a structured authority-style content draft using AI scenario templates and platform strategies.
-5. Generate or attach article images.
-6. Produce platform-specific publishing drafts.
-7. Publish through the best available route: official API where approved, Electron browser automation where viable, manual delivery where automation is not reliable.
+**Frontend basic rebuild + minimum data/API support.**
 
-## Doubao Link Assessment
+This is not a light UI polish pass. The user-facing navigation, page structure, interaction path, visual hierarchy, and Chinese copy should be rebuilt around a clear five-step GEO production workflow. Existing service code, route handlers, data models, and business components may be reused where they help, but the visible product experience should follow the new workflow.
 
-The "Doubao path is connected" claim is partly correct, but the implementation should be described precisely:
+The five required user-facing steps are:
 
-- The code does not directly automate the Doubao consumer app.
-- The code uses a `doubao` search-provider scenario, mapped to `doubao_plain_answer`.
-- Text generation is routed through `newapi-auto` / OpenAI-compatible chat-completions logic in `src/lib/integrations/openai-compatible.ts`.
-- Stage 1 question generation maps `doubao` to Doubao-style plain-answer content expectations in `src/lib/integrations/stage1/client.ts`.
-- Content generation injects scenario and platform templates through `src/lib/content/prompt-loader.ts` and `src/lib/integrations/content/client.ts`.
-- Publishing maps Doubao output to `toutiao`, `baijiahao`, and `douyin` in `src/lib/publish/provider-platform-matrix.ts`.
+1. 企业信息
+2. 客户关键词
+3. 创建任务
+4. 内容池
+5. 执行发布
 
-This is a reasonable product path, but it needs stronger tests and stricter boundaries before more features are added.
+Settings must be reduced to a secondary entry, not a main workflow step. Settings should expose only:
 
-Relevant external facts checked:
+- 文字模型
+- 图片模型
 
-- Volcano Ark / Doubao supports a Chat API at `https://ark.cn-beijing.volces.com/api/v3/chat/completions` with Bearer API key auth and OpenAI-style `model` plus `messages` payloads.
-- OpenAI-compatible Chat Completions APIs use `POST /v1/chat/completions` style request contracts built around `model` and `messages`.
-- Douyin official publishing paths require platform capability approval and user authorization. OpenAPI video upload/create requires the `video.create.bind` scope and permission application. OpenSDK publish/share capabilities also have application and review requirements.
+## Hard Rules
 
-Implication: keep the OpenAI-compatible adapter, but make endpoint normalization provider-aware. For Doubao/Ark, the canonical base should be `https://ark.cn-beijing.volces.com/api/v3`, resolving to `/api/v3/chat/completions`, not only `/v1/chat/completions` or `/chat/completions`.
+1. Never run `git reset --hard`, `git checkout -- .`, destructive cleanup, or broad file deletion unless the user explicitly asks for it.
+2. Before editing, run `git status --short --branch` and inspect whether target files are already modified.
+3. Do not let two agents edit the same file set at the same time.
+4. Do not rewrite the complete backend, publish chain, or Electron automation in Phase 1.
+5. Do not introduce a new UI framework.
+6. Do not create a marketing landing page or dashboard-heavy homepage.
+7. Do not edit generated `.next` files.
+8. Do not commit generated `.next`, `dist`, runtime `data`, browser profiles, local bridge/session artifacts, API keys, cookies, or auth payloads.
+9. Preserve mock fallback behavior for local demo paths.
+10. Keep route handlers thin. Services and typed local storage should hold product logic.
+11. Chinese UI copy must be valid UTF-8 and must not contain mojibake.
+12. Every worker must report changed files, checks run, unresolved risks, and whether another worker may be affected.
 
-## Refactor Verdict
+## Phase 1 Scope
 
-This codebase needs phased refactoring. It should not be rewritten from scratch.
+Phase 1 must do enough data/API work to make the new flow real and recoverable. It must not stop at a pure frontend mock.
 
-Reasons:
+Required:
 
-- The domain model and workflow are valuable and mostly coherent.
-- The remote version adds useful concepts: prompt skills, content review, angle dispersion, account-level drafts, provider-to-platform matrix, and Electron-based publishing.
-- The implementation currently mixes product logic, prompt logic, draft transformation, publishing state, DOM automation, and persistence concerns too tightly.
-- Several modules duplicate draft-building logic.
-- Some functions are unfinished or misleading, for example `getDraftForJob` in `src/lib/publish/jobs-service.ts` returns `null`.
-- Electron automation scripts are long monoliths, especially `electron/publish-automation/baijiahao.js`, making them hard for multiple agents to change safely.
-- Storage is plain JSON file based, which is acceptable for MVP, but it has no migration layer, no schema validation, and no transaction semantics.
-- Current `npm run check` fails because `.next/types` references route files that exist in remote `origin/main` but are missing from the current local working tree (`src/app/api/content/angles/route.ts`, `src/app/content-strategy/[taskId]/page.tsx`). This confirms the workspace is in a mixed state.
+- Enterprise profile persistence.
+- Customer keyword set persistence.
+- Publish task persistence.
+- Account detection result recording with 30-minute cache and manual refresh.
+- Content pool item state recording.
+- Publish progress recording.
+- Article-level resume data for interrupted publishing.
 
-## Hard Rules For Future Agents
+Not required in Phase 1:
 
-1. Never run `git reset --hard`, `git checkout -- .`, or destructive cleanup unless the user explicitly asks for it.
-2. Before editing, run `git status --short --branch` and identify whether the target files are already modified.
-3. Do not mix unrelated domains in one change. Keep work inside one area: model adapter, content strategy, publishing, Electron automation, storage, UI, or tests.
-4. Prefer small extraction/refactor steps over feature rewrites.
-5. Keep mock fallback behavior working. It is the local demo path.
-6. Preserve the provider-driven idea: provider scenario first, then content strategy, then platform draft, then publishing route.
-7. Any official-publish work must respect platform permission requirements. If official API access is unavailable, keep manual delivery or browser automation as fallback.
-8. Do not log API keys, session cookies, access tokens, browser profiles, or auth payloads.
-9. Do not commit generated `.next`, `dist`, runtime `data`, or local bridge/session artifacts unless explicitly required.
-10. When adding routes or pages, run `npm run check` after clearing stale route-type assumptions if necessary.
+- Full backend architecture rewrite.
+- Full generation engine rewrite.
+- Full publishing automation rewrite.
+- Full distributed queue.
+- Multi-enterprise profile switching.
+- Advanced publishing calendar or account weighting.
+- Complex animations.
+
+## Data Semantics That Must Not Be Lost
+
+### Enterprise Profile
+
+Long term the local exe version supports one enterprise profile. Do not build a multi-company switcher in Phase 1.
+
+Required fields:
+
+- Company name.
+- Brand short name.
+- Product/service.
+- Region.
+- Brand story.
+- Product features.
+- Audience.
+- Trust proof.
+- User pain points.
+- Customer cases.
+- Uploaded material files.
+- Uploaded product/company images.
+- Parse status.
+- Last saved time.
+
+Rules:
+
+- Company name, brand short name, product/service, and region are required.
+- File parsing failure does not block the flow. The user can fill fields manually and continue.
+- File parsing results only backfill the form. They are not persisted until the user clicks save.
+- Saved enterprise information must survive refresh/restart.
+
+### Customer Keyword Set
+
+Keywords here mean AI-search/user-question style customer questions, not generic SEO terms.
+
+Required:
+
+- High/mid/low heat candidate groups.
+- Each group should contain 10-15 generated candidates when generation succeeds.
+- Exactly 5 selected core questions are required before entering task creation.
+- Generation and save timestamps should be recorded.
+
+The model may judge heat by likely question frequency, business value, specificity, regional relevance, and long-tail quality, but the UI should only show simple high/mid/low groups.
+
+### Publish Task
+
+Task creation must happen after enterprise profile and 5 core questions are saved.
+
+Required behavior:
+
+- User first selects GEO AI platform: 豆包, DeepSeek, 元宝, 千问.
+- System shows built-in AI-platform to publish-platform mapping.
+- User may enable/disable mapped publish platforms.
+- User cannot freely add publish platforms in Phase 1.
+- Account detection uses only logged-in and currently publishable accounts for `accountCount`.
+- Unlogged, expired, manual-only, or unavailable accounts do not count toward automatic article totals.
+- Minimum publish duration is 5 days.
+- Articles per account per day is fixed to 2 in Phase 1.
+- Publish time window defaults to 9:00-18:00.
+- Two articles on the same account must be at least 3 hours apart.
+- Task total article count must be visible and must equal enabled publishable account count x days x 2.
+
+Built-in platform mapping:
+
+- 豆包 -> 今日头条, 百家号, 抖音, 小红书
+- DeepSeek -> CSDN, 知乎
+- 元宝 -> 微信公众号, 视频号, 小红书
+- 千问 -> 知乎, 微博, 小红书
+
+小红书 is only mapped to 豆包, 元宝, and 千问. DeepSeek does not generate 小红书 content by default.
+
+### Content Pool
+
+The content pool is the production center. It must default to the current task, with history available through a filter/tab/history entry rather than mixed into the default list.
+
+Each content item must carry:
+
+- Unique content ID or visible sequence number.
+- Task ID.
+- AI platform.
+- Publish platform.
+- Account ID.
+- Customer keyword ID or keyword sequence.
+- Planned publish time.
+- Title, summary, body.
+- Image prompt and image list.
+- Risk level: `low`, `medium`, `high`.
+- Content status: pending generation, sample, pending publish, publishing, published, failed, manual pending, or equivalent typed state.
+
+Generation pipeline semantics:
+
+- Negative words/risk checks participate in the flow.
+- Sample draft must pass quality checks before batch expansion.
+- Platform style adaptation must be traceable.
+- Batch dispersion must cover title, opening, section order, judgment wording, CTA, and image prompt.
+- Same batch content should vary at least 3 of those 6 dimensions.
+- `low` risk can publish.
+- `medium` risk needs confirmation or rewrite.
+- `high` risk blocks publishing.
+- Negative-word hits cannot be forcibly released; they must be rewritten and rechecked.
+- Automatic rewrite does not need user confirmation, but the UI must show processing status and result.
+- Different accounts must start the 5-keyword cycle at offset positions assigned by the system.
+
+### Publish Execution
+
+Execution publish is the final step and must reuse the existing publishing chain as much as possible.
+
+Required:
+
+- Show total, published, remaining.
+- Show current platform, current account, current article, and latest execution time.
+- Persist progress at article level.
+- Resume after restart/interruption from task + platform + account + article + execution stage.
+- Avoid duplicate publishing and missed publishing.
+- On automation failure, mark current account/article as manual publish pending.
+- Manual fallback should open the relevant creator page and fill title/body/tags/images as much as possible, leaving the final publish click to the user.
+- After manual handling, the user can continue the remaining publish plan.
+
+## UI And Copy Principles
+
+- This is a quiet production tool, not a marketing site.
+- Use a clear stepper or stage navigation for the five-step flow.
+- Reduce long explanatory paragraphs. Prefer short headings, statuses, empty states, and action buttons.
+- Avoid exposing terms like "状态机", "批量离散", or "负面词分类" as primary user copy. Prefer "当前进度", "降低重复", "检查风险", "可发布", "需处理".
+- Support light/dark theme with shared layout and color variables.
+- Dark theme should reduce glow and translucent stacking.
+- Light theme should control borders/shadows and avoid a traditional heavy admin-table feel.
+- Do not use decorative gradient blobs/orbs or heavy glassmorphism.
+- Cards are for real inputs, candidates, drafts, and records; avoid card nesting and card-heavy page sections.
+- Use `lucide-react` icons for common button/tool actions where helpful.
+- Keep text within containers on desktop and mobile.
 
 ## Recommended Module Boundaries
 
-### Model Adapters
+### Design System And Shell
+
+Files:
+
+- `src/components/layout/app-shell.tsx`
+- `src/app/layout.tsx`
+- `src/app/globals.css`
+- shared UI helpers if added under `src/components/ui/**`
+
+Owns:
+
+- Five-step navigation.
+- Settings secondary entry.
+- Theme variables and global visual language.
+- Shared page frame, status rail, and responsive layout primitives.
+
+Does not own:
+
+- Enterprise form business logic.
+- Keyword generation logic.
+- Publishing service logic.
+
+### Enterprise Profile
+
+Files:
+
+- `src/app/enterprise/page.tsx`
+- `src/components/enterprise/**`
+- enterprise-specific route handlers under `src/app/api/enterprise/**` if added
+- enterprise-specific service/storage helpers under `src/lib/enterprise/**` if added
+- narrow additions to `src/lib/storage/**`, `src/lib/types.ts`, or `src/lib/paths.ts` only for shared typed persistence
+
+Owns:
+
+- Enterprise form.
+- Required-field validation.
+- File/image upload UI state.
+- Parse-backfill behavior.
+- Save/load persistence for the single enterprise profile.
+
+Does not own:
+
+- Keyword generation algorithm beyond consuming saved enterprise data.
+- Publish account detection.
+
+### Customer Keywords
+
+Files:
+
+- `src/app/customer-keywords/page.tsx`
+- `src/components/keywords/customer-keyword-workbench.tsx`
+- existing `src/components/keywords/keyword-workbench.tsx` only if reused/refactored for the new page
+- `src/lib/keywords/service.ts`
+- `src/app/api/keywords/**`
+- narrow additions to shared types/storage
+
+Owns:
+
+- High/mid/low candidate display.
+- Selecting exactly 5 core questions.
+- Save/load keyword set.
+- Gating into task creation.
+
+Does not own:
+
+- Enterprise profile persistence except read access.
+- Publish platform/account logic.
+
+### Task Planning
+
+Files:
+
+- `src/app/tasks/create/page.tsx`
+- `src/components/tasks/task-planning-workbench.tsx`
+- `src/lib/tasks/service.ts`
+- `src/lib/publish/accounts-service.ts`
+- `src/lib/publish/provider-platform-matrix.ts`
+- account-detection route handlers under `src/app/api/publish/accounts/**` or a new thin task-planning route
+- narrow shared type/storage additions
+
+Owns:
+
+- AI platform selection.
+- Built-in platform mapping display.
+- Enable/disable publish platforms.
+- Account detection status and 30-minute cache.
+- Publish-day selection and total article calculation.
+- Time-window and 3-hour spacing rule.
+- Saving publish task.
+
+Does not own:
+
+- Content draft generation internals.
+- Electron automation internals.
+
+### Content Pool
+
+Files:
+
+- `src/app/content-pool/page.tsx`
+- `src/components/content/content-pool.tsx`
+- existing `src/components/content/report-workbench.tsx` only if reused/refactored for the new page
+- `src/lib/content/**`
+- `src/lib/images/**`
+- `src/lib/integrations/content/**`
+- `src/lib/integrations/images/**`
+- content/image route handlers under `src/app/api/content/**` and `src/app/api/images/**`
+- narrow shared type/storage additions
+
+Owns:
+
+- Current-task content list.
+- History filter/tab/entry.
+- Negative-word/risk status display.
+- Sample draft and quality result display.
+- Batch expansion and dispersion status display.
+- Image prompt/image generation status.
+- Content item persistence and publishability flags.
+
+Does not own:
+
+- Publish execution runner.
+- Electron automation scripts.
+- Model endpoint normalization unless a compile-safe response type requires a narrow change.
+
+### Publish Execution
+
+Files:
+
+- `src/app/publish-execution/page.tsx`
+- `src/components/publish/publish-execution-workbench.tsx`
+- existing `src/components/publish/publish-workbench.tsx` only if reused/refactored for the final execution page
+- `src/lib/publish/jobs-service.ts`
+- `src/lib/publish/publish-orchestrator.ts`
+- `src/lib/publish/server-publish-runner.ts`
+- `src/lib/publish/manual-delivery-service.ts`
+- `src/lib/publish/workbench-service.ts`
+- publish route handlers under `src/app/api/publish/**`
+- narrow shared type/storage additions
+
+Owns:
+
+- Article-level progress display.
+- Resume/continue publish.
+- Failure-to-manual-pending behavior in UI/service boundary.
+- Integration with existing publish jobs and drafts.
+- User-facing recovery paths.
+
+Does not own:
+
+- Rewriting Electron automation platform scripts.
+- Model/content generation internals.
+
+### Settings Simplification
+
+Files:
+
+- `src/app/settings/page.tsx`
+- `src/components/settings/settings-form.tsx`
+- `src/lib/config/**`
+- `src/app/api/config/**`
+
+Owns:
+
+- Reducing model configuration UI to text model and image model entry points.
+- Probe status display.
+- Hiding advanced parameters from the primary path.
+
+Does not own:
+
+- Provider endpoint refactor unless separately assigned.
+
+### Model Adapter Reliability
 
 Files:
 
 - `src/lib/integrations/openai-compatible.ts`
+- `src/lib/config/service.ts`
 - `src/lib/integrations/stage1/client.ts`
 - `src/lib/integrations/content/client.ts`
 - `src/lib/integrations/images/client.ts`
 
-Target:
+Owns:
 
 - Provider-aware endpoint normalization.
-- Clear errors for timeout, auth, 404/405, bad JSON, and model output parse failure.
-- Testable adapter functions without UI or task persistence.
+- Doubao/Volcano Ark canonical chat completions handling.
+- NewAPI auto-probing preservation.
+- Mock fallback preservation.
 
-Immediate refactor:
-
-- Add a provider profile layer: `openai`, `newapi-auto`, `volcengine-ark`, `deepseek`, generic compatible.
-- Make Ark/Doubao endpoint normalization support `/api/v3/chat/completions`.
-- Keep `newapi-auto` probing, but cap attempts and report the winning endpoint/auth mode.
-
-### GEO Content Strategy
-
-Files:
-
-- `skills/*`
-- `src/lib/content/prompt-loader.ts`
-- `src/lib/content/review-service.ts`
-- `src/lib/content/dispersion-service.ts`
-- `src/lib/integrations/content/content-report-prompt.md`
-
-Target:
-
-- Treat `skills/` as product strategy assets, not runtime agent skills.
-- Validate templates and JSON strategies at startup or build time.
-- Keep content generation deterministic enough to review.
-
-Immediate refactor:
-
-- Add schema validation for platform strategy JSON and risk words.
-- Wire review results visibly into the content/publish workflow.
-
-### Publishing Workbench
-
-Files:
-
-- `src/lib/publish/workbench-service.ts`
-- `src/lib/publish/publish-orchestrator.ts`
-- `src/lib/publish/jobs-service.ts`
-- `src/lib/publish/provider-platform-matrix.ts`
-- `src/lib/publish/platforms.ts`
-
-Target:
-
-- One shared draft transformation pipeline.
-- Clear difference between generic platform drafts and account-specific drafts.
-- Jobs should be state-machine driven, not loosely patched records.
-
-Immediate refactor:
-
-- Extract common title/body/tag/image draft builders from `workbench-service.ts` and `publish-orchestrator.ts`.
-- Implement or remove `getDraftForJob`.
-- Add invariants: no publishing job without draft body/title, no ready automation without a valid account/session.
+This worker can run independently from the UI rebuild only if it does not touch UI files.
 
 ### Electron Automation
 
@@ -147,224 +407,459 @@ Files:
 - `electron/publish-automation/*.js`
 - `src/lib/publish/platform-publishers/electron-browser-publisher.ts`
 
-Target:
+Owns:
 
-- Browser automation should be isolated behind a stable contract.
-- Platform scripts should be smaller: page navigation, editor detection, text insertion, image insertion, submit, verification.
+- Automation helper extraction.
+- Stable stage/result contracts.
+- Manual fallback preservation.
 
-Immediate refactor:
+Do not schedule this at the same time as Publish Execution if both intend to edit `electron-browser-publisher.ts`.
 
-- Extract reusable DOM helpers from platform scripts.
-- Add execution logs with stable stage names.
-- Keep manual fallback if any stage cannot be verified.
+## Multi-Agent Execution Order
 
-### Storage
+### Phase 0: Coordinator Baseline
 
-Files:
-
-- `src/lib/storage/data-store.ts`
-- `src/lib/storage/json-store.ts`
-- `src/lib/paths.ts`
-- `src/lib/types.ts`
-
-Target:
-
-- JSON storage is fine for MVP, but must have migrations and validation.
-
-Immediate refactor:
-
-- Add versioned record migration for tasks/themes/content/images/publishing jobs.
-- Add write-atomic behavior in `json-store.ts` if not already present.
-- Add a small set of storage tests around listing, save/update, and delete.
-
-### UI
-
-Files:
-
-- `src/app/**`
-- `src/components/**`
-- `src/hooks/use-task-draft-store.ts`
-
-Target:
-
-- UI should call services through route handlers and display explicit stage/result status.
-- Do not bury operational errors in generic toast text.
-
-Immediate refactor:
-
-- Restore or reconcile remote routes/pages currently missing locally:
-  - `src/app/api/content/angles/route.ts`
-  - `src/app/content-strategy/[taskId]/page.tsx`
-- Surface `NewAPIProbeError` attempts in settings/testing UI.
-- Surface content review blocking issues before publishing.
-
-## Multi-Agent Execution Plan
-
-### Phase 0: Stabilize Baseline
-
-Owner: repo coordinator agent.
+Serial only.
 
 Tasks:
 
-- Snapshot current `git status`.
-- Decide whether to merge `origin/main` into local state or preserve local as a separate branch.
-- Restore missing remote files that current `.next/types` expects, or remove stale `.next` from type checking workflow.
+- Run `git status --short --branch`.
+- Confirm current branch strategy.
+- Confirm `task_plan.md` is kept as planning input or moved into docs if desired.
+- Run `npm run check` if dependencies are present.
+- Run `npm run build:web` only after typecheck is understood.
+- Record the true baseline failures before dispatching workers.
+
+Success:
+
+- Branch and dirty state are documented.
+- `AGENTS.md` is current.
+- Build/typecheck status is known.
+
+### Phase 1: Architecture Skeleton
+
+Prefer one coordinator or one shell/design worker first.
+
+Tasks:
+
+- Create/adjust five visible routes:
+  - `src/app/enterprise/page.tsx`
+  - `src/app/customer-keywords/page.tsx`
+  - `src/app/tasks/create/page.tsx`
+  - `src/app/content-pool/page.tsx`
+  - `src/app/publish-execution/page.tsx`
+- Update `app-shell` navigation to the five-step flow.
+- Keep legacy routes available until the new workflow is wired, unless the coordinator explicitly retires them.
+- Establish shared theme/layout primitives without broad visual churn in business modules.
+
+Success:
+
+- The five-step navigation exists.
+- Pages can render basic typed shells.
+- No worker has started deep service changes in overlapping files.
+
+### Phase 2: Parallel Feature Workers
+
+Run at most 4 workers at once. Avoid running multiple heavy builds concurrently.
+
+Safe parallel groups if file ownership is respected:
+
+- Enterprise Profile + Customer Keywords.
+- Task Planning + Settings Simplification.
+- Content Pool + Model Adapter Reliability.
+- Publish Execution + Design System only if `app-shell` ownership is stable.
+
+Do not run these together without coordinator approval:
+
+- Content Pool and Publish Execution if both edit shared publish/content types heavily.
+- Publish Execution and Electron Automation if both edit `electron-browser-publisher.ts`.
+- Task Planning and Publish Execution if both edit account/job service contracts.
+
+### Phase 3: Integration Coordinator
+
+Serial.
+
+Tasks:
+
+- Resolve shared type/storage changes.
+- Verify gating between five steps.
+- Verify account count affects task totals.
+- Verify content pool items have account/keyword/planned-time assignment.
+- Verify publish progress resumes at article level.
 - Run `npm run check`.
+- Run `npm run build:web`.
 
-Success criteria:
+Success:
 
-- Workspace has a documented branch strategy.
-- Type check failure list is understood and reduced to real source errors only.
+- New five-step workflow is navigable.
+- Required persistence works.
+- Typecheck/build results are recorded.
 
-### Phase 1: Adapter And Doubao/Ark Reliability
+## Suggested Worker Prompts
 
-Owner: model adapter agent.
+### Worker 0: Baseline Coordinator
 
-Tasks:
+```text
+You are the GEO baseline coordinator.
 
-- Refactor endpoint normalization into provider profiles.
-- Add Ark canonical endpoint handling.
-- Add unit tests for base URL inputs:
-  - root domain
-  - `/api/v3`
-  - `/api/v3/chat/completions`
-  - `/v1`
-  - `/v1/chat/completions`
-- Keep NewAPI auto-detect compatibility.
+Project path: D:\geo
 
-Success criteria:
-
-- Doubao/Ark endpoint handling is explicit and tested.
-- Stage 1 and content generation still support mock mode.
-
-### Phase 2: Content Strategy Quality Gate
-
-Owner: content strategy agent.
+Read:
+- AGENTS.md
+- task_plan.md
+- package.json
 
 Tasks:
+1. Run git status --short --branch.
+2. Inspect current route/component/service shape.
+3. Run npm run check if dependencies are installed.
+4. Do not change product code unless fixing a baseline-blocking compile error assigned by the controller.
+5. Record branch state, dirty files, check/build status, and safe worker dispatch order.
 
-- Validate `skills/` JSON assets.
-- Make review output first-class in service/API response.
-- Ensure selected question coverage is checked before publishing draft generation.
+Deliver changed files, commands run, failures, and dispatch recommendations.
+```
 
-Success criteria:
+### Worker A: Five-Step Shell And Visual System
 
-- Content can fail review with actionable blocking issues.
-- Platform and AI scenario prompt versions are visible in generated drafts.
+```text
+You are Worker A: Five-Step Shell And Visual System.
 
-### Phase 3: Publishing Service Refactor
+Read AGENTS.md and task_plan.md first.
 
-Owner: publishing service agent.
+Goal:
+Rebuild the app shell around the five-step GEO workflow without implementing deep business logic.
 
-Tasks:
+Own files:
+- src/components/layout/app-shell.tsx
+- src/app/layout.tsx
+- src/app/globals.css
+- shared UI primitives under src/components/ui/** if needed
+- page shell stubs only when coordinated
 
-- Deduplicate draft building logic.
-- Implement the missing job-to-draft lookup.
-- Convert job status changes into explicit transition helpers.
-- Keep manual delivery notes intact.
+Required:
+1. Replace legacy main navigation with 企业信息, 客户关键词, 创建任务, 内容池, 执行发布.
+2. Move settings to a secondary icon/entry.
+3. Establish light/dark theme variables with restrained production-tool styling.
+4. Avoid card-heavy layout, decorative blobs, heavy glow, and long explanatory copy.
+5. Keep existing routes from breaking unless coordinator explicitly retires them.
+6. Run npm run check.
 
-Success criteria:
+Do not edit service logic, publish automation, or model adapters.
 
-- One shared draft builder is used for both platform and account drafts.
-- Publishing jobs have reliable state transitions and traceable source draft IDs.
+Deliver changed files, screenshots/check notes if any, commands run, and risks.
+```
 
-### Phase 4: Electron Automation Isolation
+### Worker B: Enterprise Profile
 
-Owner: automation agent.
+```text
+You are Worker B: Enterprise Profile.
 
-Tasks:
+Read AGENTS.md and task_plan.md first.
 
-- Extract DOM utility functions from `baijiahao.js`, `toutiao.js`, and `douyin.js`.
-- Define platform automation contract:
-  - input payload shape
-  - stage names
-  - result shape
-  - failure shape
-- Add dry-run or fill-only mode if feasible.
+Goal:
+Implement the 企业信息 step with real local persistence and parse-backfill semantics.
 
-Success criteria:
+Own files:
+- src/app/enterprise/page.tsx
+- src/components/enterprise/**
+- src/lib/enterprise/** if created
+- src/app/api/enterprise/** if created
+- narrow shared type/storage additions only as needed
 
-- Each platform script is small enough to review.
-- Failures identify a stable stage and preserve manual fallback.
+Required:
+1. Build form fields for company name, brand short name, product/service, region, brand story, product features, audience, trust proof, pain points, customer cases.
+2. Enforce required fields before next-step availability.
+3. Support material/image upload UI state using existing import/storage patterns where possible.
+4. File parse failure must not block manual save.
+5. Parse results backfill the form only; persistence happens only after user save.
+6. Save/load one enterprise profile locally with last saved time.
+7. Run npm run check.
 
-### Phase 5: UI And Workflow Polish
+Do not edit keyword generation, publish services, or Electron automation.
 
-Owner: frontend/workflow agent.
+Deliver changed files, persistence behavior, commands run, and risks.
+```
 
-Tasks:
+### Worker C: Customer Keywords
 
-- Reconcile current local UI with remote `origin/main`.
-- Restore content strategy and platform copy pages if they are part of the accepted direction.
-- Add clear status panels for model probing, content review, draft generation, and publish execution.
+```text
+You are Worker C: Customer Keywords.
 
-Success criteria:
+Read AGENTS.md and task_plan.md first.
 
-- User can see where a task is blocked.
-- No route expected by Next type generation is missing.
+Goal:
+Implement 客户关键词 as a saved 5-question selection step.
 
-## Suggested First Agent Prompts
+Own files:
+- src/app/customer-keywords/page.tsx
+- src/components/keywords/customer-keyword-workbench.tsx
+- src/components/keywords/keyword-workbench.tsx only if refactoring existing logic
+- src/lib/keywords/service.ts
+- src/app/api/keywords/**
+- narrow shared type/storage additions only as needed
 
-Model adapter agent:
+Required:
+1. Load saved enterprise profile and require it before generation.
+2. Generate or reuse high/mid/low heat candidates, 10-15 per group when possible.
+3. Let the user select exactly 5 core questions.
+4. Persist selected questions and timestamps.
+5. Block entering 创建任务 until 5 are saved.
+6. Keep mock/local fallback behavior working.
+7. Run npm run check.
 
-> Read `src/lib/integrations/openai-compatible.ts`, `src/lib/config/service.ts`, `src/lib/integrations/stage1/client.ts`, and `src/lib/integrations/content/client.ts`. Refactor endpoint normalization into provider profiles with explicit Volcano Ark/Doubao support for `https://ark.cn-beijing.volces.com/api/v3/chat/completions`. Preserve `newapi-auto` probing and mock fallback. Add focused tests or a script that verifies endpoint candidates and error mapping. Do not touch publishing or UI files.
+Do not edit publish service, Electron automation, or model adapter internals.
 
-Publishing service agent:
+Deliver changed files, API/persistence behavior, commands run, and risks.
+```
 
-> Read `src/lib/publish/workbench-service.ts`, `src/lib/publish/publish-orchestrator.ts`, `src/lib/publish/jobs-service.ts`, `src/lib/publish/platforms.ts`, and `src/lib/types.ts`. Extract shared draft-building helpers, implement or remove `getDraftForJob`, and make publishing job state transitions explicit. Do not edit Electron automation scripts.
+### Worker D: Task Planning And Account Detection
 
-Automation agent:
+```text
+You are Worker D: Task Planning And Account Detection.
 
-> Read `electron/publish-automation/baijiahao.js`, `electron/publish-automation/toutiao.js`, `electron/publish-automation/douyin.js`, `electron/main.js`, and `src/lib/publish/platform-publishers/electron-browser-publisher.ts`. Extract reusable DOM helpers and standardize stage/result contracts. Preserve current behavior and manual fallback.
+Read AGENTS.md and task_plan.md first.
 
-Content strategy agent:
+Goal:
+Implement 创建任务 with AI platform mapping, account detection, article total calculation, and persisted task planning.
 
-> Read `skills/`, `src/lib/content/prompt-loader.ts`, `src/lib/content/review-service.ts`, `src/lib/content/dispersion-service.ts`, and `src/lib/integrations/content/client.ts`. Add validation for prompt strategy assets and make content review blocking issues available before publishing. Do not edit model adapter internals.
+Own files:
+- src/app/tasks/create/page.tsx
+- src/components/tasks/task-planning-workbench.tsx
+- src/lib/tasks/service.ts
+- src/lib/publish/accounts-service.ts
+- src/lib/publish/provider-platform-matrix.ts
+- account-detection route handlers as needed
+- narrow shared type/storage additions only as needed
 
-Frontend workflow agent:
+Required:
+1. Require saved enterprise profile and saved 5-question keyword set.
+2. Support AI platform selection: 豆包, DeepSeek, 元宝, 千问.
+3. Use the built-in mapping from AGENTS.md.
+4. Allow enabling/disabling mapped publish platforms; do not allow arbitrary new platforms.
+5. Detect logged-in publishable account counts; cache results for 30 minutes and provide manual refresh.
+6. Count only logged-in/currently publishable accounts for automatic totals.
+7. Enforce minimum 5 days, 2 articles per account per day, 9:00-18:00 window, and 3-hour same-account spacing.
+8. Persist the task plan and show total article count.
+9. Run npm run check.
 
-> Read `src/app/**`, `src/components/**`, and `src/hooks/use-task-draft-store.ts`. Reconcile missing remote routes/pages, display model probe/review/publish status clearly, and keep route handlers thin. Do not change service logic except for response shape typing.
+Do not edit content generation internals, publish execution internals, or Electron automation.
+
+Deliver changed files, calculation examples verified, commands run, and risks.
+```
+
+### Worker E: Content Pool
+
+```text
+You are Worker E: Content Pool.
+
+Read AGENTS.md and task_plan.md first.
+
+Goal:
+Implement 内容池 as the production center for current-task content, with history available but not mixed by default.
+
+Own files:
+- src/app/content-pool/page.tsx
+- src/components/content/content-pool.tsx
+- src/components/content/report-workbench.tsx only if refactoring existing logic
+- src/lib/content/**
+- src/lib/images/**
+- src/app/api/content/**
+- src/app/api/images/**
+- narrow shared type/storage additions only as needed
+
+Required:
+1. Load the saved task plan and generate/display content items tied to AI platform, publish platform, account, keyword, task, and planned time.
+2. Assign keywords in 5-question cycles, offset by account.
+3. Display current task by default; expose history through filter/tab/history entry.
+4. Represent negative-word/risk review, sample draft, platform style adaptation, batch dispersion, and image prompt/image generation states.
+5. Enforce risk behavior: low publishable, medium rewrite/confirm, high blocked; negative-word hits cannot be forced through.
+6. Provide automatic rewrite/dispersion entry points where service support exists; otherwise record typed pending/mock state without breaking the UI contract.
+7. Persist content pool item states.
+8. Run npm run check.
+
+Do not edit publish execution runner, Electron automation, or model adapter internals unless only a narrow response type is required.
+
+Deliver changed files, content item schema/state behavior, commands run, and risks.
+```
+
+### Worker F: Publish Execution
+
+```text
+You are Worker F: Publish Execution.
+
+Read AGENTS.md and task_plan.md first.
+
+Goal:
+Implement 执行发布 with article-level progress, resume, and manual fallback while reusing the existing publish chain.
+
+Own files:
+- src/app/publish-execution/page.tsx
+- src/components/publish/publish-execution-workbench.tsx
+- src/components/publish/publish-workbench.tsx only if refactoring existing logic
+- src/lib/publish/jobs-service.ts
+- src/lib/publish/publish-orchestrator.ts
+- src/lib/publish/server-publish-runner.ts
+- src/lib/publish/manual-delivery-service.ts
+- src/lib/publish/workbench-service.ts
+- src/app/api/publish/**
+- narrow shared type/storage additions only as needed
+
+Required:
+1. Show total, published, remaining, current platform, current account, current article, and latest execution time.
+2. Persist progress at task + platform + account + article + execution stage level.
+3. Resume from the last article/stage after interruption.
+4. Prevent duplicate publishing and missed publishing.
+5. On automation failure, mark current account/article as manual publish pending.
+6. Preserve existing manual delivery notes and Electron/browser automation fallback behavior.
+7. Do not rewrite the publishing chain body; organize new UI and minimum state support around it.
+8. Run npm run check.
+
+Do not edit model adapters, content generation internals, or Electron platform scripts.
+
+Deliver changed files, resume behavior, commands run, and risks.
+```
+
+### Worker G: Settings Simplification
+
+```text
+You are Worker G: Settings Simplification.
+
+Read AGENTS.md and task_plan.md first.
+
+Goal:
+Reduce 设置 to two primary model configuration entries: 文字模型 and 图片模型.
+
+Own files:
+- src/app/settings/page.tsx
+- src/components/settings/settings-form.tsx
+- src/lib/config/**
+- src/app/api/config/**
+
+Required:
+1. Keep service provider, endpoint, model name, API key, and basic probe/test.
+2. Hide advanced parameters from the primary path.
+3. Clearly show probe status and errors.
+4. Do not expose unnecessary model internals in normal UI.
+5. Run npm run check.
+
+Do not edit workflow pages or publish automation.
+
+Deliver changed files, settings behavior, commands run, and risks.
+```
+
+### Worker H: Model Adapter Reliability
+
+```text
+You are Worker H: Model Adapter Reliability.
+
+Read AGENTS.md and task_plan.md first.
+
+Goal:
+Keep model integration reliable for the new workflow.
+
+Own files:
+- src/lib/integrations/openai-compatible.ts
+- src/lib/config/service.ts
+- src/lib/integrations/stage1/client.ts
+- src/lib/integrations/content/client.ts
+- src/lib/integrations/images/client.ts
+- optional focused verification script/test
+
+Required:
+1. Make endpoint normalization provider-aware.
+2. Ensure Doubao/Volcano Ark supports https://ark.cn-beijing.volces.com/api/v3/chat/completions.
+3. Preserve NewAPI auto probing.
+4. Preserve mock fallback behavior.
+5. Map auth, timeout, 404/405, bad JSON, and output parse failures clearly where feasible.
+6. Run npm run check.
+
+Do not edit UI pages, publishing services, or Electron automation.
+
+Deliver changed files, endpoint examples verified, commands run, and risks.
+```
+
+### Worker I: Electron Automation Isolation
+
+```text
+You are Worker I: Electron Automation Isolation.
+
+Read AGENTS.md and task_plan.md first.
+
+Goal:
+Only if separately assigned, improve Electron automation maintainability without changing the Phase 1 product workflow.
+
+Own files:
+- electron/main.js
+- electron/local-bridge.js
+- electron/publish-automation/*.js
+- src/lib/publish/platform-publishers/electron-browser-publisher.ts
+
+Required:
+1. Preserve current behavior.
+2. Extract shared DOM helpers only where safe.
+3. Standardize status, failureStage, errorMessage, executionLog, and verificationEvidence.
+4. Do not log cookies, sessions, API keys, or auth payloads.
+5. Preserve manual fallback.
+6. Run npm run check.
+
+Do not edit model/content/task-planning UI or services.
+
+Deliver changed files, behavior preserved, commands run, and risks.
+```
 
 ## Verification Commands
 
-Use these commands after each focused change:
+Run after every focused change:
 
 ```powershell
 npm run check
-npm run build:web
 ```
 
-If `npm run check` fails because `.next/types` references deleted routes, either restore the source routes from the accepted baseline or remove stale generated build artifacts before re-running. Do not hide real TypeScript errors by editing generated `.next` files.
+Run before final integration handoff:
 
-## GEO Model Publish Chain Dispatch
+```powershell
+npm run build:web
+git status --short --branch
+```
 
-Use `docs/geo-model-publish-chain-brainstorm.md` as the detailed task flow for model-to-platform work.
+For frontend visual work, also start the web app when feasible:
 
-Current provider matrix:
+```powershell
+npm run dev:web
+```
 
-- Doubao / Volcano Ark -> Toutiao, Baijiahao, Douyin.
-- Tongyi / Qwen -> Zhihu, Weibo.
-- DeepSeek -> CSDN, Zhihu.
-- Yuanbao should be treated as Tencent Hunyuan-backed API work until a stable Yuanbao API exists -> Videohao, WeChat official account.
+Then inspect the affected routes in a browser. Do not leave required dev servers running without telling the coordinator.
 
-External route assumptions as of 2026-06-02:
+## Conflict Policy
 
-- Doubao / Ark chat completions should normalize to `https://ark.cn-beijing.volces.com/api/v3/chat/completions`.
-- Qwen should use DashScope / Qwen OpenAI-compatible chat completions.
-- DeepSeek should use the official OpenAI-compatible DeepSeek chat API.
-- Yuanbao consumer app is not a stable API target; Tencent Hunyuan is the API-backed adapter.
-- Douyin official publishing requires approved OpenAPI capability, user authorization, and video creation scope; otherwise keep browser/manual fallback.
-- WeChat official account has the strongest official publishing route through material, draft, publish, and status APIs.
-- Toutiao, Baijiahao, Zhihu, CSDN, and Videohao should not be assumed to have stable public article publishing APIs for this product. Use Electron automation or manual delivery until official write access is confirmed.
-- Weibo publish/share APIs need a fresh permission audit before implementation. Keep manual/browser fallback.
+If two workers touch the same file:
 
-Dispatch order:
+1. Stop merging that worker.
+2. Coordinator inspects both diffs.
+3. Prefer the diff that preserves module boundaries and typed service contracts.
+4. If both are needed, make a coordinator patch.
+5. Do not ask both workers to continue editing the same conflict area blindly.
 
-1. Stabilize Doubao model adapter.
-2. Stabilize Doubao -> Toutiao/Baijiahao/Douyin publishing drafts and job invariants.
-3. Standardize Electron automation stages/results for Toutiao, Baijiahao, and Douyin.
-4. Expand Tongyi/Qwen and DeepSeek strategy assets and platform drafts.
-5. Expand Yuanbao/Hunyuan into WeChat official account and Videohao delivery.
-6. Add UI status panels for model probe, content review, draft route availability, and publish job execution.
+## Final Acceptance Checklist
 
-Do not dispatch two workers to the same file set at the same time. Every worker must state changed files, checks run, external document assumptions, and remaining platform permission risk.
-
+- The app opens into a clear five-step workflow.
+- 首页 or shell makes 企业信息 the natural starting point.
+- Enterprise required fields save and reload.
+- Material parse failure is visible and non-blocking.
+- Customer keyword generation/selection saves exactly 5 core questions.
+- Task creation requires saved enterprise + saved 5 questions.
+- AI platform mapping matches this document.
+- Account detection caches for 30 minutes and supports manual refresh.
+- Task total article count is visible and correct.
+- Content pool defaults to current task.
+- Content items show AI platform, publish platform, account, keyword, task, planned time, and status.
+- Keyword cycling is offset by account.
+- Risk levels and rewrite/blocking behavior are represented.
+- Publish execution shows total/published/remaining/current position.
+- Publish progress resumes at article level.
+- Automation failure has manual-pending fallback.
+- Settings show only text model and image model primary entries.
+- Chinese copy is clean UTF-8.
+- UI is restrained, operational, and not a marketing page.
+- `npm run check` result is recorded.
+- `npm run build:web` result is recorded.

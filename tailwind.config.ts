@@ -9,22 +9,22 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        surface: "#050505",
-        panel: "#0f0f11",
-        panelSoft: "#18181b",
-        accent: "#ff4f00", // striking electric orange
-        "accent-soft": "#ff7a33",
-        "accent-muted": "rgba(255, 79, 0, 0.15)",
-        stroke: "rgba(255, 255, 255, 0.08)",
-        "stroke-strong": "rgba(255, 255, 255, 0.15)",
-        ink: "#fafafa",
-        muted: "#a1a1aa",
-        danger: "#ff3366",
-        warning: "#ffb800"
+        surface: "rgb(var(--color-surface) / <alpha-value>)",
+        panel: "rgb(var(--color-panel) / <alpha-value>)",
+        panelSoft: "rgb(var(--color-panel-soft) / <alpha-value>)",
+        accent: "rgb(var(--color-accent) / <alpha-value>)",
+        "accent-soft": "rgb(var(--color-accent-soft) / <alpha-value>)",
+        "accent-muted": "rgb(var(--color-accent) / 0.12)",
+        stroke: "rgb(var(--color-stroke) / <alpha-value>)",
+        "stroke-strong": "rgb(var(--color-stroke-strong) / <alpha-value>)",
+        ink: "rgb(var(--color-ink) / <alpha-value>)",
+        muted: "rgb(var(--color-muted) / <alpha-value>)",
+        danger: "rgb(var(--color-danger) / <alpha-value>)",
+        warning: "rgb(var(--color-warning) / <alpha-value>)"
       },
       boxShadow: {
-        panel: "0 0 0 1px rgba(255,255,255,0.05), 0 30px 60px -10px rgba(0,0,0,0.8)",
-        glow: "0 0 40px -10px rgba(255, 79, 0, 0.4)",
+        panel: "var(--shadow-panel)",
+        glow: "var(--shadow-focus)",
       },
       fontFamily: {
         display: ["Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", "sans-serif"],

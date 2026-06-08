@@ -1,6 +1,13 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { callConfiguredTextModel, NewAPIProbeError, parseJsonFromModelText } from "@/lib/integrations/openai-compatible";
+import {
+  callConfiguredTextModel,
+  classifyOpenAICompatibleHttpStatus,
+  NewAPIProbeError,
+  OpenAICompatibleHttpError,
+  OpenAICompatibleResponseParseError,
+  parseJsonFromModelText,
+} from "@/lib/integrations/openai-compatible";
 import { normalizeToutiaoTitle } from "@/lib/publish/toutiao-title";
 import {
   loadAiScenarioTemplate,
@@ -252,6 +259,22 @@ function sanitizeReportSections(
   });
 }
 
+function mapContentModelError(error: unknown): Error {
+  if (error instanceof NewAPIProbeError) {
+    return new Error(`CONTENT_API_PROBE_FAILED@${JSON.stringify(error.attempts)}`);
+  }
+  if (error instanceof OpenAICompatibleHttpError) {
+    return new Error(`CONTENT_API_${classifyOpenAICompatibleHttpStatus(error.status)}@${error.endpoint}`);
+  }
+  if (error instanceof OpenAICompatibleResponseParseError) {
+    return new Error(`CONTENT_API_BAD_JSON@${error.endpoint}`);
+  }
+  if (error instanceof Error && error.message === "REQUEST_TIMEOUT") {
+    return new Error("CONTENT_API_TIMEOUT");
+  }
+  return error instanceof Error ? error : new Error("CONTENT_API_UNKNOWN");
+}
+
 async function buildContentMessages(product: ProductProfile, theme: ThemeSet, options?: ContentStrategyOptions) {
   const prompt = await buildPrompt(product, theme, options);
 
@@ -293,22 +316,13 @@ export async function runContentModel(
   try {
     result = await callConfiguredTextModel(config, await buildContentMessages(product, theme, options));
   } catch (error) {
-    if (error instanceof NewAPIProbeError) {
-      throw new Error(`CONTENT_API_PROBE_FAILED@${JSON.stringify(error.attempts)}`);
-    }
-    if (error instanceof Error && error.message.startsWith("HTTP_")) {
-      throw new Error(`CONTENT_API_${error.message.replace("HTTP_", "")}`);
-    }
-    if (error instanceof Error && error.message === "REQUEST_TIMEOUT") {
-      throw new Error("CONTENT_API_TIMEOUT");
-    }
-    throw error;
+    throw mapContentModelError(error);
   }
 
   const payload = parseJsonFromModelText<ContentResponsePayload>(result.rawText);
 
   if (!payload) {
-    return mockDraft;
+    throw new Error(`CONTENT_OUTPUT_PARSE_FAILED@${result.endpoint}`);
   }
 
   const selectedKeywords = mockDraft.selectedKeywords ?? [];

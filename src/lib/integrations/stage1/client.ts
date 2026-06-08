@@ -3,8 +3,10 @@ import path from "node:path";
 
 import {
   callConfiguredTextModel,
+  classifyOpenAICompatibleHttpStatus,
   NewAPIProbeError,
   OpenAICompatibleHttpError,
+  OpenAICompatibleResponseParseError,
   parseJsonFromModelText,
 } from "@/lib/integrations/openai-compatible";
 import type {
@@ -547,6 +549,22 @@ function mapStage1Payload(
   };
 }
 
+function mapStage1ModelError(error: unknown): Error {
+  if (error instanceof NewAPIProbeError) {
+    return new Error(`STAGE1_API_PROBE_FAILED@${JSON.stringify(error.attempts)}`);
+  }
+  if (error instanceof OpenAICompatibleHttpError) {
+    return new Error(`STAGE1_API_${classifyOpenAICompatibleHttpStatus(error.status)}@${error.endpoint}`);
+  }
+  if (error instanceof OpenAICompatibleResponseParseError) {
+    return new Error(`STAGE1_API_BAD_JSON@${error.endpoint}`);
+  }
+  if (error instanceof Error && error.message === "REQUEST_TIMEOUT") {
+    return new Error("STAGE1_API_TIMEOUT");
+  }
+  return error instanceof Error ? error : new Error("STAGE1_API_UNKNOWN");
+}
+
 export async function runStage1Model(
   product: ProductProfile,
   config: ModelApiConfig,
@@ -576,17 +594,11 @@ export async function runStage1Model(
     const messages = await buildQuestionMessages(product, searchProvider, audienceChannels);
     const result = await callConfiguredTextModel(config, messages);
     const payload = parseJsonFromModelText<Stage1ResponsePayload>(result.rawText);
+    if (!payload) {
+      throw new Error(`STAGE1_OUTPUT_PARSE_FAILED@${result.endpoint}`);
+    }
     return mapStage1Payload(product, searchProvider, audienceChannels, payload, now);
   } catch (error) {
-    if (error instanceof NewAPIProbeError) {
-      throw new Error(`STAGE1_API_PROBE_FAILED@${JSON.stringify(error.attempts)}`);
-    }
-    if (error instanceof OpenAICompatibleHttpError) {
-      throw new Error(`STAGE1_API_${error.status}@${error.endpoint}`);
-    }
-    if (error instanceof Error && error.message === "REQUEST_TIMEOUT") {
-      throw new Error("STAGE1_API_TIMEOUT");
-    }
-    throw error;
+    throw mapStage1ModelError(error);
   }
 }

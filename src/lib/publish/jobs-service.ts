@@ -14,6 +14,7 @@ import { getPlatformDescriptor } from "@/lib/publish/platforms";
 import { validateDraftForPlatform } from "@/lib/publish/draft-builders";
 import { resolvePublishImagePaths } from "@/lib/publish/publish-image-resolver";
 import type { PublishPlatform, PublishingDraft, PublishingExecutionMode, PublishingJobRecord, PublishingJobStatus } from "@/lib/types";
+import type { ContentPoolItem } from "@/lib/types";
 
 function now() {
   return new Date().toISOString();
@@ -184,6 +185,79 @@ export async function createAccountPublishingJob(input: {
   return savePublishingJob(job);
 }
 
+export async function createContentPoolPublishingJob(input: {
+  item: ContentPoolItem;
+}): Promise<PublishingJobRecord> {
+  const existingJobs = await getPublishingJobsByTask(input.item.taskId);
+  const existing = existingJobs
+    .filter((job) => job.contentPoolItemId === input.item.id)
+    .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())[0];
+
+  if (existing && existing.status !== "failed") {
+    return existing;
+  }
+
+  if (!input.item.publishable) {
+    throw new Error("当前文章还未通过风险检查，不能进入发布。");
+  }
+
+  const descriptor = getPlatformDescriptor(input.item.publishPlatform);
+  const account = await getPlatformAccount(input.item.accountId);
+  const imageUrls = input.item.imageList.map((image) => image.url).filter((url): url is string => Boolean(url));
+  const imagePaths = input.item.imageList.map((image) => image.localPath).filter((localPath): localPath is string => Boolean(localPath));
+  const resolvedImagePaths = await resolvePublishImagePaths({
+    taskId: input.item.taskId,
+    imageUrls,
+    localImagePaths: imagePaths,
+  });
+
+  const status = descriptor?.automationStatus === "ready" ? "queued" : "manual_pending";
+  const job: PublishingJobRecord = {
+    id: createRecordId(),
+    taskId: input.item.taskId,
+    platform: input.item.publishPlatform,
+    contentPoolItemId: input.item.id,
+    contentSequence: input.item.sequence,
+    plannedPublishTime: input.item.plannedPublishTime,
+    keywordText: input.item.keywordText,
+    sourceSearchProvider: input.item.aiPlatform,
+    automationStatus: descriptor?.automationStatus ?? "planned",
+    accountId: account?.id ?? input.item.accountId,
+    accountName: account?.displayName ?? account?.accountName ?? input.item.accountName,
+    executionMode: descriptor?.executionMode ?? resolveExecutionMode(input.item.publishPlatform),
+    status,
+    draftTitle: input.item.title,
+    draftBody: input.item.body,
+    draftTags: [input.item.keywordText].filter(Boolean),
+    draftImages: imageUrls,
+    draftImagePaths: resolvedImagePaths,
+    publishMode: resolvedImagePaths.length ? "with_images" : "text_only",
+    publishEntryUrl: descriptor?.publishEntryUrl,
+    notes: buildManualDeliveryNotes({
+      id: "",
+      taskId: input.item.taskId,
+      platform: input.item.publishPlatform,
+      executionMode: descriptor?.executionMode ?? resolveExecutionMode(input.item.publishPlatform),
+      status,
+      draftTitle: input.item.title,
+      draftBody: input.item.body,
+      draftTags: [input.item.keywordText].filter(Boolean),
+      draftImages: imageUrls,
+      draftImagePaths: imagePaths,
+      publishMode: resolvedImagePaths.length ? "with_images" : "text_only",
+      publishEntryUrl: descriptor?.publishEntryUrl,
+      createdAt: now(),
+      updatedAt: now(),
+    }),
+    executionStage: status,
+    resumeKey: `${input.item.taskId}:${input.item.publishPlatform}:${input.item.accountId}:${input.item.id}`,
+    lastExecutionAt: now(),
+    createdAt: now(),
+    updatedAt: now(),
+  };
+  return savePublishingJob(job);
+}
+
 export async function updatePublishingJobRecord(jobId: string, patch: Partial<PublishingJobRecord>) {
   const current = await getPublishingJob(jobId);
   if (!current) {
@@ -276,6 +350,8 @@ export async function recordPublishingJobResult(input: {
     platformItemId: input.platformItemId,
     failureStage: input.failureStage,
     errorMessage: input.errorMessage,
+    executionStage: input.failureStage ?? input.status,
+    lastExecutionAt: now(),
   };
 
   if (input.status === "running") {

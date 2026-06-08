@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { generateKeywordsForTask } from "@/lib/keywords/service";
+import { generateCustomerKeywords, generateKeywordsForTask, getCustomerKeywordWorkbenchData } from "@/lib/keywords/service";
 
 function formatProbeDetails(prefix: string, message: string) {
   const raw = message.replace(prefix, "");
@@ -18,13 +18,19 @@ function formatProbeDetails(prefix: string, message: string) {
 
 export async function POST(request: Request) {
   try {
-    const { taskId } = (await request.json()) as { taskId: string };
-    const theme = await generateKeywordsForTask(taskId);
+    const body = (await request.json()) as { taskId?: string; mode?: "customer" };
+    if (!body.taskId || body.mode === "customer") {
+      const keywordSet = await generateCustomerKeywords();
+      const workbenchData = await getCustomerKeywordWorkbenchData();
+      return NextResponse.json({ ...workbenchData, keywordSet });
+    }
+
+    const theme = await generateKeywordsForTask(body.taskId);
     return NextResponse.json({ theme });
   } catch (error) {
     if (error instanceof Error && error.message === "STAGE1_API_TIMEOUT") {
       return NextResponse.json(
-        { error: "AI 提问句生成超时，请稍后重试，或在设置页提高第一阶段模型超时时间。" },
+        { error: "AI 提问句生成超时，请稍后重试，或在设置页提高模型超时时间。" },
         { status: 500 },
       );
     }

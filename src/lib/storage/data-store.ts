@@ -7,6 +7,7 @@ import type {
   AppConfig,
   AccountPublishingDraft,
   ContentDraft,
+  ContentPoolRecord,
   ImageAsset,
   PlatformAccountRecord,
   ProductProfile,
@@ -73,6 +74,19 @@ export async function getContent(taskId: string) {
 
 export async function listAllContentDrafts() {
   return listJsonFiles<ContentDraft>(dataDirectories.content);
+}
+
+export async function saveContentPool(record: ContentPoolRecord) {
+  await writeJsonFile(filePathFor(dataDirectories.contentPool, record.taskId), record);
+  return record;
+}
+
+export async function getContentPool(taskId: string) {
+  return readJsonFile<ContentPoolRecord | null>(filePathFor(dataDirectories.contentPool, taskId), null);
+}
+
+export async function listContentPools() {
+  return listJsonFiles<ContentPoolRecord>(dataDirectories.contentPool);
 }
 
 export async function saveImage(image: ImageAsset) {

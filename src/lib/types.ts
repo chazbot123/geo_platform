@@ -2,6 +2,7 @@ export type TaskStatus =
   | "created"
   | "keyword_generated"
   | "keyword_selected"
+  | "task_planned"
   | "content_generated"
   | "image_generated"
   | "publishing"
@@ -134,6 +135,7 @@ export interface TaskRecord {
   productId: string;
   status: TaskStatus;
   searchProvider?: SearchProvider;
+  publishPlan?: PublishTaskPlan;
   createdAt: string;
   updatedAt: string;
   selectedKeyword?: string;
@@ -485,6 +487,10 @@ export interface PublishingJobRecord {
   id: string;
   taskId: string;
   platform: LegacyPublishPlatform;
+  contentPoolItemId?: string;
+  contentSequence?: number;
+  plannedPublishTime?: string;
+  keywordText?: string;
   accountPublishingDraftId?: string;
   sourceSearchProvider?: SearchProvider;
   automationStatus?: "ready" | "manual_only" | "planned";
@@ -508,6 +514,9 @@ export interface PublishingJobRecord {
   verificationEvidence?: string;
   verificationAttempts?: number;
   platformItemId?: string;
+  executionStage?: string;
+  resumeKey?: string;
+  lastExecutionAt?: string;
   sessionToken?: string;
   failureStage?: string;
   errorMessage?: string;
@@ -549,6 +558,147 @@ export interface PublishProgressSnapshot {
 export interface AccountPublishedJobsGroup {
   accountId: string;
   jobs: PublishingJobRecord[];
+}
+
+export interface PublishableAccountSummary {
+  id: string;
+  platform: SocialPlatform;
+  accountName: string;
+  displayName?: string;
+  lastValidatedAt?: string;
+}
+
+export interface PlatformAccountDetectionItem {
+  platform: SocialPlatform;
+  accountCount: number;
+  accounts: PublishableAccountSummary[];
+  ignoredCount: number;
+  manualOnlyCount: number;
+  unavailableCount: number;
+  detectedAt: string;
+  cacheExpiresAt: string;
+  fromCache: boolean;
+}
+
+export interface PlatformAccountDetectionResult {
+  items: PlatformAccountDetectionItem[];
+  cacheTtlMinutes: number;
+}
+
+export interface PublishTaskPlatformPlan {
+  platform: SocialPlatform;
+  enabled: boolean;
+  accountCount: number;
+  accountIds: string[];
+  articleCount: number;
+  detectionAt?: string;
+}
+
+export interface PublishTaskPlan {
+  taskId: string;
+  enterpriseTaskId: string;
+  keywordTaskId: string;
+  searchProvider: SearchProvider;
+  enabledPlatforms: PublishTaskPlatformPlan[];
+  days: number;
+  articlesPerAccountPerDay: 2;
+  timeWindow: {
+    start: "09:00";
+    end: "18:00";
+  };
+  minSameAccountIntervalHours: 3;
+  totalAccountCount: number;
+  totalArticleCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ContentPoolRiskLevel = "low" | "medium" | "high";
+export type ContentPoolItemStatus =
+  | "pending_generation"
+  | "sample"
+  | "pending_publish"
+  | "publishing"
+  | "published"
+  | "failed"
+  | "manual_pending";
+export type ContentPoolPipelineStatus = "pending" | "processing" | "passed" | "needs_action" | "blocked";
+
+export interface ContentPoolImageItem {
+  id: string;
+  prompt: string;
+  url?: string;
+  localPath?: string;
+  status: "pending" | "generated" | "failed";
+}
+
+export interface ContentPoolPipelineState {
+  negativeCheck: {
+    status: ContentPoolPipelineStatus;
+    hits: string[];
+    checkedAt?: string;
+  };
+  riskReview: {
+    status: ContentPoolPipelineStatus;
+    level: ContentPoolRiskLevel;
+    message: string;
+    reviewedAt?: string;
+  };
+  sampleDraft: {
+    status: ContentPoolPipelineStatus;
+    passed: boolean;
+    checkedAt?: string;
+  };
+  styleAdaptation: {
+    status: ContentPoolPipelineStatus;
+    platform: SocialPlatform;
+    notes: string[];
+  };
+  dispersion: {
+    status: ContentPoolPipelineStatus;
+    changedDimensions: Array<"title" | "opening" | "section_order" | "judgment" | "cta" | "image_prompt">;
+    message: string;
+  };
+  imageGeneration: {
+    status: ContentPoolPipelineStatus;
+    prompt: string;
+    images: ContentPoolImageItem[];
+  };
+}
+
+export interface ContentPoolItem {
+  id: string;
+  sequence: number;
+  taskId: string;
+  aiPlatform: SearchProvider;
+  publishPlatform: SocialPlatform;
+  accountId: string;
+  accountName?: string;
+  keywordId: string;
+  keywordSequence: number;
+  keywordText: string;
+  accountKeywordOffset: number;
+  plannedPublishTime: string;
+  title: string;
+  summary: string;
+  body: string;
+  imagePrompt: string;
+  imageList: ContentPoolImageItem[];
+  riskLevel: ContentPoolRiskLevel;
+  status: ContentPoolItemStatus;
+  pipeline: ContentPoolPipelineState;
+  publishable: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ContentPoolRecord {
+  taskId: string;
+  sourcePublishPlanUpdatedAt: string;
+  currentTaskId: string;
+  items: ContentPoolItem[];
+  generatedAt: string;
+  updatedAt: string;
 }
 
 export interface ModelApiConfig {

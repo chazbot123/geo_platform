@@ -9,6 +9,7 @@ export const dataDirectories = {
   products: path.join(dataRoot, "products"),
   themes: path.join(dataRoot, "themes"),
   content: path.join(dataRoot, "content"),
+  contentPool: path.join(dataRoot, "content-pool"),
   images: path.join(dataRoot, "images"),
   generatedImages: path.join(process.cwd(), "public", "generated-images"),
   publish: path.join(dataRoot, "publish"),

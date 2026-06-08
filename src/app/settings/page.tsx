@@ -6,7 +6,7 @@ export default async function SettingsPage() {
   const config = await getAppConfig();
 
   return (
-    <AppShell title="本地配置" description="管理第一阶段、内容、图片和发布等本地 API 配置；未配置真实接口时仍可使用 Mock 模式。">
+    <AppShell title="模型设置" description="只配置文字模型和图片模型。未填写真实接口时，系统仍保留本地模拟回退。">
       <SettingsForm initialConfig={config} />
     </AppShell>
   );

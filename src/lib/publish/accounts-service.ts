@@ -1,5 +1,26 @@
+import path from "node:path";
+import { dataDirectories } from "@/lib/paths";
+import { getSocialPlatformDescriptor } from "@/lib/publish/platforms";
 import { createRecordId, deletePlatformAccount, getPlatformAccount, listPlatformAccounts, listPublishingJobs, savePlatformAccount } from "@/lib/storage/data-store";
-import type { AccountPublishedJobsGroup, PlatformAccountLoginStatus, PlatformAccountRecord, PlatformAccountStatus, SocialPlatform } from "@/lib/types";
+import { readJsonFile, writeJsonFile } from "@/lib/storage/json-store";
+import type {
+  AccountPublishedJobsGroup,
+  PlatformAccountDetectionItem,
+  PlatformAccountDetectionResult,
+  PlatformAccountLoginStatus,
+  PlatformAccountRecord,
+  PlatformAccountStatus,
+  PublishableAccountSummary,
+  SocialPlatform,
+} from "@/lib/types";
+
+const ACCOUNT_DETECTION_CACHE_TTL_MS = 30 * 60 * 1000;
+const ACCOUNT_DETECTION_CACHE_FILE = path.join(dataDirectories.config, "publish-account-detection-cache.json");
+
+interface CachedAccountDetection {
+  items: PlatformAccountDetectionItem[];
+  updatedAt: string;
+}
 
 function now() {
   return new Date().toISOString();
@@ -56,6 +77,110 @@ export async function listAuthenticatedPlatformAccounts(platform?: SocialPlatfor
       item.status !== "disabled" &&
       (!platform || item.platform === platform),
   );
+}
+
+export function isPublishablePlatformAccount(account: PlatformAccountRecord) {
+  return (
+    account.loginStatus === "authenticated" &&
+    account.status === "valid" &&
+    account.provider === "electron" &&
+    account.authType !== "manual"
+  );
+}
+
+export async function listPublishablePlatformAccounts(platform?: SocialPlatform) {
+  const items = await getAllPlatformAccounts();
+  return items.filter((item) => isPublishablePlatformAccount(item) && (!platform || item.platform === platform));
+}
+
+function sanitizePublishableAccount(account: PlatformAccountRecord): PublishableAccountSummary {
+  return {
+    id: account.id,
+    platform: account.platform,
+    accountName: account.accountName,
+    displayName: account.displayName,
+    lastValidatedAt: account.lastValidatedAt,
+  };
+}
+
+function isDetectionFresh(item: PlatformAccountDetectionItem, nowMs: number) {
+  return new Date(item.cacheExpiresAt).getTime() > nowMs;
+}
+
+async function readAccountDetectionCache() {
+  return readJsonFile<CachedAccountDetection>(ACCOUNT_DETECTION_CACHE_FILE, { items: [], updatedAt: "" });
+}
+
+async function writeAccountDetectionCache(items: PlatformAccountDetectionItem[]) {
+  await writeJsonFile<CachedAccountDetection>(ACCOUNT_DETECTION_CACHE_FILE, {
+    items,
+    updatedAt: now(),
+  });
+}
+
+function buildDetectionItem(platform: SocialPlatform, accounts: PlatformAccountRecord[], detectedAt: string): PlatformAccountDetectionItem {
+  const descriptor = getSocialPlatformDescriptor(platform);
+  const publishableAccounts = accounts.filter((account) => account.platform === platform && isPublishablePlatformAccount(account));
+  const platformAccounts = accounts.filter((account) => account.platform === platform);
+  const manualOnlyCount = platformAccounts.filter((account) => account.authType === "manual" || account.provider === "manual").length;
+  const unavailableCount = descriptor?.automationStatus !== "ready" ? platformAccounts.length : 0;
+  const ignoredCount = Math.max(platformAccounts.length - publishableAccounts.length, 0);
+
+  return {
+    platform,
+    accountCount: publishableAccounts.length,
+    accounts: publishableAccounts.map(sanitizePublishableAccount),
+    ignoredCount,
+    manualOnlyCount,
+    unavailableCount,
+    detectedAt,
+    cacheExpiresAt: new Date(new Date(detectedAt).getTime() + ACCOUNT_DETECTION_CACHE_TTL_MS).toISOString(),
+    fromCache: false,
+  };
+}
+
+export async function detectPublishablePlatformAccounts(
+  platforms: SocialPlatform[],
+  options: { forceRefresh?: boolean } = {},
+): Promise<PlatformAccountDetectionResult> {
+  const uniquePlatforms = Array.from(new Set(platforms));
+  const nowMs = Date.now();
+  const cached = await readAccountDetectionCache();
+  const cachedByPlatform = new Map<SocialPlatform, PlatformAccountDetectionItem>(
+    cached.items.map((item) => [item.platform, item]),
+  );
+  const freshCachedItems = options.forceRefresh
+    ? []
+    : uniquePlatforms
+        .map((platform) => cachedByPlatform.get(platform))
+        .filter((item): item is PlatformAccountDetectionItem => item !== undefined && isDetectionFresh(item, nowMs));
+  const freshPlatforms = new Set(freshCachedItems.map((item) => item.platform));
+  const stalePlatforms = uniquePlatforms.filter((platform) => !freshPlatforms.has(platform));
+
+  let refreshedItems: PlatformAccountDetectionItem[] = [];
+  if (stalePlatforms.length) {
+    const accounts = await getAllPlatformAccounts();
+    const detectedAt = now();
+    refreshedItems = stalePlatforms.map((platform) => buildDetectionItem(platform, accounts, detectedAt));
+    const nextItemsByPlatform = new Map<SocialPlatform, PlatformAccountDetectionItem>(
+      cached.items.map((item) => [item.platform, item]),
+    );
+    for (const item of refreshedItems) {
+      nextItemsByPlatform.set(item.platform, item);
+    }
+    await writeAccountDetectionCache(Array.from(nextItemsByPlatform.values()));
+  }
+
+  const refreshedByPlatform = new Map(refreshedItems.map((item) => [item.platform, item]));
+  return {
+    items: uniquePlatforms.map((platform) => {
+      const refreshed = refreshedByPlatform.get(platform);
+      if (refreshed) return refreshed;
+      const cachedItem = cachedByPlatform.get(platform);
+      return cachedItem ? { ...cachedItem, fromCache: true } : buildDetectionItem(platform, [], now());
+    }),
+    cacheTtlMinutes: 30,
+  };
 }
 
 export async function getUniqueAuthenticatedPlatformAccount(platform: SocialPlatform) {

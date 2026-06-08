@@ -50,6 +50,28 @@ export class OpenAICompatibleHttpError extends Error {
   }
 }
 
+export function classifyOpenAICompatibleHttpStatus(status: number) {
+  if (status === 401 || status === 403) {
+    return "AUTH";
+  }
+  if (status === 404) {
+    return "NOT_FOUND";
+  }
+  if (status === 405) {
+    return "METHOD_NOT_ALLOWED";
+  }
+  if (status === 408 || status === 504) {
+    return "TIMEOUT";
+  }
+  if (status === 429) {
+    return "RATE_LIMIT";
+  }
+  if (status >= 500) {
+    return "SERVER";
+  }
+  return `HTTP_${status}`;
+}
+
 export class OpenAICompatibleResponseParseError extends Error {
   endpoint: string;
 
@@ -456,6 +478,14 @@ function parseOpenAICompatiblePayload(rawBody: string): OpenAICompatibleResponse
   };
 }
 
+function parseResponsePayload(endpoint: string, rawBody: string) {
+  try {
+    return parseOpenAICompatiblePayload(rawBody);
+  } catch {
+    throw new OpenAICompatibleResponseParseError(endpoint);
+  }
+}
+
 export function extractJsonString(rawText: string) {
   const fencedMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fencedMatch?.[1]) {
@@ -526,7 +556,7 @@ async function performTextRequest(
     }
 
     const rawBody = await response.text();
-    const payload = parseOpenAICompatiblePayload(rawBody);
+    const payload = parseResponsePayload(endpoint, rawBody);
     const rawText = extractMessageContent(payload.choices?.[0]?.message?.content);
     return {
       endpoint,
@@ -642,5 +672,6 @@ export async function callConfiguredTextModel(
   if (isTencentHunyuanProvider(config.provider)) {
     return callHunyuanTextModel(config, messages);
   }
-  return callOpenAICompatibleTextModel(config, messages);
+  const endpoint = resolveConfiguredOpenAICompatibleEndpoint(config.provider, config.baseUrl);
+  return performTextRequest(endpoint, buildJsonAuthHeaders(config.apiKey), config, messages);
 }

@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "GEO 桌面版 | 工作流",
-  description: "GEO 桌面发布与管理工作流",
+  description: "GEO 桌面发布与内容生产工作流",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
