@@ -565,6 +565,7 @@ export interface PublishableAccountSummary {
   platform: SocialPlatform;
   accountName: string;
   displayName?: string;
+  avatarUrl?: string;
   lastValidatedAt?: string;
 }
 

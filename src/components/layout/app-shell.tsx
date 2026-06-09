@@ -17,19 +17,45 @@ import {
   Sun,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { WorkflowStatus, WorkflowStepKey } from "@/lib/workflow/status-service";
 
 const workflowItems = [
-  { href: "/enterprise", label: "企业信息", icon: Building2 },
-  { href: "/customer-keywords", label: "客户关键词", icon: FileQuestion },
-  { href: "/tasks/create", label: "创建任务", icon: PenLine },
-  { href: "/content-pool", label: "内容池", icon: FolderKanban },
-  { href: "/publish-execution", label: "执行发布", icon: Rocket },
-];
+  { key: "enterprise", href: "/enterprise", label: "企业信息", icon: Building2 },
+  { key: "customerKeywords", href: "/customer-keywords", label: "客户关键词", icon: FileQuestion },
+  { key: "taskCreate", href: "/tasks/create", label: "创建任务", icon: PenLine },
+  { key: "contentPool", href: "/content-pool", label: "内容池", icon: FolderKanban },
+  { key: "publishExecution", href: "/publish-execution", label: "执行发布", icon: Rocket },
+] satisfies Array<{ key: WorkflowStepKey; href: string; label: string; icon: typeof Building2 }>;
+
+const emptyWorkflowStatus: WorkflowStatus = {
+  updatedAt: "",
+  steps: {
+    enterprise: { key: "enterprise", completed: false, reason: "正在读取工作流状态。" },
+    customerKeywords: { key: "customerKeywords", completed: false, reason: "正在读取工作流状态。" },
+    taskCreate: { key: "taskCreate", completed: false, reason: "正在读取工作流状态。" },
+    contentPool: { key: "contentPool", completed: false, reason: "正在读取工作流状态。" },
+    publishExecution: { key: "publishExecution", completed: false, reason: "正在读取工作流状态。" },
+  },
+};
+
+async function fetchWorkflowStatus(signal?: AbortSignal) {
+  const response = await fetch("/api/workflow/status", { cache: "no-store", signal });
+  const data = (await response.json()) as WorkflowStatus & { error?: string };
+  if (!response.ok) {
+    throw new Error(data.error || "读取工作流状态失败。");
+  }
+  return data;
+}
+
+export function dispatchWorkflowStatusRefresh() {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new Event("geo-workflow-status-refresh"));
+}
 
 export function AppShell({ title, description, children }: { title: string; description: string; children: React.ReactNode }) {
   const pathname = usePathname();
   const [theme, setTheme] = useState<"light" | "dark">("light");
-  const activeIndex = workflowItems.findIndex((step) => pathname === step.href || pathname.startsWith(`${step.href}/`));
+  const [workflowStatus, setWorkflowStatus] = useState<WorkflowStatus>(emptyWorkflowStatus);
 
   useEffect(() => {
     const stored = window.localStorage.getItem("geo-theme");
@@ -39,6 +65,25 @@ export function AppShell({ title, description, children }: { title: string; desc
     setTheme(nextTheme);
     document.documentElement.classList.toggle("dark", nextTheme === "dark");
     document.documentElement.classList.toggle("light", nextTheme === "light");
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    async function refreshStatus() {
+      try {
+        setWorkflowStatus(await fetchWorkflowStatus(controller.signal));
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+      }
+    }
+
+    void refreshStatus();
+    window.addEventListener("geo-workflow-status-refresh", refreshStatus);
+    return () => {
+      controller.abort();
+      window.removeEventListener("geo-workflow-status-refresh", refreshStatus);
+    };
   }, []);
 
   function toggleTheme() {
@@ -73,7 +118,7 @@ export function AppShell({ title, description, children }: { title: string; desc
             {workflowItems.map((item, index) => {
               const Icon = item.icon;
               const active = pathname === item.href || pathname.startsWith(`${item.href}/`) || (pathname === "/" && index === 0);
-              const completed = activeIndex > index;
+              const completed = workflowStatus.steps[item.key]?.completed ?? false;
 
               return (
                 <Link
@@ -120,7 +165,7 @@ export function AppShell({ title, description, children }: { title: string; desc
               )}
             >
               <Settings className="h-4 w-4" />
-              <span className="min-w-0 flex-1 truncate">设置</span>
+              <span className="min-w-0 flex-1 truncate">模型设置</span>
             </Link>
             <button
               type="button"

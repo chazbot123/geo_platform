@@ -2,24 +2,24 @@ import type { AppConfig } from "@/lib/types";
 
 export const defaultAppConfig: AppConfig = {
   stage1ModelApiConfig: {
-    provider: "newapi-auto",
+    provider: "openai",
     baseUrl: "",
     apiKey: "",
-    modelName: "geo-stage1-local",
+    modelName: "gpt5.5",
     timeout: 120000,
   },
   contentModelApiConfig: {
-    provider: "mock-content",
+    provider: "openai",
     baseUrl: "",
     apiKey: "",
-    modelName: "geo-content-local",
+    modelName: "gpt5.5",
     timeout: 20000,
   },
   imageModelApiConfig: {
-    provider: "prompt-url",
+    provider: "openai",
     baseUrl: "",
     apiKey: "",
-    modelName: "geo-image-local",
+    modelName: "gpt-image2",
     timeout: 15000,
   },
   publishApiConfig: {

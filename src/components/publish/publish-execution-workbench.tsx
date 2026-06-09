@@ -11,6 +11,7 @@ import {
   RefreshCw,
   RotateCcw,
 } from "lucide-react";
+import { dispatchWorkflowStatusRefresh } from "@/components/layout/app-shell";
 import type {
   ContentPoolItem,
   ContentPoolRecord,
@@ -281,6 +282,7 @@ export function PublishExecutionWorkbench() {
       if (!response.ok) throw new Error(data.error || "执行发布失败。");
       setState(data);
       setNotice("已记录当前文章执行结果。");
+      dispatchWorkflowStatusRefresh();
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "执行发布失败。");
     } finally {
@@ -307,6 +309,7 @@ export function PublishExecutionWorkbench() {
       setState(data);
       setManualUrls((current) => ({ ...current, [jobId]: "" }));
       setNotice("已回填人工发布结果，可以继续执行剩余文章。");
+      dispatchWorkflowStatusRefresh();
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "回填发布结果失败。");
     } finally {

@@ -2,10 +2,13 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { CalendarDays, CheckCircle2, RefreshCw, Save, Settings2 } from "lucide-react";
+import { CalendarDays, CheckCircle2, LoaderCircle, LogIn, RefreshCw, Save, Settings2, ShieldCheck, Trash2 } from "lucide-react";
+import { openPlatformLoginWindow, validatePlatformSessionWindow } from "@/lib/publish/electron-login-client";
 import { getPlatformsBySearchProvider, providerPublishMatrix } from "@/lib/publish/provider-platform-matrix";
+import { getSearchProviderIcon, getSocialPlatformIcon } from "@/lib/platform-icons";
 import type {
   PlatformAccountDetectionItem,
+  PlatformAccountRecord,
   ProductProfile,
   PublishTaskPlan,
   SearchProvider,
@@ -14,6 +17,14 @@ import type {
 } from "@/lib/types";
 
 const providerOrder: SearchProvider[] = ["doubao", "deepseek", "yuanbao", "tongyi"];
+
+const providerLabels: Record<SearchProvider, string> = {
+  doubao: "豆包",
+  deepseek: "DeepSeek",
+  yuanbao: "腾讯元宝",
+  tongyi: "通义千问",
+};
+
 const platformLabels: Record<SocialPlatform, string> = {
   toutiao: "今日头条",
   baijiahao: "百家号",
@@ -43,14 +54,35 @@ interface DetectionResponse {
   cacheTtlMinutes: number;
 }
 
+interface AccountsResponse {
+  items: PlatformAccountRecord[];
+  error?: string;
+}
+
 function formatTime(value?: string) {
-  if (!value) return "未检测";
+  if (!value) return "未校验";
   return new Intl.DateTimeFormat("zh-CN", {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function statusText(account: PlatformAccountRecord) {
+  if (account.loginStatus === "authenticated" && account.status === "valid") return "可发布";
+  if (account.loginStatus === "authenticated") return "已登录";
+  if (account.loginStatus === "pending") return "待确认";
+  if (account.loginStatus === "failed") return "已失效";
+  if (account.loginStatus === "cancelled") return "已取消";
+  return "未登录";
+}
+
+function statusClassName(account: PlatformAccountRecord) {
+  if (account.loginStatus === "authenticated" && account.status === "valid") return "text-emerald-500";
+  if (account.loginStatus === "failed" || account.status === "invalid") return "text-red-500";
+  if (account.loginStatus === "pending") return "text-amber-500";
+  return "text-muted";
 }
 
 function platformSummary(plan?: PublishTaskPlan) {
@@ -60,21 +92,62 @@ function platformSummary(plan?: PublishTaskPlan) {
   return enabled.map((item) => `${platformLabels[item.platform]} ${item.accountCount} 个`).join("，");
 }
 
+function validationFailureText(status: string, reason?: string) {
+  if (reason?.trim()) return reason;
+  if (status === "expired") return "平台会话已过期，请重新登录。";
+  if (status === "missing_session") return "未检测到有效平台会话，请重新登录。";
+  if (status === "unsupported") return "当前环境缺少桌面登录桥，请启动 GEO 桌面版。";
+  return "平台会话校验未通过，请重新登录。";
+}
+
+function AccountAvatar({ account, platform }: { account: PlatformAccountRecord; platform: SocialPlatform }) {
+  const fallback = getSocialPlatformIcon(platform);
+  return (
+    <span className="flex h-11 w-11 shrink-0 overflow-hidden rounded-md border border-line bg-surface">
+      <img
+        className="h-full w-full object-cover"
+        src={account.avatarUrl || fallback}
+        alt={`${account.displayName || account.accountName} 头像`}
+        onError={(event) => {
+          event.currentTarget.src = fallback;
+        }}
+      />
+    </span>
+  );
+}
+
+function EmptyAvatar({ platform }: { platform: SocialPlatform }) {
+  return (
+    <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-dashed border-line bg-surface">
+      <img className="h-6 w-6 object-contain" src={getSocialPlatformIcon(platform)} alt="" />
+    </span>
+  );
+}
+
 export function TaskPlanningWorkbench() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [detecting, setDetecting] = useState(false);
+  const [loginKey, setLoginKey] = useState("");
+  const [removingKey, setRemovingKey] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [prerequisites, setPrerequisites] = useState<PlanningPrerequisites | null>(null);
   const [searchProvider, setSearchProvider] = useState<SearchProvider>("doubao");
   const [enabledPlatforms, setEnabledPlatforms] = useState<SocialPlatform[]>(getPlatformsBySearchProvider("doubao"));
+  const [selectedPlatform, setSelectedPlatform] = useState<SocialPlatform>("toutiao");
   const [days, setDays] = useState(5);
   const [detectionItems, setDetectionItems] = useState<PlatformAccountDetectionItem[]>([]);
+  const [accounts, setAccounts] = useState<PlatformAccountRecord[]>([]);
 
   const mappedPlatforms = useMemo(() => getPlatformsBySearchProvider(searchProvider), [searchProvider]);
   const detectionByPlatform = useMemo(() => new Map(detectionItems.map((item) => [item.platform, item])), [detectionItems]);
   const enabledSet = useMemo(() => new Set(enabledPlatforms), [enabledPlatforms]);
+  const selectedDetection = detectionByPlatform.get(selectedPlatform);
+  const selectedAccounts = useMemo(
+    () => accounts.filter((account) => account.platform === selectedPlatform),
+    [accounts, selectedPlatform],
+  );
   const normalizedDays = Math.max(5, Number.isFinite(days) ? Math.floor(days) : 5);
   const totalAccounts = mappedPlatforms.reduce((total, platform) => {
     const detection = detectionByPlatform.get(platform);
@@ -84,6 +157,13 @@ export function TaskPlanningWorkbench() {
   const canSave = Boolean(prerequisites?.enterpriseReady && prerequisites.keywordReady && prerequisites.taskId && totalArticles > 0);
   const enterpriseReady = Boolean(prerequisites?.enterpriseReady);
   const keywordReady = Boolean(prerequisites?.keywordReady);
+
+  async function loadAccounts() {
+    const response = await fetch("/api/publish/accounts", { cache: "no-store" });
+    const data = (await response.json()) as AccountsResponse;
+    if (!response.ok) throw new Error(data.error || "读取账号失败。");
+    setAccounts(data.items ?? []);
+  }
 
   async function loadPrerequisites() {
     setLoading(true);
@@ -96,8 +176,11 @@ export function TaskPlanningWorkbench() {
       if (data.savedPlan) {
         setSearchProvider(data.savedPlan.searchProvider);
         setDays(data.savedPlan.days);
-        setEnabledPlatforms(data.savedPlan.enabledPlatforms.filter((item) => item.enabled).map((item) => item.platform));
+        const savedPlatforms = data.savedPlan.enabledPlatforms.filter((item) => item.enabled).map((item) => item.platform);
+        setEnabledPlatforms(savedPlatforms);
+        setSelectedPlatform(savedPlatforms[0] ?? getPlatformsBySearchProvider(data.savedPlan.searchProvider)[0]);
       }
+      await loadAccounts();
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "读取任务规划失败。");
     } finally {
@@ -118,11 +201,108 @@ export function TaskPlanningWorkbench() {
       const data = (await response.json()) as DetectionResponse & { error?: string };
       if (!response.ok) throw new Error(data.error || "账号检测失败。");
       setDetectionItems(data.items);
+      await loadAccounts();
       setNotice(forceRefresh ? "账号检测已刷新。" : "已读取账号检测结果。");
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "账号检测失败。");
     } finally {
       setDetecting(false);
+    }
+  }
+
+  async function patchAccountStatus(accountId: string, patch: Record<string, unknown>) {
+    const response = await fetch(`/api/publish/accounts/${accountId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    const data = (await response.json()) as { error?: string };
+    if (!response.ok) throw new Error(data.error || "更新账号状态失败。");
+  }
+
+  async function startLogin(platform: SocialPlatform, accountId?: string) {
+    setLoginKey(accountId ?? platform);
+    setError("");
+    setNotice("");
+    try {
+      const response = await fetch("/api/publish/accounts/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ platform, accountId }),
+      });
+      const payload = (await response.json()) as {
+        account?: PlatformAccountRecord;
+        loginRequest?: {
+          platform: string;
+          title: string;
+          loginUrl?: string;
+          sessionPartition?: string;
+        };
+        error?: string;
+      };
+      if (!response.ok || !payload.account?.id || !payload.loginRequest) {
+        throw new Error(payload.error || "发起平台登录失败。");
+      }
+
+      const loginResult = await openPlatformLoginWindow(payload.loginRequest);
+      if (loginResult.status === "unsupported") {
+        throw new Error("当前环境缺少桌面登录桥，请启动 GEO 桌面版。");
+      }
+
+      const validation = await validatePlatformSessionWindow({
+        platform,
+        publishUrl: payload.loginRequest.loginUrl,
+        sessionPartition: payload.loginRequest.sessionPartition,
+      });
+
+      if (validation.status === "authenticated") {
+        await patchAccountStatus(payload.account.id, {
+          loginStatus: "authenticated",
+          status: "valid",
+          lastError: undefined,
+        });
+        setNotice(`${platformLabels[platform]}账号已登录并通过校验。`);
+      } else {
+        const lastError = validationFailureText(validation.status, validation.reason);
+        await patchAccountStatus(payload.account.id, {
+          loginStatus: "failed",
+          status: "invalid",
+          lastError,
+        });
+        setError(`${platformLabels[platform]}登录未完成：${lastError}`);
+      }
+
+      await detectAccounts(true);
+    } catch (currentError) {
+      setError(currentError instanceof Error ? currentError.message : "发起平台登录失败。");
+      await loadAccounts().catch(() => undefined);
+    } finally {
+      setLoginKey("");
+    }
+  }
+
+  async function removeAccount(account: PlatformAccountRecord) {
+    const accountLabel = account.displayName || account.accountName || account.id;
+    const confirmed = window.confirm(`确定将 ${platformLabels[account.platform]} 账号「${accountLabel}」下号并移除吗？移除后会从已保存任务和草稿绑定中摘除，不再计入任务。`);
+    if (!confirmed) return;
+
+    setRemovingKey(account.id);
+    setError("");
+    setNotice("");
+    try {
+      const response = await fetch(`/api/publish/accounts/${account.id}`, {
+        method: "DELETE",
+      });
+      const data = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(data.error || "移除账号失败。");
+      setNotice(`${platformLabels[account.platform]}账号已下号并移除。`);
+      await loadAccounts();
+      await detectAccounts(true);
+      window.dispatchEvent(new Event("geo-workflow-status-refresh"));
+    } catch (currentError) {
+      setError(currentError instanceof Error ? currentError.message : "移除账号失败。");
+    } finally {
+      setRemovingKey("");
     }
   }
 
@@ -145,6 +325,7 @@ export function TaskPlanningWorkbench() {
       const data = (await response.json()) as { publishPlan?: PublishTaskPlan; error?: string };
       if (!response.ok || !data.publishPlan) throw new Error(data.error || "保存任务规划失败。");
       setPrerequisites((current) => (current ? { ...current, savedPlan: data.publishPlan } : current));
+      window.dispatchEvent(new Event("geo-workflow-status-refresh"));
       setNotice("任务已保存，可以进入内容池。");
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "保存任务规划失败。");
@@ -163,6 +344,7 @@ export function TaskPlanningWorkbench() {
       const next = mappedPlatforms.filter((platform) => currentSet.has(platform));
       return next.length ? next : mappedPlatforms;
     });
+    setSelectedPlatform((current) => (mappedPlatforms.includes(current) ? current : mappedPlatforms[0]));
   }, [mappedPlatforms]);
 
   useEffect(() => {
@@ -180,7 +362,7 @@ export function TaskPlanningWorkbench() {
           <div>
             <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted">第 3 步</p>
             <h2 className="page-section-title mt-2">创建任务</h2>
-            <p className="page-section-desc">先选 GEO AI 平台，再确认可自动发布的账号和文章总量。</p>
+            <p className="page-section-desc">先选 GEO AI 平台，再确认映射发布平台、账号登录状态和文章总量。</p>
           </div>
           <div className="flex flex-wrap gap-2 text-xs">
             <span className={enterpriseReady ? "status-pill" : "status-pill opacity-60"}>企业信息</span>
@@ -209,39 +391,13 @@ export function TaskPlanningWorkbench() {
       </section>
 
       <section className="section-card">
-        <div className="flex items-center gap-2">
-          <Settings2 className="h-4 w-4 text-accent" />
-          <h3 className="page-section-title">GEO AI 平台</h3>
-        </div>
-        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          {providerOrder.map((provider) => {
-            const bundle = providerPublishMatrix[provider];
-            const selected = provider === searchProvider;
-            return (
-              <button
-                key={provider}
-                type="button"
-                className={`subtle-card text-left transition ${selected ? "border-accent bg-accent/10" : "hover:border-accent/50"}`}
-                onClick={() => setSearchProvider(provider)}
-              >
-                <span className="flex items-center justify-between gap-2">
-                  <span className="text-sm font-semibold text-ink">{bundle.label}</span>
-                  {selected && <CheckCircle2 className="h-4 w-4 text-accent" />}
-                </span>
-                <span className="mt-2 block text-xs leading-5 text-muted">
-                  {bundle.platforms.map((platform) => platformLabels[platform]).join("、")}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </section>
-
-      <section className="section-card">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div>
-            <h3 className="page-section-title">发布平台和账号</h3>
-            <p className="page-section-desc">只能启用系统映射的平台；未登录、失效、手动发布账号不计入自动文章数。</p>
+          <div className="flex items-center gap-2">
+            <Settings2 className="h-4 w-4 text-accent" />
+            <div>
+              <h3 className="page-section-title">平台与账号</h3>
+              <p className="page-section-desc">发布平台只来自当前 GEO AI 平台的默认映射，小红书本轮仅归入通义千问。</p>
+            </div>
           </div>
           <button
             type="button"
@@ -250,43 +406,167 @@ export function TaskPlanningWorkbench() {
             onClick={() => void detectAccounts(true)}
           >
             <RefreshCw className={`h-4 w-4 ${detecting ? "animate-spin" : ""}`} />
-            手动刷新
+            手动刷新检测
           </button>
         </div>
 
-        <div className="mt-4 grid gap-3 lg:grid-cols-2">
-          {mappedPlatforms.map((platform) => {
-            const detection = detectionByPlatform.get(platform);
-            const enabled = enabledSet.has(platform);
-            const accountCount = detection?.accountCount ?? 0;
-            return (
-              <label key={platform} className={`subtle-card flex cursor-pointer gap-3 ${enabled ? "border-accent/70" : ""}`}>
+        <div className="mt-5 grid gap-4 xl:grid-cols-[190px_230px_minmax(0,1fr)]">
+          <nav className="grid content-start gap-2" aria-label="GEO AI 平台">
+            {providerOrder.map((provider) => {
+              const bundle = providerPublishMatrix[provider];
+              const selected = provider === searchProvider;
+              return (
+                <button
+                  key={provider}
+                  type="button"
+                  className={`flex min-h-[68px] items-center gap-3 rounded-md border px-3 py-3 text-left transition ${
+                    selected ? "border-accent bg-accent/10" : "border-line bg-surface hover:border-accent/50"
+                  }`}
+                  onClick={() => setSearchProvider(provider)}
+                >
+                  <img className="h-8 w-8 shrink-0 object-contain" src={getSearchProviderIcon(provider)} alt="" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-semibold text-ink">{providerLabels[provider]}</span>
+                    <span className="mt-1 block truncate text-xs text-muted">{bundle.platforms.map((platform) => platformLabels[platform]).join(" / ")}</span>
+                  </span>
+                  {selected && <CheckCircle2 className="h-4 w-4 shrink-0 text-accent" />}
+                </button>
+              );
+            })}
+          </nav>
+
+          <nav className="grid content-start gap-2" aria-label="发布平台">
+            {mappedPlatforms.map((platform) => {
+              const detection = detectionByPlatform.get(platform);
+              const enabled = enabledSet.has(platform);
+              const selected = selectedPlatform === platform;
+              const accountCount = detection?.accountCount ?? 0;
+              return (
+                <button
+                  key={platform}
+                  type="button"
+                  className={`rounded-md border px-3 py-3 text-left transition ${
+                    selected ? "border-accent bg-accent/10" : "border-line bg-surface hover:border-accent/50"
+                  }`}
+                  onClick={() => setSelectedPlatform(platform)}
+                >
+                  <span className="flex items-center gap-3">
+                    <img className="h-7 w-7 shrink-0 object-contain" src={getSocialPlatformIcon(platform)} alt="" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-semibold text-ink">{platformLabels[platform]}</span>
+                      <span className="mt-1 block text-xs text-muted">{accountCount} 个可发布账号</span>
+                    </span>
+                    <span
+                      className={`h-3.5 w-3.5 rounded border ${
+                        enabled ? "border-accent bg-accent" : "border-line bg-panel"
+                      }`}
+                      aria-hidden
+                    />
+                  </span>
+                </button>
+              );
+            })}
+          </nav>
+
+          <div className="min-w-0 rounded-md border border-line bg-surface p-4">
+            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div className="flex min-w-0 items-center gap-3">
+                <img className="h-9 w-9 shrink-0 object-contain" src={getSocialPlatformIcon(selectedPlatform)} alt="" />
+                <div className="min-w-0">
+                  <h4 className="text-base font-semibold text-ink">{platformLabels[selectedPlatform]}账号</h4>
+                  <p className="mt-1 text-xs leading-5 text-muted">
+                    上次检测：{formatTime(selectedDetection?.detectedAt)}
+                    {selectedDetection?.fromCache ? "（30 分钟缓存）" : ""}
+                  </p>
+                </div>
+              </div>
+              <label className="inline-flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm text-ink">
                 <input
-                  className="mt-1 h-4 w-4 accent-[var(--accent)]"
+                  className="h-4 w-4 accent-[var(--accent)]"
                   type="checkbox"
-                  checked={enabled}
+                  checked={enabledSet.has(selectedPlatform)}
                   onChange={(event) =>
                     setEnabledPlatforms((current) =>
-                      event.target.checked ? Array.from(new Set([...current, platform])) : current.filter((item) => item !== platform),
+                      event.target.checked
+                        ? Array.from(new Set([...current, selectedPlatform]))
+                        : current.filter((item) => item !== selectedPlatform),
                     )
                   }
                 />
-                <span className="min-w-0 flex-1">
-                  <span className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-sm font-semibold text-ink">{platformLabels[platform]}</span>
-                    <span className="text-xs text-muted">{accountCount} 个可发布账号</span>
-                  </span>
-                  <span className="mt-2 block text-xs leading-5 text-muted">
-                    上次检测：{formatTime(detection?.detectedAt)}
-                    {detection?.fromCache ? "（缓存）" : ""}
-                  </span>
-                  <span className="mt-1 block text-xs leading-5 text-muted">
-                    不计入：{detection?.ignoredCount ?? 0} 个；本平台文章数：{enabled ? accountCount * normalizedDays * 2 : 0}
+                计入任务
+              </label>
+            </div>
+
+            <div className="mt-4 grid gap-3">
+              <button
+                type="button"
+                className="flex items-center justify-between gap-3 rounded-md border border-dashed border-line bg-panel px-4 py-3 text-left transition hover:border-accent disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={Boolean(loginKey)}
+                onClick={() => void startLogin(selectedPlatform)}
+              >
+                <span className="flex items-center gap-3">
+                  <EmptyAvatar platform={selectedPlatform} />
+                  <span>
+                    <span className="block text-sm font-semibold text-ink">登录新的{platformLabels[selectedPlatform]}账号</span>
+                    <span className="mt-1 block text-xs text-muted">复用账号中心的桌面登录窗口和会话校验。</span>
                   </span>
                 </span>
-              </label>
-            );
-          })}
+                {loginKey === selectedPlatform ? <LoaderCircle className="h-4 w-4 animate-spin text-accent" /> : <LogIn className="h-4 w-4 text-accent" />}
+              </button>
+
+              {selectedAccounts.length ? (
+                selectedAccounts.map((account) => (
+                  <div key={account.id} className="rounded-md border border-line bg-panel px-4 py-3">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                      <div className="flex min-w-0 gap-3">
+                        <AccountAvatar account={account} platform={selectedPlatform} />
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="truncate text-sm font-semibold text-ink">{account.displayName || account.accountName}</p>
+                            <span className={`text-xs font-medium ${statusClassName(account)}`}>{statusText(account)}</span>
+                          </div>
+                          <p className="mt-1 break-all font-mono text-xs text-muted">ID：{account.accountName || account.id}</p>
+                          <p className="mt-1 break-all font-mono text-xs text-muted">本地记录：{account.id}</p>
+                          <p className="mt-1 text-xs text-muted">最近校验：{formatTime(account.lastValidatedAt || account.lastLoginCompletedAt || account.updatedAt)}</p>
+                          {account.lastError ? <p className="mt-2 text-xs leading-5 text-red-500">{account.lastError}</p> : null}
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
+                        <button
+                          type="button"
+                          className="inline-flex items-center justify-center gap-2 rounded-md border border-line px-3 py-2 text-xs font-medium text-ink transition hover:border-accent disabled:cursor-not-allowed disabled:opacity-60"
+                          disabled={Boolean(loginKey) || Boolean(removingKey)}
+                          onClick={() => void startLogin(account.platform, account.id)}
+                        >
+                          {loginKey === account.id ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <ShieldCheck className="h-3.5 w-3.5" />}
+                          {account.loginStatus === "authenticated" ? "重新上号/校验" : "上号"}
+                        </button>
+                        <button
+                          type="button"
+                          className="inline-flex items-center justify-center gap-2 rounded-md border border-red-200 px-3 py-2 text-xs font-medium text-red-600 transition hover:border-red-300 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-red-500/40 dark:text-red-300 dark:hover:border-red-400 dark:hover:bg-red-500/10"
+                          disabled={Boolean(loginKey) || Boolean(removingKey)}
+                          onClick={() => void removeAccount(account)}
+                        >
+                          {removingKey === account.id ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                          下号
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-md border border-dashed border-line px-4 py-8 text-center text-sm text-muted">
+                  当前平台暂无账号记录，请先登录一个账号。
+                </div>
+              )}
+            </div>
+
+            <div className="mt-4 grid gap-2 border-t border-line pt-4 text-xs leading-5 text-muted sm:grid-cols-3">
+              <p>可发布账号：{selectedDetection?.accountCount ?? 0}</p>
+              <p>未计入账号：{selectedDetection?.ignoredCount ?? 0}</p>
+              <p>本平台文章：{enabledSet.has(selectedPlatform) ? (selectedDetection?.accountCount ?? 0) * normalizedDays * 2 : 0}</p>
+            </div>
+          </div>
         </div>
       </section>
 

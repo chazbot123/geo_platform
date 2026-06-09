@@ -43,6 +43,16 @@ const fieldLabels: Record<keyof ModelApiConfig, string> = {
 
 const editableFields: Array<keyof ModelApiConfig> = ["provider", "baseUrl", "modelName", "apiKey"];
 
+const providerOptions = [
+  { value: "openai", label: "GPT / OpenAI" },
+  { value: "newapi-auto", label: "NewAPI 自动探测" },
+  { value: "volcengine-ark", label: "火山方舟 / 豆包" },
+  { value: "dashscope-qwen", label: "通义千问" },
+  { value: "tencent-hunyuan", label: "腾讯混元" },
+  { value: "deepseek", label: "DeepSeek" },
+  { value: "generic-compatible", label: "OpenAI 兼容接口" },
+];
+
 function getModelConfig(config: AppConfig, section: ModelSection) {
   return section === "text" ? config.contentModelApiConfig : config.imageModelApiConfig;
 }
@@ -125,13 +135,30 @@ export function SettingsForm({ initialConfig }: { initialConfig: AppConfig }) {
                 {editableFields.map((field) => (
                   <label key={field} className="block">
                     <span className="label-base">{fieldLabels[field]}</span>
-                    <input
-                      className="input-base"
-                      type={field === "apiKey" ? "password" : "text"}
-                      value={String(modelConfig[field] ?? "")}
-                      onChange={(event) => updateModel(section, field, event.target.value)}
-                      autoComplete={field === "apiKey" ? "off" : undefined}
-                    />
+                    {field === "provider" ? (
+                      <select
+                        className="input-base"
+                        value={String(modelConfig.provider ?? "")}
+                        onChange={(event) => updateModel(section, field, event.target.value)}
+                      >
+                        {providerOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                        {providerOptions.some((option) => option.value === modelConfig.provider) ? null : (
+                          <option value={modelConfig.provider}>{modelConfig.provider || "自定义服务商"}</option>
+                        )}
+                      </select>
+                    ) : (
+                      <input
+                        className="input-base"
+                        type={field === "apiKey" ? "password" : "text"}
+                        value={String(modelConfig[field] ?? "")}
+                        onChange={(event) => updateModel(section, field, event.target.value)}
+                        autoComplete={field === "apiKey" ? "off" : undefined}
+                      />
+                    )}
                   </label>
                 ))}
               </div>

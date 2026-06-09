@@ -21,36 +21,36 @@
 
 html.dark {
   color-scheme: dark;
-  --color-surface: 15 18 20;
-  --color-panel: 23 27 30;
-  --color-panel-soft: 30 35 39;
+  --color-surface: 14 17 19;
+  --color-panel: 24 29 32;
+  --color-panel-soft: 34 40 45;
   --color-accent: 72 166 151;
   --color-accent-soft: 105 190 176;
-  --color-stroke: 55 63 70;
-  --color-stroke-strong: 78 88 96;
+  --color-stroke: 68 78 86;
+  --color-stroke-strong: 94 107 116;
   --color-ink: 237 242 244;
-  --color-muted: 151 164 173;
+  --color-muted: 176 187 195;
   --color-danger: 235 105 105;
   --color-warning: 220 164 64;
-  --shadow-panel: 0 1px 0 rgb(255 255 255 / 0.04), 0 22px 44px -34px rgb(0 0 0 / 0.8);
+  --shadow-panel: 0 1px 0 rgb(255 255 255 / 0.05), 0 20px 42px -34px rgb(0 0 0 / 0.78);
   --shadow-focus: 0 0 0 4px rgb(var(--color-accent) / 0.16);
 }
 
 @media (prefers-color-scheme: dark) {
   html:not(.light) {
     color-scheme: dark;
-    --color-surface: 15 18 20;
-    --color-panel: 23 27 30;
-    --color-panel-soft: 30 35 39;
+    --color-surface: 14 17 19;
+    --color-panel: 24 29 32;
+    --color-panel-soft: 34 40 45;
     --color-accent: 72 166 151;
     --color-accent-soft: 105 190 176;
-    --color-stroke: 55 63 70;
-    --color-stroke-strong: 78 88 96;
+    --color-stroke: 68 78 86;
+    --color-stroke-strong: 94 107 116;
     --color-ink: 237 242 244;
-    --color-muted: 151 164 173;
+    --color-muted: 176 187 195;
     --color-danger: 235 105 105;
     --color-warning: 220 164 64;
-    --shadow-panel: 0 1px 0 rgb(255 255 255 / 0.04), 0 22px 44px -34px rgb(0 0 0 / 0.8);
+    --shadow-panel: 0 1px 0 rgb(255 255 255 / 0.05), 0 20px 42px -34px rgb(0 0 0 / 0.78);
     --shadow-focus: 0 0 0 4px rgb(var(--color-accent) / 0.16);
   }
 }
@@ -84,6 +84,13 @@ body::before {
   pointer-events: none;
 }
 
+html.dark body::before {
+  background-image:
+    linear-gradient(rgb(var(--color-stroke) / 0.22) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(var(--color-stroke) / 0.22) 1px, transparent 1px);
+  mask-image: linear-gradient(to bottom, rgb(0 0 0 / 0.32), transparent 74%);
+}
+
 body::after {
   content: "";
   position: fixed;
@@ -97,6 +104,30 @@ body::after {
 a {
   color: inherit;
   text-decoration: none;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button:disabled,
+input:disabled,
+select:disabled,
+textarea:disabled,
+[aria-disabled="true"] {
+  cursor: not-allowed;
+}
+
+html.dark button:disabled,
+html.dark input:disabled,
+html.dark select:disabled,
+html.dark textarea:disabled,
+html.dark [aria-disabled="true"] {
+  color: rgb(var(--color-muted) / 0.82);
+  border-color: rgb(var(--color-stroke) / 0.78);
 }
 
 ::selection {
@@ -128,7 +159,7 @@ a {
   }
 
   .input-base {
-    @apply w-full rounded-lg border border-stroke bg-panel px-3.5 py-3 text-sm text-ink outline-none transition-all duration-200 placeholder:text-muted/60 focus:border-accent/80 focus:bg-panelSoft focus:ring-4 focus:ring-accent/10;
+    @apply w-full rounded-lg border border-stroke bg-panel px-3.5 py-3 text-sm text-ink outline-none transition-all duration-200 placeholder:text-muted/75 focus:border-accent/80 focus:bg-panelSoft focus:ring-4 focus:ring-accent/10 disabled:bg-panelSoft disabled:text-muted disabled:placeholder:text-muted/70;
   }
 
   .label-base {
@@ -153,5 +184,50 @@ a {
 
   .page-section-desc {
     @apply mt-1 text-sm leading-6 text-muted;
+  }
+}
+
+@layer utilities {
+  .glass-panel,
+  .section-card {
+    background-image: linear-gradient(to bottom, rgb(255 255 255 / 0.03), transparent);
+  }
+
+  html.dark .glass-panel,
+  html.dark .section-card {
+    background-image: linear-gradient(to bottom, rgb(255 255 255 / 0.035), transparent);
+  }
+
+  .subtle-card,
+  .status-pill {
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.04);
+  }
+
+  html.dark .text-muted\/60 {
+    color: rgb(var(--color-muted) / 0.76);
+  }
+
+  html.dark .text-muted\/70 {
+    color: rgb(var(--color-muted) / 0.82);
+  }
+
+  html.dark .text-muted\/80 {
+    color: rgb(var(--color-muted) / 0.9);
+  }
+
+  html.dark .border-white\/5 {
+    border-color: rgb(var(--color-stroke) / 0.56);
+  }
+
+  html.dark .border-white\/10 {
+    border-color: rgb(var(--color-stroke) / 0.72);
+  }
+
+  html.dark .bg-white\/5 {
+    background-color: rgb(var(--color-panel-soft) / 0.58);
+  }
+
+  html.dark .bg-white\/10 {
+    background-color: rgb(var(--color-panel-soft) / 0.78);
   }
 }

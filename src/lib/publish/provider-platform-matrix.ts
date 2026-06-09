@@ -22,7 +22,7 @@ export const providerPublishMatrix: Record<SearchProvider, ProviderPublishBundle
   doubao: {
     searchProvider: "doubao",
     label: "豆包",
-    platforms: ["toutiao", "baijiahao", "douyin", "xiaohongshu"],
+    platforms: ["toutiao", "baijiahao", "douyin"],
   },
   deepseek: {
     searchProvider: "deepseek",
@@ -31,12 +31,12 @@ export const providerPublishMatrix: Record<SearchProvider, ProviderPublishBundle
   },
   yuanbao: {
     searchProvider: "yuanbao",
-    label: "元宝",
-    platforms: ["wechat", "videohao", "xiaohongshu"],
+    label: "腾讯元宝",
+    platforms: ["wechat", "videohao"],
   },
   tongyi: {
     searchProvider: "tongyi",
-    label: "千问",
+    label: "通义千问",
     platforms: ["zhihu", "weibo", "xiaohongshu"],
   },
 };

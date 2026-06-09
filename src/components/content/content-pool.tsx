@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { AlertTriangle, CheckCircle2, History, ImageIcon, RefreshCw, Repeat2, ShieldCheck, Wand2 } from "lucide-react";
+import { dispatchWorkflowStatusRefresh } from "@/components/layout/app-shell";
 import type {
   ContentPoolItem,
   ContentPoolItemStatus,
@@ -248,6 +249,7 @@ export function ContentPoolWorkbench() {
       setCurrent(data.current);
       setViewMode("current");
       setNotice("内容池已按当前任务重新生成。");
+      dispatchWorkflowStatusRefresh();
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "生成内容池失败。");
     } finally {
@@ -274,6 +276,7 @@ export function ContentPoolWorkbench() {
         setHistory((records) => records.map((record) => (record.taskId === data.current?.taskId ? data.current : record)));
       }
       setNotice(action === "rewrite" ? "已完成改写和复检。" : action === "disperse" ? "已重新处理差异点。" : "已确认进入发布准备。");
+      dispatchWorkflowStatusRefresh();
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "内容处理失败。");
     } finally {

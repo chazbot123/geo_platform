@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GEO 后台管理</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">GEO Admin</p>
+          <h1>后台管理</h1>
+        </div>
+        <button id="logoutButton" class="secondary">退出登录</button>
+      </header>
+
+      <section id="loginPanel" class="panel">
+        <h2>登录保护</h2>
+        <p class="muted">请输入部署环境配置的后台账号。凭据只保存在当前浏览器本地会话中。</p>
+        <div class="login-grid">
+          <label>
+            <span>账号</span>
+            <input id="usernameInput" autocomplete="username" />
+          </label>
+          <label>
+            <span>密码</span>
+            <input id="passwordInput" type="password" autocomplete="current-password" />
+          </label>
+          <button id="loginButton">登录</button>
+        </div>
+      </section>
+
+      <section id="adminPanel" class="hidden">
+        <nav class="tabs">
+          <button class="tab active" data-tab="feedback">反馈</button>
+          <button class="tab" data-tab="devices">设备</button>
+          <button class="tab" data-tab="licenses">授权码</button>
+          <button class="tab" data-tab="bindings">绑定关系</button>
+        </nav>
+
+        <section id="feedbackTab" class="panel">
+          <div class="panel-heading">
+            <div>
+              <h2>意见反馈</h2>
+              <p class="muted">按问题类型、处理状态、版本和设备筛选。</p>
+            </div>
+            <button id="refreshFeedbackButton" class="secondary">刷新</button>
+          </div>
+          <div class="filters">
+            <select id="typeFilter">
+              <option value="">全部类型</option>
+              <option>模型连接问题</option>
+              <option>内容生成问题</option>
+              <option>账号登录问题</option>
+              <option>发布失败问题</option>
+              <option>界面体验问题</option>
+              <option>其他问题</option>
+            </select>
+            <select id="statusFilter">
+              <option value="">全部状态</option>
+              <option value="new">新建</option>
+              <option value="processing">处理中</option>
+              <option value="resolved">已处理</option>
+              <option value="ignored">忽略</option>
+            </select>
+            <input id="versionFilter" placeholder="版本" />
+            <input id="deviceFilter" placeholder="设备指纹" />
+          </div>
+          <div class="feedback-layout">
+            <div id="feedbackList" class="list"></div>
+            <aside id="feedbackDetail" class="detail empty">请选择一条反馈。</aside>
+          </div>
+        </section>
+
+        <section id="devicesTab" class="panel hidden">
+          <div class="panel-heading">
+            <h2>设备占位</h2>
+            <button id="refreshDevicesButton" class="secondary">刷新</button>
+          </div>
+          <div id="devicesList" class="list"></div>
+        </section>
+
+        <section id="licensesTab" class="panel hidden">
+          <div class="panel-heading">
+            <h2>授权码占位</h2>
+            <button id="refreshLicensesButton" class="secondary">刷新</button>
+          </div>
+          <div id="licensesList" class="list"></div>
+        </section>
+
+        <section id="bindingsTab" class="panel hidden">
+          <div class="panel-heading">
+            <h2>绑定关系占位</h2>
+            <button id="refreshBindingsButton" class="secondary">刷新</button>
+          </div>
+          <div id="bindingsList" class="list"></div>
+        </section>
+      </section>
+
+      <p id="toast" class="toast hidden"></p>
+    </main>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

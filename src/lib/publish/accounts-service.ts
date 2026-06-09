@@ -1,7 +1,20 @@
 import path from "node:path";
 import { dataDirectories } from "@/lib/paths";
 import { getSocialPlatformDescriptor } from "@/lib/publish/platforms";
-import { createRecordId, deletePlatformAccount, getPlatformAccount, listPlatformAccounts, listPublishingJobs, savePlatformAccount } from "@/lib/storage/data-store";
+import {
+  createRecordId,
+  deleteAccountPublishingDraft,
+  deletePlatformAccount,
+  getPlatformAccount,
+  listAccountPublishingDrafts,
+  listPlatformAccounts,
+  listPublishingDrafts,
+  listPublishingJobs,
+  listTasks,
+  savePlatformAccount,
+  savePublishingDraft,
+  saveTask,
+} from "@/lib/storage/data-store";
 import { readJsonFile, writeJsonFile } from "@/lib/storage/json-store";
 import type {
   AccountPublishedJobsGroup,
@@ -99,6 +112,7 @@ function sanitizePublishableAccount(account: PlatformAccountRecord): Publishable
     platform: account.platform,
     accountName: account.accountName,
     displayName: account.displayName,
+    avatarUrl: account.avatarUrl,
     lastValidatedAt: account.lastValidatedAt,
   };
 }
@@ -235,6 +249,75 @@ export async function updatePlatformAccountRecord(accountId: string, patch: Part
 }
 
 export async function removePlatformAccount(accountId: string) {
+  const account = await getPlatformAccount(accountId);
+  if (!account) {
+    throw new Error("账号不存在");
+  }
+
+  const [tasks, publishingDrafts, accountPublishingDrafts] = await Promise.all([
+    listTasks(),
+    listPublishingDrafts(),
+    listAccountPublishingDrafts(),
+  ]);
+
+  await Promise.all(
+    tasks.map(async (task) => {
+      if (!task.publishPlan?.enabledPlatforms.some((platform) => platform.accountIds.includes(accountId))) {
+        return;
+      }
+
+      const enabledPlatforms = task.publishPlan.enabledPlatforms.map((platform) => {
+        const accountIds = platform.accountIds.filter((id) => id !== accountId);
+        const enabled = platform.enabled && accountIds.length > 0;
+        const accountCount = enabled ? accountIds.length : 0;
+        return {
+          ...platform,
+          enabled,
+          accountIds: enabled ? accountIds : [],
+          accountCount,
+          articleCount: accountCount * task.publishPlan!.days * task.publishPlan!.articlesPerAccountPerDay,
+        };
+      });
+
+      const totalAccountCount = enabledPlatforms.reduce((total, platform) => total + (platform.enabled ? platform.accountCount : 0), 0);
+      const totalArticleCount = enabledPlatforms.reduce((total, platform) => total + platform.articleCount, 0);
+      await saveTask({
+        ...task,
+        publishPlan: {
+          ...task.publishPlan,
+          enabledPlatforms,
+          totalAccountCount,
+          totalArticleCount,
+          updatedAt: now(),
+        },
+        updatedAt: now(),
+      });
+    }),
+  );
+
+  await Promise.all(
+    publishingDrafts.map(async (draft) => {
+      const nextAccountIds = draft.accountIds?.filter((id) => id !== accountId);
+      const accountIdChanged = draft.accountId === accountId;
+      const accountIdsChanged = Boolean(draft.accountIds && nextAccountIds && nextAccountIds.length !== draft.accountIds.length);
+      if (!accountIdChanged && !accountIdsChanged) {
+        return;
+      }
+      await savePublishingDraft({
+        ...draft,
+        accountId: accountIdChanged ? undefined : draft.accountId,
+        accountIds: nextAccountIds,
+        updatedAt: now(),
+      });
+    }),
+  );
+
+  await Promise.all(
+    accountPublishingDrafts
+      .filter((draft) => draft.accountId === accountId)
+      .map((draft) => deleteAccountPublishingDraft(draft.id)),
+  );
+
   await deletePlatformAccount(accountId);
 }
 

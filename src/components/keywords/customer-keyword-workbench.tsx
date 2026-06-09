@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { ArrowRight, Check, Loader2, RefreshCw, Save } from "lucide-react";
+import { dispatchWorkflowStatusRefresh } from "@/components/layout/app-shell";
 import type {
   CustomerKeywordCandidate,
   CustomerKeywordHeat,
@@ -148,6 +149,7 @@ export function CustomerKeywordWorkbench() {
       }));
       setSelectedIds(payload.keywordSet.selectedQuestions.map((item) => item.id));
       setMessage("5 个核心问题已保存。");
+      dispatchWorkflowStatusRefresh();
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "保存核心问题失败。");
     } finally {

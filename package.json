@@ -10,8 +10,8 @@
     "build:web": "next build",
     "start:web": "next start",
     "check": "tsc --noEmit",
-    "dist": "npm run build:web && electron-builder --win dir --config.electronDist=node_modules/electron/dist --config.win.signAndEditExecutable=false",
-    "dist:installer": "npm run build:web && electron-builder --config.electronDist=node_modules/electron/dist --config.win.signAndEditExecutable=false"
+    "dist": "electron-builder --win dir --config.electronDist=node_modules/electron/dist --config.win.signAndEditExecutable=false",
+    "dist:installer": "npm run dist"
   },
   "dependencies": {
     "clsx": "^2.1.1",
@@ -57,7 +57,7 @@
     "win": {
       "target": [
         {
-          "target": "nsis",
+          "target": "dir",
           "arch": ["x64"]
         }
       ]

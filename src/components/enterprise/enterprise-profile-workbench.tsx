@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2, FileText, ImageIcon, Loader2, Save, UploadCloud } from "lucide-react";
+import { dispatchWorkflowStatusRefresh } from "@/components/layout/app-shell";
 import type { EnterpriseAsset, EnterpriseParseStatus, EnterpriseProfile, EnterpriseProfileFields } from "@/lib/enterprise/types";
 
 const emptyFields: EnterpriseProfileFields = {
@@ -281,6 +282,7 @@ export function EnterpriseProfileWorkbench() {
       setLastSavedAt(profile.lastSavedAt);
       setDirty(false);
       setStatusMessage("企业信息已保存。");
+      dispatchWorkflowStatusRefresh();
     } catch (error) {
       const message = error instanceof Error ? error.message : "企业信息保存失败。";
       setErrorMessage(message);
