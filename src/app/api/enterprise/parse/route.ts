@@ -1,9 +1,24 @@
 import { NextResponse } from "next/server";
+import { getAppConfig } from "@/lib/config/service";
 import type { EnterpriseAsset, EnterpriseParseResult, EnterpriseProfileFields } from "@/lib/enterprise/types";
+import { callConfiguredTextModel, parseJsonFromModelText } from "@/lib/integrations/openai-compatible";
+import type { ModelApiConfig } from "@/lib/types";
 
 const textExtensions = new Set(["txt", "md", "csv", "json"]);
 const imageExtensions = new Set(["png", "jpg", "jpeg", "webp"]);
 const maxTextBytes = 1024 * 1024;
+const enterpriseFields = [
+  "companyName",
+  "brandShortName",
+  "productService",
+  "region",
+  "brandStory",
+  "productFeatures",
+  "audience",
+  "trustProof",
+  "painPoints",
+  "customerCases",
+] satisfies Array<keyof EnterpriseProfileFields>;
 
 function getExtension(fileName: string) {
   return fileName.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? "";
@@ -63,13 +78,77 @@ function buildSuggestions(text: string): Partial<EnterpriseProfileFields> {
   };
 }
 
+function normalizeSuggestionPayload(payload: Partial<Record<keyof EnterpriseProfileFields, unknown>> | null) {
+  const suggestions: Partial<EnterpriseProfileFields> = {};
+  for (const field of enterpriseFields) {
+    const value = payload?.[field];
+    if (typeof value === "string" && value.trim()) {
+      suggestions[field] = value.trim().slice(0, 1200);
+    }
+  }
+  return suggestions;
+}
+
+function mergeSuggestions(...items: Array<Partial<EnterpriseProfileFields>>) {
+  const merged: Partial<EnterpriseProfileFields> = {};
+  for (const item of items) {
+    for (const field of enterpriseFields) {
+      const value = item[field]?.trim();
+      if (value) {
+        merged[field] = value;
+      }
+    }
+  }
+  return merged;
+}
+
+function canUseModel(config: ModelApiConfig) {
+  return Boolean(config.baseUrl?.trim()) && !config.provider.toLowerCase().startsWith("mock");
+}
+
+function buildEnterpriseParseMessages(text: string) {
+  return [
+    {
+      role: "system" as const,
+      content: [
+        "你是企业资料结构化解析助手。",
+        "请从用户上传的企业资料中抽取字段，只返回 JSON，不要解释。",
+        "字段：companyName, brandShortName, productService, region, brandStory, productFeatures, audience, trustProof, painPoints, customerCases。",
+        "没有把握的字段返回空字符串，不要编造。",
+      ].join("\n"),
+    },
+    {
+      role: "user" as const,
+      content: `请解析以下企业资料并返回 JSON：\n\n${text.slice(0, 16000)}`,
+    },
+  ];
+}
+
+async function buildModelSuggestions(text: string) {
+  if (!text.trim()) {
+    return { suggestions: {}, usedModel: false };
+  }
+
+  try {
+    const config = (await getAppConfig()).contentModelApiConfig;
+    if (!canUseModel(config)) {
+      return { suggestions: {}, usedModel: false };
+    }
+    const result = await callConfiguredTextModel(config, buildEnterpriseParseMessages(text));
+    const payload = parseJsonFromModelText<Partial<Record<keyof EnterpriseProfileFields, unknown>>>(result.rawText);
+    return { suggestions: normalizeSuggestionPayload(payload), usedModel: true };
+  } catch {
+    return { suggestions: {}, usedModel: false };
+  }
+}
+
 export async function POST(request: Request) {
   try {
     const formData = await request.formData();
     const files = formData.getAll("files").filter((entry): entry is File => entry instanceof File);
 
     if (!files.length) {
-      return NextResponse.json({ error: "请选择要解析的资料文件或图片。" }, { status: 400 });
+      return NextResponse.json({ error: "请选择要上传的企业资料文档或参考图片。" }, { status: 400 });
     }
 
     const materialFiles: EnterpriseAsset[] = [];
@@ -99,17 +178,21 @@ export async function POST(request: Request) {
     }
 
     if (!materialFiles.length && !imageFiles.length) {
-      return NextResponse.json({ error: "当前文件无法识别，请上传 txt、md、csv、json 或图片文件。" }, { status: 400 });
+      return NextResponse.json({ error: "当前文件无法识别，请上传 txt、md、csv、json、pdf、docx 或图片文件。" }, { status: 400 });
     }
 
-    const suggestions = buildSuggestions(textParts.join("\n"));
+    const sourceText = textParts.join("\n");
+    const ruleSuggestions = buildSuggestions(sourceText);
+    const modelResult = await buildModelSuggestions(sourceText);
+    const suggestions = mergeSuggestions(ruleSuggestions, modelResult.suggestions);
     const filledCount = Object.values(suggestions).filter(Boolean).length;
+    const parseSource = modelResult.usedModel ? "AI 大模型" : "规则";
     const message =
       filledCount > 0
-        ? `已识别 ${filledCount} 个字段，请确认后保存。`
+        ? `已通过${parseSource}识别 ${filledCount} 个字段，请确认后保存；图片会保留为后续生图参考。`
         : skipped.length
-          ? "已记录素材文件，暂未识别出可回填字段，可手动填写后保存。"
-          : "已记录素材文件，可手动补充企业信息后保存。";
+          ? "已记录企业资料，暂未识别出可回填字段，可手动填写后保存。图片会保留为后续生图参考。"
+          : "已记录企业资料，可手动补充企业信息后保存。图片会保留为后续生图参考。";
 
     const result: EnterpriseParseResult = {
       suggestions,

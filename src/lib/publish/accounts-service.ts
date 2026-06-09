@@ -119,6 +119,7 @@ function sanitizePublishableAccount(account: PlatformAccountRecord): Publishable
     platform: account.platform,
     accountName: account.accountName,
     displayName: account.displayName,
+    platformAccountId: account.platformAccountId,
     avatarUrl: account.avatarUrl,
     lastValidatedAt: account.lastValidatedAt,
   };

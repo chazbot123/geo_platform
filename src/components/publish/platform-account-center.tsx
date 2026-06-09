@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, ExternalLink, FileImage, LoaderCircle, LogIn, RefreshCcw, Trash2, XCircle } from "lucide-react";
+import { CheckCircle2, ExternalLink, FileImage, LoaderCircle, LogIn, RefreshCcw, Trash2, UserCircle2, XCircle } from "lucide-react";
 import { openPlatformLoginWindow, validatePlatformSessionWindow } from "@/lib/publish/electron-login-client";
 import { toDisplayImageItems } from "@/lib/publish/image-display";
 import { detectDesktopBridge, hasElectronDesktopBridge, type DesktopBridgeAvailability } from "@/lib/publish/local-bridge-client";
@@ -80,6 +80,28 @@ function buildJobBodyPreview(body: string) {
     return "暂无正文预览";
   }
   return normalized.length > 140 ? `${normalized.slice(0, 140)}...` : normalized;
+}
+
+function AccountAvatar({ account }: { account: PlatformAccountRecord }) {
+  const label = account.displayName || account.accountName || platformLabel(account.platform);
+  if (account.avatarUrl) {
+    return (
+      <img
+        src={account.avatarUrl}
+        alt={`${label} 头像`}
+        className="h-10 w-10 shrink-0 rounded-full border border-stroke bg-surface object-cover"
+        onError={(event) => {
+          event.currentTarget.style.display = "none";
+        }}
+      />
+    );
+  }
+
+  return (
+    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-stroke bg-surface text-muted">
+      <UserCircle2 className="h-5 w-5" />
+    </span>
+  );
 }
 
 export function PlatformAccountCenter({
@@ -392,7 +414,7 @@ export function PlatformAccountCenter({
             <h3 className="page-section-title">多平台账号入口</h3>
             <p className="page-section-desc">
               {isBridgeReady
-                ? "当前页面已连接桌面桥，已自动化的平台可以使用桌面登录窗校验真实平台会话。"
+                ? "当前页面已连接桌面桥，登录后会同步账号名、头像和平台 ID，并写入账号列表。"
                 : "当前页面尚未连接本机桌面桥，请先启动 GEO 桌面版后再登录平台账号。"}
             </p>
             <div className={`mt-4 rounded-lg border p-4 text-xs leading-relaxed ${
@@ -520,61 +542,43 @@ export function PlatformAccountCenter({
                     platformAccounts.map((account) => (
               <div
                 key={account.id}
-                className="rounded-lg border border-stroke bg-panel/55 p-5 transition-colors hover:border-stroke-strong"
+                className="rounded-lg border border-stroke bg-panel/55 p-3 transition-colors hover:border-stroke-strong"
               >
                 {(() => {
                   const publishedJobs = publishedJobsByAccount[account.id] ?? [];
                   const latestPublishedJob = publishedJobs[0];
                   return (
                     <>
-                <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-                  <div className="space-y-1.5">
-                    <h4 className="font-display text-base font-bold text-ink">
-                      {account.displayName ?? account.accountName}
-                    </h4>
-                    <div className="flex items-center gap-3 text-sm">
-                      <span className="font-medium text-muted">{platformLabel(account.platform)}</span>
-                      <span className="h-1 w-1 rounded-full bg-stroke-strong"></span>
-                      <span className={`font-medium ${
-                        account.loginStatus === 'authenticated' ? 'text-emerald-400' :
-                        account.loginStatus === 'failed' ? 'text-danger' :
-                        'text-warning'
-                      }`}>
-                        {statusText(account)}
-                      </span>
-                    </div>
-                    <p className="font-mono text-xs text-muted/60">
-                      最近更新：{new Date(account.updatedAt).toLocaleString()}
-                    </p>
-                    <p className="max-w-xl text-sm leading-relaxed text-muted">
-                      {statusDescription(account)}
-                    </p>
-                    {account.lastError ? (
-                      <p className="rounded-xl border border-warning/20 bg-warning/10 px-3 py-2 text-xs leading-relaxed text-warning">
-                        最近失败原因：{account.lastError}
-                      </p>
-                    ) : null}
-                    <div className="grid gap-2 pt-1 text-xs text-slate-400">
-                      <p>
-                        <span className="text-muted">记录状态：</span>
-                        {statusText(account)}
-                      </p>
-                      <p>
-                        <span className="text-muted">真实会话：</span>
+                <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                  <div className="flex min-w-0 items-start gap-3">
+                    <AccountAvatar account={account} />
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h4 className="max-w-[260px] truncate text-sm font-semibold text-ink">
+                          {account.displayName ?? account.accountName}
+                        </h4>
+                        <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                          account.loginStatus === "authenticated" ? "bg-emerald-500/15 text-emerald-400" :
+                          account.loginStatus === "failed" ? "bg-danger/10 text-danger" :
+                          "bg-warning/15 text-warning"
+                        }`}>
+                          {statusText(account)}
+                        </span>
+                        <span className="rounded-full bg-white/5 px-2 py-0.5 text-[11px] font-medium text-muted">
+                          {platformLabel(account.platform)}
+                        </span>
+                      </div>
+                      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted">
+                        <span className="break-all font-mono">平台ID：{account.platformAccountId || account.accountName || "--"}</span>
+                        <span className="break-all font-mono">账号名：{account.accountName || "--"}</span>
+                        <span>更新：{new Date(account.updatedAt).toLocaleString()}</span>
+                      </div>
+                      <p className="mt-1 line-clamp-2 max-w-3xl text-xs leading-5 text-muted">
                         {accountPublishabilityText(account, isBridgeReady)}
                       </p>
-                      <p>
-                        <span className="text-muted">最近发布成功：</span>
-                        {account.lastPublishCompletedAt ? new Date(account.lastPublishCompletedAt).toLocaleString() : "暂无记录"}
-                      </p>
-                      <p>
-                        <span className="text-muted">最近发布失败：</span>
-                        {account.lastPublishError?.trim() || "暂无记录"}
-                      </p>
-                      {latestPublishedJob ? (
-                        <p>
-                          <span className="text-muted">最近发布标题：</span>
-                          {latestPublishedJob.draftTitle}
+                      {account.lastError ? (
+                        <p className="mt-2 rounded-md border border-warning/20 bg-warning/10 px-2.5 py-1.5 text-xs leading-5 text-warning">
+                          最近失败：{account.lastError}
                         </p>
                       ) : null}
                     </div>
@@ -582,7 +586,7 @@ export function PlatformAccountCenter({
                   
                   <div className="flex flex-wrap items-center gap-2">
                     <button
-                      className="flex items-center gap-1.5 rounded-lg border border-stroke bg-white/5 px-4 py-2 text-xs font-medium text-ink transition-colors hover:bg-white/10"
+                      className="flex items-center gap-1.5 rounded-md border border-stroke bg-white/5 px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-white/10"
                       onClick={() => startLogin(account.platform, account.id)}
                       disabled={platformDescriptor(account.platform)?.automationStatus !== "ready" || loadingKey === account.id || !isBridgeReady}
                     >
@@ -590,7 +594,7 @@ export function PlatformAccountCenter({
                       重新登录
                     </button>
                     <button
-                      className="flex items-center gap-1.5 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-4 py-2 text-xs font-medium text-emerald-400 transition-colors hover:bg-emerald-500/20"
+                      className="flex items-center gap-1.5 rounded-md border border-emerald-500/20 bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-400 transition-colors hover:bg-emerald-500/20"
                       onClick={() =>
                         patchAccount(
                           account.id,
@@ -604,7 +608,7 @@ export function PlatformAccountCenter({
                       强制标记
                     </button>
                     <button
-                      className="flex items-center gap-1.5 rounded-lg border border-danger/20 bg-danger/10 px-4 py-2 text-xs font-medium text-danger transition-colors hover:bg-danger/20"
+                      className="flex items-center gap-1.5 rounded-md border border-danger/20 bg-danger/10 px-3 py-1.5 text-xs font-medium text-danger transition-colors hover:bg-danger/20"
                       onClick={() => patchAccount(account.id, { loginStatus: "failed", status: "invalid", lastError: "用户手动标记为失败" }, "账号已标记为失败。")}
                       disabled={loadingKey === account.id}
                     >
@@ -612,7 +616,7 @@ export function PlatformAccountCenter({
                       标记失败
                     </button>
                     <button
-                      className="flex items-center gap-1.5 rounded-lg border border-stroke bg-surface px-4 py-2 text-xs font-medium text-muted transition-colors hover:border-danger/30 hover:text-danger"
+                      className="flex items-center gap-1.5 rounded-md border border-stroke bg-surface px-3 py-1.5 text-xs font-medium text-muted transition-colors hover:border-danger/30 hover:text-danger"
                       onClick={() => removeAccount(account.id)}
                       disabled={loadingKey === account.id}
                     >
@@ -622,26 +626,28 @@ export function PlatformAccountCenter({
                   </div>
                 </div>
                 
-                <div className="mt-5 grid gap-3 lg:grid-cols-[1fr_auto]">
+                <div className="mt-3 grid gap-2 lg:grid-cols-[1fr_auto]">
                   <input
-                    className="input-base w-full bg-surface/50"
+                    className="input-base h-9 w-full bg-surface/50 text-xs"
                     value={remarkDrafts[account.id] ?? ""}
                     onChange={(event) => setRemarkDrafts((current) => ({ ...current, [account.id]: event.target.value }))}
                     placeholder="补充账号备注、用途或状态说明..."
                   />
                   <button
-                    className="rounded-lg border border-stroke bg-white/5 px-6 py-2.5 text-sm font-medium text-ink transition-colors hover:bg-white/10"
+                    className="rounded-md border border-stroke bg-white/5 px-4 py-2 text-xs font-medium text-ink transition-colors hover:bg-white/10"
                     onClick={() => patchAccount(account.id, { remark: remarkDrafts[account.id] ?? "" }, "账号备注已保存。")}
                     disabled={loadingKey === account.id}
                   >
                     保存备注
                   </button>
                 </div>
-                <div className="mt-5 border-t border-stroke pt-5">
-                  <div className="mb-4 flex items-center justify-between">
+                <div className="mt-3 border-t border-stroke pt-3">
+                  <div className="mb-3 flex items-center justify-between">
                     <div>
-                      <h5 className="font-display text-base font-bold text-ink">本系统已发布内容</h5>
-                      <p className="mt-1 text-xs text-muted">仅展示通过 GEO 成功发布到当前账号的内容记录。</p>
+                      <h5 className="text-sm font-semibold text-ink">本系统已发布内容</h5>
+                      <p className="mt-0.5 text-xs text-muted">
+                        {latestPublishedJob ? `最近：${latestPublishedJob.draftTitle}` : statusDescription(account)}
+                      </p>
                     </div>
                     <span className="rounded-full bg-white/5 px-3 py-1 text-xs font-medium text-muted">
                       {publishedJobs.length} 条

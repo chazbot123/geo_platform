@@ -432,6 +432,7 @@ export interface PlatformAccountRecord {
   source?: string;
   accountName: string;
   displayName?: string;
+  platformAccountId?: string;
   avatarUrl?: string;
   status: PlatformAccountStatus;
   loginStatus: PlatformAccountLoginStatus;
@@ -612,6 +613,7 @@ export interface PublishableAccountSummary {
   platform: SocialPlatform;
   accountName: string;
   displayName?: string;
+  platformAccountId?: string;
   avatarUrl?: string;
   lastValidatedAt?: string;
 }

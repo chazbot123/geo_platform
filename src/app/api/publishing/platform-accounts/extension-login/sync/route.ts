@@ -12,9 +12,19 @@ function normalizeExtensionPlatform(platform: string): SocialPlatform {
   return platform as SocialPlatform;
 }
 
-function buildAccountName(platform: SocialPlatform, accountName?: string, displayName?: string) {
-  const candidate = String(accountName || displayName || "").trim();
+function buildAccountName(platform: SocialPlatform, accountName?: string, displayName?: string, platformAccountId?: string) {
+  const candidate = String(accountName || displayName || platformAccountId || "").trim();
   return candidate || `${platform}-extension-${new Date().toISOString().slice(11, 19).replace(/:/g, "")}`;
+}
+
+function pickPlatformAccountId(payload: {
+  platformAccountId?: unknown;
+  accountId?: unknown;
+  userId?: unknown;
+  uid?: unknown;
+  profileId?: unknown;
+}) {
+  return String(payload.platformAccountId || payload.accountId || payload.userId || payload.uid || payload.profileId || "").trim();
 }
 
 export async function POST(request: Request) {
@@ -26,6 +36,11 @@ export async function POST(request: Request) {
       authPayload?: string;
       accountName?: string;
       displayName?: string;
+      platformAccountId?: string;
+      accountId?: string;
+      userId?: string;
+      uid?: string;
+      profileId?: string;
       sourceUrl?: string;
       avatarUrl?: string;
       followerCount?: number | null;
@@ -42,12 +57,15 @@ export async function POST(request: Request) {
       return NextResponse.json({ message: "Missing extension cookie payload." }, { status: 400 });
     }
 
-    const accountName = buildAccountName(platform, payload.accountName, payload.displayName);
+    const platformAccountId = pickPlatformAccountId(payload);
+    const accountName = buildAccountName(platform, payload.accountName, payload.displayName, platformAccountId);
+    const displayName = String(payload.displayName || payload.accountName || platformAccountId || accountName).trim();
     const accounts = await getAllPlatformAccounts();
     const existing = accounts.find(
       (account) =>
         account.platform === platform &&
         (account.loginSessionToken === payload.sessionToken ||
+          (platformAccountId && account.platformAccountId === platformAccountId) ||
           account.accountName === accountName ||
           account.displayName === payload.displayName),
     );
@@ -56,6 +74,7 @@ export async function POST(request: Request) {
     const payloadShape = authPayload.startsWith("{") ? "json-object" : authPayload.startsWith("[") ? "json-array" : "cookie-header";
     const remarkParts = ["extension sync"];
     if (payload.sourceUrl) remarkParts.push(String(payload.sourceUrl));
+    if (platformAccountId) remarkParts.push(`platform_id:${platformAccountId}`);
     if (payloadFormat) remarkParts.push(`format:${payloadFormat}`);
     remarkParts.push(`shape:${payloadShape}`);
 
@@ -64,7 +83,8 @@ export async function POST(request: Request) {
       authType: "cookie" as const,
       source: "browser_extension",
       accountName,
-      displayName: String(payload.displayName || accountName).trim(),
+      displayName,
+      platformAccountId: platformAccountId || undefined,
       avatarUrl: String(payload.avatarUrl || "").trim() || undefined,
       loginStatus: "authenticated" as const,
       status: "valid" as const,
@@ -85,7 +105,7 @@ export async function POST(request: Request) {
             await createPlatformAccount({
               platform,
               accountName,
-              displayName: String(payload.displayName || accountName).trim(),
+              displayName,
               loginUrl: descriptor.publishEntryUrl,
               loginStatus: "authenticated",
               status: "valid",

@@ -2,9 +2,8 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, FileText, ImageIcon, Loader2, Save, UploadCloud } from "lucide-react";
+import { CheckCircle2, FileText, ImageIcon, Loader2, MapPinned, Save, UploadCloud } from "lucide-react";
 import { dispatchWorkflowStatusRefresh } from "@/components/layout/app-shell";
-import { RegionSelector } from "@/components/task/region-selector";
 import { chinaRegions } from "@/lib/regions/china-admin";
 import type { EnterpriseAsset, EnterpriseParseStatus, EnterpriseProfile, EnterpriseProfileFields } from "@/lib/enterprise/types";
 
@@ -110,6 +109,20 @@ function mergeAssets(current: EnterpriseAsset[], incoming: EnterpriseAsset[]) {
   return Array.from(byId.values());
 }
 
+function buildRegionOptions() {
+  const options = new Set<string>();
+  for (const province of chinaRegions) {
+    options.add(province.name);
+    for (const city of province.children ?? []) {
+      options.add(`${province.name}${city.name}`);
+      for (const district of city.children ?? []) {
+        options.add(`${province.name}${city.name}${district.name}`);
+      }
+    }
+  }
+  return Array.from(options);
+}
+
 function buildRegion(selection: RegionSelection) {
   return [selection.province, selection.city, selection.district].filter(Boolean).join("");
 }
@@ -188,6 +201,7 @@ export function EnterpriseProfileWorkbench() {
   const [dirty, setDirty] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
+  const regionOptions = useMemo(() => buildRegionOptions(), []);
 
   const missingFields = useMemo(() => requiredFields.filter((field) => !fields[field].trim()), [fields]);
   const canContinue = missingFields.length === 0 && Boolean(lastSavedAt) && !dirty;
@@ -248,9 +262,9 @@ export function EnterpriseProfileWorkbench() {
     setErrorMessage("");
   }
 
-  function updateRegion(nextValue: RegionSelection) {
-    setRegionSelection(nextValue);
-    updateField("region", buildRegion(nextValue));
+  function updateRegion(nextValue: string) {
+    setRegionSelection(parseRegion(nextValue));
+    updateField("region", nextValue);
   }
 
   async function parseFiles(files: FileList | null) {
@@ -371,14 +385,14 @@ export function EnterpriseProfileWorkbench() {
             <div className="rounded-lg border border-line bg-surface p-4">
               <div className="mb-4 flex items-center gap-2">
                 <UploadCloud className="h-4 w-4 text-accent" />
-                <h3 className="text-sm font-semibold text-ink">资料文件与产品公司图片</h3>
+                <h3 className="text-sm font-semibold text-ink">企业资料</h3>
               </div>
               <label className="mb-4 flex cursor-pointer flex-col items-center justify-center gap-2 rounded-md border border-dashed border-line px-3 py-5 text-center text-sm text-muted transition hover:border-accent hover:text-ink">
                 <span className="inline-flex items-center gap-2">
                   <UploadCloud className="h-4 w-4" />
-                  上传资料文件或图片
+                  上传企业文档或参考图片
                 </span>
-                <span className="text-xs text-muted">支持 txt、md、csv、json、pdf、docx、png、jpg、jpeg、webp</span>
+                <span className="text-xs text-muted">可读取文档会自动解析回填表格，图片会作为后续生成生图的参考素材</span>
                 <input
                   type="file"
                   multiple
@@ -387,25 +401,89 @@ export function EnterpriseProfileWorkbench() {
                   onChange={(event) => parseFiles(event.target.files)}
                 />
               </label>
+              <p className="mb-4 text-xs leading-5 text-muted">
+                上传后会自动解析可读取文档内容并回填下方表格。图片不会写入表单，只会保留为后续生成图片时的参考。
+              </p>
               <div className="grid gap-4 md:grid-cols-2">
                 <div>
                   <div className="mb-2 flex items-center gap-2 text-sm font-medium text-ink">
                     <FileText className="h-4 w-4 text-accent" />
-                    资料文件
+                    企业文档
                   </div>
-                  <AssetList assets={materialFiles} emptyText="暂无资料文件" />
+                  <AssetList assets={materialFiles} emptyText="暂无文档资料" />
                 </div>
                 <div>
                   <div className="mb-2 flex items-center gap-2 text-sm font-medium text-ink">
                     <ImageIcon className="h-4 w-4 text-accent" />
-                    产品与公司图片
+                    参考图片
                   </div>
-                  <AssetList assets={imageFiles} emptyText="暂无图片素材" />
+                  <AssetList assets={imageFiles} emptyText="暂无参考图片" />
                 </div>
               </div>
             </div>
 
-            {fieldGroups.map((group) => (
+            <div className="space-y-4">
+              <h3 className="text-sm font-semibold text-ink">基础信息</h3>
+              <div className="grid gap-4 sm:grid-cols-2">
+                {fieldGroups[0].fields.slice(0, 2).map((field) => {
+                  const invalid = field.required && !fields[field.key].trim();
+                  return (
+                    <label key={field.key} className={field.textarea ? "sm:col-span-2" : ""}>
+                      <span className="mb-2 block text-sm font-medium text-ink">
+                        {field.label}
+                        {field.required ? <span className="ml-1 text-red-500">*</span> : null}
+                      </span>
+                      <input
+                        value={fields[field.key]}
+                        onChange={(event) => updateField(field.key, event.target.value)}
+                        placeholder={field.placeholder}
+                        className="h-10 w-full rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none transition focus:border-accent"
+                      />
+                      {invalid ? <span className="mt-1 block text-xs text-red-500">必填</span> : null}
+                    </label>
+                  );
+                })}
+              </div>
+              <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_320px]">
+                <label>
+                  <span className="mb-2 block text-sm font-medium text-ink">
+                    产品服务<span className="ml-1 text-red-500">*</span>
+                  </span>
+                  <input
+                    value={fields.productService}
+                    onChange={(event) => updateField("productService", event.target.value)}
+                    placeholder="例如：企业级内容生产工具"
+                    className="h-10 w-full rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none transition focus:border-accent"
+                  />
+                  {!fields.productService.trim() ? <span className="mt-1 block text-xs text-red-500">必填</span> : null}
+                </label>
+
+                <label className="group">
+                  <span className="mb-2 flex items-center gap-2 text-sm font-medium text-ink group-focus-within:text-accent">
+                    <MapPinned className="h-4 w-4 text-accent" />
+                    地区<span className="ml-1 text-red-500">*</span>
+                  </span>
+                  <input
+                    list="enterprise-region-options"
+                    value={fields.region}
+                    onChange={(event) => updateRegion(event.target.value)}
+                    placeholder="输入或选择地区"
+                    className="h-10 w-full rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none transition focus:border-accent"
+                  />
+                  <datalist id="enterprise-region-options">
+                    {regionOptions.map((option) => (
+                      <option key={option} value={option} />
+                    ))}
+                  </datalist>
+                  <p className="mt-1 text-xs text-muted">
+                    {buildRegion(regionSelection) ? `已解析为：${buildRegion(regionSelection)}` : "可直接输入省市区，也可从下拉建议里选。"}
+                  </p>
+                  {!fields.region.trim() ? <span className="mt-1 block text-xs text-red-500">必填</span> : null}
+                </label>
+              </div>
+            </div>
+
+            {fieldGroups.slice(1).map((group) => (
               <div key={group.title} className="space-y-4">
                 <h3 className="text-sm font-semibold text-ink">{group.title}</h3>
                 <div className="grid gap-4 sm:grid-cols-2">
@@ -437,14 +515,6 @@ export function EnterpriseProfileWorkbench() {
                       </label>
                     );
                   })}
-                  {group.title === "基础信息" ? (
-                    <RegionSelector
-                      province={regionSelection.province}
-                      city={regionSelection.city}
-                      district={regionSelection.district}
-                      onChange={updateRegion}
-                    />
-                  ) : null}
                 </div>
               </div>
             ))}
