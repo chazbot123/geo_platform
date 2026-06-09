@@ -17,7 +17,7 @@ Verified in this review:
 - `npm run build:web` was attempted earlier but hung and was interrupted. Build status is currently unknown.
 - The workspace is dirty and includes multiple feature additions from this round.
 - `.gitignore` excludes `.next/`, `dist/`, `release-dir/`, `data/`, `logs/`, `.ccpanes/`, `public/generated-images/`, and temp files.
-- `package.json` still includes `extraResources.from = "data"`, which conflicts with the rule that runtime account/session/auth data must not be bundled into production installers.
+- `package.json` no longer includes `extraResources.from = "data"`, so runtime account/session/auth data is no longer explicitly bundled into production installers.
 
 ## 2. Implemented Capabilities
 
@@ -45,7 +45,7 @@ Implemented:
 
 - Provider defaults now use OpenAI-compatible GPT.
 - Text model default is `gpt5.5`.
-- Image model default is `gpt-image2`.
+- Image model default is `gpt-image-2`.
 - Existing saved config is expected to merge with defaults rather than be overwritten.
 
 Production gap:
@@ -232,7 +232,7 @@ Tasks:
 - Normalize all Chinese text to UTF-8.
 - Replace mojibake in `AGENTS.md`, planning docs, service messages, platform labels, package product name, feedback types, and workflow reasons.
 - Add a script to scan for mojibake patterns.
-- Remove `data` from Electron `extraResources`.
+- Keep runtime `data` out of Electron `extraResources`.
 - Ensure runtime data lives under app user data or `GEO_DATA_DIR`, not the source tree.
 - Confirm `.gitignore` excludes all runtime/generated artifacts.
 
@@ -405,7 +405,7 @@ Recommended order:
 
 1. Push this branch to GitHub for backup and review.
 2. Fix encoding/mojibake.
-3. Remove bundled `data` from Electron packaging.
+3. Keep bundled `data` out of Electron packaging.
 4. Resolve `npm run build:web` hang.
 5. Add minimum tests.
 6. Add `skills/geo-platform-writing` as audited project assets.

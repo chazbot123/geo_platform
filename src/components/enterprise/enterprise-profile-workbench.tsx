@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2, FileText, ImageIcon, Loader2, Save, UploadCloud } from "lucide-react";
 import { dispatchWorkflowStatusRefresh } from "@/components/layout/app-shell";
+import { RegionSelector } from "@/components/task/region-selector";
+import { chinaRegions } from "@/lib/regions/china-admin";
 import type { EnterpriseAsset, EnterpriseParseStatus, EnterpriseProfile, EnterpriseProfileFields } from "@/lib/enterprise/types";
 
 const emptyFields: EnterpriseProfileFields = {
@@ -17,6 +19,18 @@ const emptyFields: EnterpriseProfileFields = {
   trustProof: "",
   painPoints: "",
   customerCases: "",
+};
+
+interface RegionSelection {
+  province: string;
+  city: string;
+  district: string;
+}
+
+const emptyRegionSelection: RegionSelection = {
+  province: "",
+  city: "",
+  district: "",
 };
 
 const requiredFields: Array<keyof EnterpriseProfileFields> = ["companyName", "brandShortName", "productService", "region"];
@@ -37,7 +51,6 @@ const fieldGroups: Array<{
       { key: "companyName", label: "公司名称", required: true, placeholder: "例如：杭州某某科技有限公司" },
       { key: "brandShortName", label: "品牌简称", required: true, placeholder: "例如：某某科技" },
       { key: "productService", label: "产品服务", required: true, placeholder: "例如：企业级内容生产工具" },
-      { key: "region", label: "地区", required: true, placeholder: "例如：杭州、长三角、全国" },
     ],
   },
   {
@@ -71,6 +84,13 @@ function formatDate(value: string) {
   }).format(new Date(value));
 }
 
+function getAssetKind(file: File): EnterpriseAsset["kind"] {
+  if (file.type.startsWith("image/") || /\.(png|jpe?g|webp)$/i.test(file.name)) {
+    return "image";
+  }
+  return "material";
+}
+
 function fileToAsset(file: File, kind: EnterpriseAsset["kind"]): EnterpriseAsset {
   return {
     id: `${kind}-${file.name}-${file.size}-${file.lastModified}`,
@@ -88,6 +108,38 @@ function mergeAssets(current: EnterpriseAsset[], incoming: EnterpriseAsset[]) {
     byId.set(item.id, item);
   }
   return Array.from(byId.values());
+}
+
+function buildRegion(selection: RegionSelection) {
+  return [selection.province, selection.city, selection.district].filter(Boolean).join("");
+}
+
+function parseRegion(region: string): RegionSelection {
+  const value = region.trim();
+  if (!value) return emptyRegionSelection;
+
+  for (const province of chinaRegions) {
+    const cities = province.children ?? [];
+    if (value.startsWith(province.name)) {
+      const restAfterProvince = value.slice(province.name.length);
+      for (const city of cities) {
+        const districts = city.children ?? [];
+        const cityMatched = restAfterProvince.startsWith(city.name) || value.includes(city.name);
+        if (!cityMatched) continue;
+        const district = districts.find((item) => value.endsWith(item.name) || value.includes(item.name))?.name ?? "";
+        return { province: province.name, city: city.name, district };
+      }
+      return { province: province.name, city: "", district: "" };
+    }
+
+    for (const city of cities) {
+      if (!value.startsWith(city.name) && !value.includes(city.name)) continue;
+      const district = (city.children ?? []).find((item) => value.endsWith(item.name) || value.includes(item.name))?.name ?? "";
+      return { province: province.name, city: city.name, district };
+    }
+  }
+
+  return emptyRegionSelection;
 }
 
 function AssetList({ assets, emptyText }: { assets: EnterpriseAsset[]; emptyText: string }) {
@@ -124,6 +176,7 @@ function fieldLabel(field: keyof EnterpriseProfileFields) {
 
 export function EnterpriseProfileWorkbench() {
   const [fields, setFields] = useState<EnterpriseProfileFields>(emptyFields);
+  const [regionSelection, setRegionSelection] = useState<RegionSelection>(emptyRegionSelection);
   const [materialFiles, setMaterialFiles] = useState<EnterpriseAsset[]>([]);
   const [imageFiles, setImageFiles] = useState<EnterpriseAsset[]>([]);
   const [parseStatus, setParseStatus] = useState<EnterpriseParseStatus>("idle");
@@ -164,6 +217,7 @@ export function EnterpriseProfileWorkbench() {
           painPoints: profile.painPoints,
           customerCases: profile.customerCases,
         });
+        setRegionSelection(parseRegion(profile.region));
         setMaterialFiles(profile.materialFiles);
         setImageFiles(profile.imageFiles);
         setParseStatus(profile.parseStatus);
@@ -181,7 +235,7 @@ export function EnterpriseProfileWorkbench() {
       }
     }
 
-    loadProfile();
+    void loadProfile();
     return () => {
       active = false;
     };
@@ -194,19 +248,21 @@ export function EnterpriseProfileWorkbench() {
     setErrorMessage("");
   }
 
-  async function parseFiles(files: FileList | null, kind: EnterpriseAsset["kind"]) {
+  function updateRegion(nextValue: RegionSelection) {
+    setRegionSelection(nextValue);
+    updateField("region", buildRegion(nextValue));
+  }
+
+  async function parseFiles(files: FileList | null) {
     if (!files?.length) {
       return;
     }
 
     const selectedFiles = Array.from(files);
-    const localAssets = selectedFiles.map((file) => fileToAsset(file, kind));
+    const localAssets = selectedFiles.map((file) => fileToAsset(file, getAssetKind(file)));
 
-    if (kind === "image") {
-      setImageFiles((current) => mergeAssets(current, localAssets));
-    } else {
-      setMaterialFiles((current) => mergeAssets(current, localAssets));
-    }
+    setMaterialFiles((current) => mergeAssets(current, localAssets.filter((asset) => asset.kind === "material")));
+    setImageFiles((current) => mergeAssets(current, localAssets.filter((asset) => asset.kind === "image")));
     setDirty(true);
 
     const formData = new FormData();
@@ -238,6 +294,9 @@ export function EnterpriseProfileWorkbench() {
       };
 
       setFields((current) => ({ ...current, ...result.suggestions }));
+      if (result.suggestions.region) {
+        setRegionSelection(parseRegion(result.suggestions.region));
+      }
       setMaterialFiles((current) => mergeAssets(current, result.materialFiles));
       setImageFiles((current) => mergeAssets(current, result.imageFiles));
       setParseStatus(result.parseStatus);
@@ -309,6 +368,43 @@ export function EnterpriseProfileWorkbench() {
           </div>
         ) : (
           <div className="mt-6 space-y-7">
+            <div className="rounded-lg border border-line bg-surface p-4">
+              <div className="mb-4 flex items-center gap-2">
+                <UploadCloud className="h-4 w-4 text-accent" />
+                <h3 className="text-sm font-semibold text-ink">资料文件与产品公司图片</h3>
+              </div>
+              <label className="mb-4 flex cursor-pointer flex-col items-center justify-center gap-2 rounded-md border border-dashed border-line px-3 py-5 text-center text-sm text-muted transition hover:border-accent hover:text-ink">
+                <span className="inline-flex items-center gap-2">
+                  <UploadCloud className="h-4 w-4" />
+                  上传资料文件或图片
+                </span>
+                <span className="text-xs text-muted">支持 txt、md、csv、json、pdf、docx、png、jpg、jpeg、webp</span>
+                <input
+                  type="file"
+                  multiple
+                  accept=".txt,.md,.csv,.json,.pdf,.docx,.png,.jpg,.jpeg,.webp"
+                  className="hidden"
+                  onChange={(event) => parseFiles(event.target.files)}
+                />
+              </label>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div>
+                  <div className="mb-2 flex items-center gap-2 text-sm font-medium text-ink">
+                    <FileText className="h-4 w-4 text-accent" />
+                    资料文件
+                  </div>
+                  <AssetList assets={materialFiles} emptyText="暂无资料文件" />
+                </div>
+                <div>
+                  <div className="mb-2 flex items-center gap-2 text-sm font-medium text-ink">
+                    <ImageIcon className="h-4 w-4 text-accent" />
+                    产品与公司图片
+                  </div>
+                  <AssetList assets={imageFiles} emptyText="暂无图片素材" />
+                </div>
+              </div>
+            </div>
+
             {fieldGroups.map((group) => (
               <div key={group.title} className="space-y-4">
                 <h3 className="text-sm font-semibold text-ink">{group.title}</h3>
@@ -341,49 +437,17 @@ export function EnterpriseProfileWorkbench() {
                       </label>
                     );
                   })}
+                  {group.title === "基础信息" ? (
+                    <RegionSelector
+                      province={regionSelection.province}
+                      city={regionSelection.city}
+                      district={regionSelection.district}
+                      onChange={updateRegion}
+                    />
+                  ) : null}
                 </div>
               </div>
             ))}
-
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="rounded-lg border border-line bg-surface p-4">
-                <div className="mb-4 flex items-center gap-2">
-                  <FileText className="h-4 w-4 text-accent" />
-                  <h3 className="text-sm font-semibold text-ink">资料文件</h3>
-                </div>
-                <label className="mb-4 flex cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed border-line px-3 py-4 text-sm text-muted transition hover:border-accent hover:text-ink">
-                  <UploadCloud className="h-4 w-4" />
-                  上传 txt、md、csv、json、pdf、docx
-                  <input
-                    type="file"
-                    multiple
-                    accept=".txt,.md,.csv,.json,.pdf,.docx"
-                    className="hidden"
-                    onChange={(event) => parseFiles(event.target.files, "material")}
-                  />
-                </label>
-                <AssetList assets={materialFiles} emptyText="暂无资料文件" />
-              </div>
-
-              <div className="rounded-lg border border-line bg-surface p-4">
-                <div className="mb-4 flex items-center gap-2">
-                  <ImageIcon className="h-4 w-4 text-accent" />
-                  <h3 className="text-sm font-semibold text-ink">产品与公司图片</h3>
-                </div>
-                <label className="mb-4 flex cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed border-line px-3 py-4 text-sm text-muted transition hover:border-accent hover:text-ink">
-                  <UploadCloud className="h-4 w-4" />
-                  上传 png、jpg、jpeg、webp
-                  <input
-                    type="file"
-                    multiple
-                    accept=".png,.jpg,.jpeg,.webp"
-                    className="hidden"
-                    onChange={(event) => parseFiles(event.target.files, "image")}
-                  />
-                </label>
-                <AssetList assets={imageFiles} emptyText="暂无图片素材" />
-              </div>
-            </div>
 
             <div className="flex flex-col gap-3 border-t border-line pt-5 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-h-5 text-sm">

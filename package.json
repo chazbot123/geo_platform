@@ -10,6 +10,8 @@
     "build:web": "next build",
     "start:web": "next start",
     "check": "tsc --noEmit",
+    "test": "vitest run",
+    "scan:mojibake": "node scripts/scan-mojibake.mjs",
     "dist": "electron-builder --win dir --config.electronDist=node_modules/electron/dist --config.win.signAndEditExecutable=false",
     "dist:installer": "npm run dist"
   },
@@ -32,6 +34,7 @@
     "postcss": "^8.5.3",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.8.3",
+    "vitest": "^4.1.8",
     "wait-on": "^8.0.3"
   },
   "build": {
@@ -47,18 +50,13 @@
       "tailwind.config.ts",
       "postcss.config.js"
     ],
-    "extraResources": [
-      {
-        "from": "data",
-        "to": "data",
-        "filter": ["**/*"]
-      }
-    ],
     "win": {
       "target": [
         {
           "target": "dir",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ]
     },

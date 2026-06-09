@@ -36,7 +36,7 @@ function splitParagraphs(content: string) {
 function extractSectionBody(block: string) {
   const lines = block.split(/\r?\n\r?\n/).map((item) => item.trim()).filter(Boolean);
   return lines
-    .filter((line) => !line.startsWith("对应提问句：") && !line.startsWith("章节摘要："))
+    .filter((line) => !line.startsWith("对应提问：") && !line.startsWith("章节摘要："))
     .join("\n\n");
 }
 
@@ -163,7 +163,9 @@ export async function generateContentForTask(taskId: string, options?: ContentGe
 
     let reviewResult: ReviewResult;
     try {
-      reviewResult = await reviewContent(generatedContent, platform, getSelectedQuestionsForReview(bundle));
+      const historyDrafts = await listAllContentDrafts();
+      const samePlatformDrafts = historyDrafts.filter((draft) => draft.platform === platform);
+      reviewResult = await reviewContent(generatedContent, platform, getSelectedQuestionsForReview(bundle), samePlatformDrafts);
     } catch (error) {
       reviewResult = buildReviewFailure(error);
     }
@@ -207,7 +209,8 @@ export async function updateContentDraft(taskId: string, patch: Pick<ContentDraf
   const contentAngle = syncedDraft.contentAngle ?? "selection_criteria";
   let reviewResult: ReviewResult;
   try {
-    reviewResult = await reviewContent(syncedDraft, platform, getSelectedQuestionsForReview(bundle));
+    const historyDrafts = (await listAllContentDrafts()).filter((draft) => draft.taskId !== syncedDraft.taskId && draft.platform === platform);
+    reviewResult = await reviewContent(syncedDraft, platform, getSelectedQuestionsForReview(bundle), historyDrafts);
   } catch (error) {
     reviewResult = buildReviewFailure(error);
   }
@@ -243,7 +246,7 @@ const providerLabelMap: Record<SearchProvider, string> = {
   doubao: "豆包",
   deepseek: "DeepSeek",
   yuanbao: "元宝",
-  tongyi: "千问",
+  tongyi: "通义",
 };
 
 const dispersionDimensions: ContentPoolPipelineState["dispersion"]["changedDimensions"] = [
@@ -267,23 +270,10 @@ function isContentPoolReady(item: Pick<ContentPoolItem, "riskLevel" | "pipeline"
   return item.riskLevel === "low" && item.pipeline.negativeCheck.hits.length === 0;
 }
 
-function getRiskForSequence(sequence: number): { level: ContentPoolRiskLevel; hits: string[]; message: string } {
-  if (sequence % 17 === 0) {
-    return { level: "high", hits: ["绝对化承诺"], message: "发现高风险表达，已阻断发布，需改写后复检。" };
-  }
-  if (sequence % 13 === 0) {
-    return { level: "high", hits: ["违规敏感词"], message: "命中敏感词，不能强制放行，需改写后复检。" };
-  }
-  if (sequence % 5 === 0) {
-    return { level: "medium", hits: [], message: "相似表达偏高，需确认或改写后进入发布。" };
-  }
-  return { level: "low", hits: [], message: "风险检查通过，可进入发布准备。" };
-}
-
 function plannedTimeFor(plan: PublishTaskPlan, dayIndex: number, slotIndex: number) {
   const planned = new Date(plan.createdAt);
   planned.setDate(planned.getDate() + dayIndex);
-  planned.setHours(slotIndex === 0 ? 9 : 14, slotIndex === 0 ? 30 : 30, 0, 0);
+  planned.setHours(slotIndex === 0 ? 9 : 14, 30, 0, 0);
   return planned.toISOString();
 }
 
@@ -295,7 +285,6 @@ function buildDraftBody(input: {
   keyword: string;
   platform: SocialPlatform;
   aiPlatform: SearchProvider;
-  sequence: number;
 }) {
   const platformLabel = platformLabelMap[input.platform];
   const aiLabel = providerLabelMap[input.aiPlatform];
@@ -307,9 +296,67 @@ function buildDraftBody(input: {
   ].join("\n\n");
 }
 
+function buildReviewDraft(input: {
+  taskId: string;
+  title: string;
+  summary: string;
+  body: string;
+  keyword: string;
+  platform: SocialPlatform;
+  aiPlatform: SearchProvider;
+  timestamp: string;
+}): ContentDraft {
+  return {
+    taskId: input.taskId,
+    title: input.title,
+    summary: input.summary,
+    content: input.body,
+    selectedKeywords: [input.keyword],
+    selectedKeywordTheme: input.keyword,
+    reportIntroduction: input.body.split(/\n+/).find(Boolean) ?? input.summary,
+    reportConclusion: "建议结合具体情况判断，并核验资质、合同和现场情况。",
+    reportSections: [
+      {
+        question: input.keyword,
+        heading: "判断标准",
+        summary: input.summary,
+        body: input.body,
+      },
+    ],
+    faq: [`${input.keyword}应该先看什么？`],
+    cta: "可以带着具体场景进一步确认适用边界。",
+    aiScenario: input.aiPlatform,
+    platform: input.platform,
+    contentAngle: "selection_criteria",
+    updatedAt: input.timestamp,
+  };
+}
+
+function buildRiskFromReview(reviewResult: ReviewResult): { level: ContentPoolRiskLevel; hits: string[]; message: string } {
+  if (reviewResult.blockingIssues.length > 0) {
+    return {
+      level: "high",
+      hits: reviewResult.blockingIssues.map((issue) => issue.evidence || issue.message),
+      message: `内容审查发现 ${reviewResult.blockingIssues.length} 个阻断问题，需改写后复检。`,
+    };
+  }
+  if (reviewResult.warnings.length > 0) {
+    return {
+      level: "medium",
+      hits: [],
+      message: `内容审查发现 ${reviewResult.warnings.length} 个提醒项，需要人工确认或结构化改写。`,
+    };
+  }
+  return {
+    level: "low",
+    hits: [],
+    message: "内容审查通过，可进入发布准备。",
+  };
+}
+
 function buildPipeline(input: {
   platform: SocialPlatform;
-  risk: ReturnType<typeof getRiskForSequence>;
+  risk: { level: ContentPoolRiskLevel; hits: string[]; message: string };
   imagePrompt: string;
   isSample: boolean;
   timestamp: string;
@@ -382,9 +429,41 @@ async function buildContentPoolFromBundle(bundle: TaskBundle, plan: PublishTaskP
           sequence += 1;
           const keywordIndex = (accountArticleIndex + accountKeywordOffset) % questions.length;
           const keyword = questions[keywordIndex];
-          const risk = getRiskForSequence(sequence);
           const isSample = accountArticleIndex === 0;
           const imagePrompt = `${platformLabelMap[platformPlan.platform]}配图：${keyword.text}，真实产品服务场景，清晰、克制、适合图文发布`;
+          const title = `${keyword.text}｜${platformLabelMap[platformPlan.platform]}内容 ${sequence}`;
+          const summary = `回答“${keyword.text}”，匹配${providerLabelMap[plan.searchProvider]}问答场景，并适配${platformLabelMap[platformPlan.platform]}发布。`;
+          const body = buildDraftBody({
+            companyName: bundle.product.productName,
+            brandName: bundle.product.category,
+            productService: bundle.product.sellingPoints,
+            region: bundle.product.city || bundle.product.province || bundle.product.district || bundle.product.scenarios,
+            keyword: keyword.text,
+            platform: platformPlan.platform,
+            aiPlatform: plan.searchProvider,
+          });
+          const reviewDraft = buildReviewDraft({
+            taskId: plan.taskId,
+            title,
+            summary,
+            body,
+            keyword: keyword.text,
+            platform: platformPlan.platform,
+            aiPlatform: plan.searchProvider,
+            timestamp,
+          });
+          const sameScopeHistory = items
+            .filter((item) => item.publishPlatform === platformPlan.platform && item.accountId === accountId)
+            .map((item) => ({
+              title: item.title,
+              summary: item.summary,
+              content: item.body,
+              reportIntroduction: item.body.split(/\n+/).find(Boolean),
+              faq: [`${item.keywordText}应该先看什么？`],
+              cta: "可以带着具体场景进一步确认适用边界。",
+            }));
+          const reviewResult = await reviewContent(reviewDraft, platformPlan.platform, [keyword.text], sameScopeHistory);
+          const risk = buildRiskFromReview(reviewResult);
           const pipeline = buildPipeline({
             platform: platformPlan.platform,
             risk,
@@ -394,7 +473,6 @@ async function buildContentPoolFromBundle(bundle: TaskBundle, plan: PublishTaskP
           });
           const publishable = isContentPoolReady({ riskLevel: risk.level, pipeline });
           const status: ContentPoolItemStatus = publishable ? (isSample ? "sample" : "pending_publish") : "sample";
-          const title = `${keyword.text}｜${platformLabelMap[platformPlan.platform]}内容 ${sequence}`;
 
           items.push({
             id: `${plan.taskId}-${String(sequence).padStart(4, "0")}`,
@@ -410,17 +488,8 @@ async function buildContentPoolFromBundle(bundle: TaskBundle, plan: PublishTaskP
             accountKeywordOffset,
             plannedPublishTime: plannedTimeFor(plan, dayIndex, slotIndex),
             title,
-            summary: `回答“${keyword.text}”，匹配${providerLabelMap[plan.searchProvider]}问答场景，并适配${platformLabelMap[platformPlan.platform]}发布。`,
-            body: buildDraftBody({
-              companyName: bundle.product.productName,
-              brandName: bundle.product.category,
-              productService: bundle.product.sellingPoints,
-              region: bundle.product.city || bundle.product.province || bundle.product.district || bundle.product.scenarios,
-              keyword: keyword.text,
-              platform: platformPlan.platform,
-              aiPlatform: plan.searchProvider,
-              sequence,
-            }),
+            summary,
+            body,
             imagePrompt,
             imageList: [],
             riskLevel: risk.level,
@@ -505,8 +574,8 @@ export async function rewriteContentPoolItem(taskId: string, itemId: string) {
     };
     return {
       ...item,
-      title: `${item.title.replace(/^【已改写】/u, "")}`,
-      body: `${item.body}\n\n已完成风险改写，删除不可承诺表达，并补充可核验边界。`,
+      title: item.title.replace(/^【已改写】/u, ""),
+      body: `${item.body}\n\n已完成风险改写：删除不可承诺表达，并补充可核验边界。`,
       imagePrompt,
       pipeline,
       riskLevel: "low",

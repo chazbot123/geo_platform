@@ -242,6 +242,17 @@ function normalizeProvider(provider: string) {
   return provider.trim().toLowerCase();
 }
 
+function resolveOpenAIImageEndpoint(baseUrl: string) {
+  const trimmed = baseUrl.trim().replace(/\/+$/g, "").replace(/\/chat\/completions$/i, "");
+  if (!trimmed) {
+    throw new Error("未配置图片模型 API 地址");
+  }
+  if (/\/images\/generations$/i.test(trimmed)) {
+    return trimmed;
+  }
+  return `${trimmed}/images/generations`;
+}
+
 function resolveViduBaseUrl(baseUrl: string) {
   const trimmed = baseUrl.trim();
   if (!trimmed) {
@@ -670,6 +681,84 @@ async function runGenericImageModel(
   } satisfies ImageAsset);
 }
 
+async function runOpenAICompatibleImageModel(
+  product: ProductProfile,
+  prompts: Array<{ prompt: string; planItem: ArticleImagePlanItem }>,
+  config: ModelApiConfig,
+): Promise<ImageAsset> {
+  const endpoint = resolveOpenAIImageEndpoint(config.baseUrl);
+  const items: ArticleImageItem[] = await Promise.all(
+    prompts.map(async (entry) => {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: buildJsonAuthHeaders(config.apiKey),
+        body: JSON.stringify({
+          model: config.modelName,
+          prompt: entry.prompt,
+          n: 1,
+          size: "1536x864",
+          response_format: "b64_json",
+        }),
+      });
+
+      const rawText = await response.text();
+      let payload: {
+        data?: Array<{ url?: string; b64_json?: string; revised_prompt?: string }>;
+        error?: { message?: string };
+      } = {};
+      try {
+        payload = JSON.parse(rawText);
+      } catch {
+        // Keep payload empty and surface the raw body below.
+      }
+
+      if (!response.ok) {
+        throw new Error(`IMAGE_API_${response.status}: ${payload.error?.message || rawText.slice(0, 200)}`);
+      }
+
+      const first = payload.data?.[0];
+      const imageUrl = first?.url || (first?.b64_json ? `data:image/png;base64,${first.b64_json}` : "");
+      if (!imageUrl) {
+        throw new Error("图片模型未返回可用图片");
+      }
+
+      return {
+        id: `${product.taskId}-${randomUUID()}`,
+        url: imageUrl,
+        prompt: first?.revised_prompt || entry.prompt,
+        alt: entry.planItem.alt,
+        question: entry.planItem.question,
+        sectionHeading: entry.planItem.sectionHeading,
+        referenceMode: "article_only",
+        reviewStatus: "pending",
+        provider: "openai-compatible-image",
+        generationMode: "prompt",
+        placement: {
+          paragraphIndex: entry.planItem.paragraphIndex,
+          caption: `配图 ${entry.planItem.imageIndex}`,
+        },
+      };
+    }),
+  );
+
+  if (items.length !== REQUIRED_IMAGE_COUNT) {
+    throw new Error(`图片生成数量不足，当前仅成功返回 ${items.length} 张。`);
+  }
+
+  const cover = items[0];
+  return ensureFiveImageAsset(product.taskId, {
+    taskId: product.taskId,
+    assetType: "cover",
+    url: cover?.url || buildPromptUrl(prompts[0]?.prompt || product.productName),
+    reviewStatus: cover?.reviewStatus ?? "pending",
+    prompt: cover?.prompt || prompts[0]?.prompt || product.productName,
+    provider: cover?.provider ?? "openai-compatible-image",
+    generationMode: cover?.generationMode ?? "prompt",
+    images: items,
+    updatedAt: new Date().toISOString(),
+  });
+}
+
 export async function runImageModel(
   product: ProductProfile,
   theme: ThemeSet,
@@ -701,6 +790,10 @@ export async function runImageModel(
 
   if (provider === "vidu") {
     return runViduImageModel(product, prompts, config);
+  }
+
+  if (provider.includes("openai") || provider.includes("gpt") || provider.includes("newapi")) {
+    return runOpenAICompatibleImageModel(product, prompts, config);
   }
 
   return runGenericImageModel(product, prompts, config, fallbackAsset);

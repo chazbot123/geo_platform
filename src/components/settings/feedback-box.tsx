@@ -92,9 +92,7 @@ export function FeedbackBox() {
           {submitting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
           {submitting ? "提交中..." : "提交反馈"}
         </button>
-        {notice ? (
-          <p className={`text-sm ${notice.tone === "success" ? "text-emerald-400" : "text-danger"}`}>{notice.text}</p>
-        ) : null}
+        {notice ? <p className={`text-sm ${notice.tone === "success" ? "text-emerald-400" : "text-danger"}`}>{notice.text}</p> : null}
       </div>
     </section>
   );

@@ -1,0 +1,32 @@
+{
+  "version": "geo-similarity-dispersion-20260609",
+  "dimensions": ["title", "opening", "bodyShingle", "faq", "cta"],
+  "weights": {
+    "title": 0.22,
+    "opening": 0.22,
+    "bodyShingle": 0.28,
+    "faq": 0.14,
+    "cta": 0.14
+  },
+  "thresholds": {
+    "block": 0.82,
+    "warn": 0.62
+  },
+  "requiredDifferences": [
+    "title pattern",
+    "first sentence",
+    "section order",
+    "examples",
+    "question focus",
+    "CTA wording",
+    "image prompt",
+    "FAQ direction"
+  ],
+  "historyScopes": [
+    "same account",
+    "same publish platform",
+    "same GEO AI platform",
+    "same task batch",
+    "recent successful posts"
+  ]
+}

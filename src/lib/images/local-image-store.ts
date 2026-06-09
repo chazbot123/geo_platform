@@ -35,6 +35,11 @@ async function clearDirectory(dirPath: string) {
 
 async function downloadRemoteImageToLocal(url: string, filePath: string) {
   const normalizedUrl = normalizeRemoteUrl(url);
+  const dataUrlMatch = normalizedUrl.match(/^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i);
+  if (dataUrlMatch) {
+    await fs.writeFile(filePath, Buffer.from(dataUrlMatch[2], "base64"));
+    return;
+  }
   if (!/^https?:\/\//i.test(normalizedUrl)) {
     throw new Error(`不支持落盘的图片地址：${normalizedUrl || "空地址"}`);
   }

@@ -10,8 +10,10 @@ import {
   Circle,
   FileQuestion,
   FolderKanban,
+  MessageSquare,
   Moon,
   PenLine,
+  RefreshCw,
   Rocket,
   Settings,
   Sun,
@@ -26,6 +28,12 @@ const workflowItems = [
   { key: "contentPool", href: "/content-pool", label: "内容池", icon: FolderKanban },
   { key: "publishExecution", href: "/publish-execution", label: "执行发布", icon: Rocket },
 ] satisfies Array<{ key: WorkflowStepKey; href: string; label: string; icon: typeof Building2 }>;
+
+const settingsItems = [
+  { href: "/settings", label: "模型设置", icon: Settings },
+  { href: "/feedback", label: "意见反馈", icon: MessageSquare },
+  { href: "/updates", label: "检查更新", icon: RefreshCw },
+];
 
 const emptyWorkflowStatus: WorkflowStatus = {
   updatedAt: "",
@@ -133,9 +141,7 @@ export function AppShell({ title, description, children }: { title: string; desc
                   <span
                     className={cn(
                       "flex h-7 w-7 shrink-0 items-center justify-center rounded-md border",
-                      active
-                        ? "border-accent bg-accent text-white"
-                        : "border-stroke bg-panel text-muted group-hover:border-stroke-strong"
+                      active ? "border-accent bg-accent text-white" : "border-stroke bg-panel text-muted group-hover:border-stroke-strong"
                     )}
                   >
                     <Icon className="h-3.5 w-3.5" />
@@ -157,16 +163,27 @@ export function AppShell({ title, description, children }: { title: string; desc
           </nav>
 
           <div className="mt-5 border-t border-stroke pt-3">
-            <Link
-              href="/settings"
-              className={cn(
-                "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
-                pathname.startsWith("/settings") ? "bg-panelSoft text-ink" : "text-muted hover:bg-panelSoft hover:text-ink"
-              )}
-            >
-              <Settings className="h-4 w-4" />
-              <span className="min-w-0 flex-1 truncate">模型设置</span>
-            </Link>
+            <nav className="space-y-1" aria-label="系统设置">
+              {settingsItems.map((item) => {
+                const Icon = item.icon;
+                const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    className={cn(
+                      "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                      active ? "bg-panelSoft text-ink" : "text-muted hover:bg-panelSoft hover:text-ink"
+                    )}
+                  >
+                    <Icon className="h-4 w-4" />
+                    <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                  </Link>
+                );
+              })}
+            </nav>
+
             <button
               type="button"
               onClick={toggleTheme}
@@ -180,18 +197,10 @@ export function AppShell({ title, description, children }: { title: string; desc
         </aside>
 
         <main className="glass-panel min-h-[calc(100vh-1.5rem)] rounded-lg p-4 sm:p-5 lg:p-7">
-          <header className="mb-6 flex flex-col gap-4 border-b border-stroke pb-5 xl:flex-row xl:items-end xl:justify-between">
-            <div className="max-w-3xl">
-              <p className="mb-2 text-xs font-medium text-accent">GEO 生产流程</p>
-              <h1 className="font-display text-2xl font-semibold tracking-tight text-ink sm:text-3xl">{title}</h1>
-              <p className="mt-2 max-w-2xl text-sm leading-6 text-muted">{description}</p>
-            </div>
-            <div className="status-pill shrink-0">
-              <span className="h-1.5 w-1.5 rounded-full bg-accent" />
-              <span>流程已切换</span>
-              <span className="h-3 w-px bg-stroke-strong" />
-              <span>五步工作流</span>
-            </div>
+          <header className="mb-6 border-b border-stroke pb-5">
+            <p className="mb-2 text-xs font-medium text-accent">GEO 生产流程</p>
+            <h1 className="font-display text-2xl font-semibold tracking-tight text-ink sm:text-3xl">{title}</h1>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-muted">{description}</p>
           </header>
           <div className="animate-in fade-in duration-300 ease-out">{children}</div>
         </main>

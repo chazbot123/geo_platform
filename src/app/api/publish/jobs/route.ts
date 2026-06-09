@@ -4,7 +4,6 @@ import { createAccountPublishingJob, createPublishingJob, recordPublishingJobRes
 import { updatePublishingDraftRecord } from "@/lib/publish/workbench-service";
 import { getAccountPublishingDraft, getPublishingDraft } from "@/lib/storage/data-store";
 import { getPlatformDescriptor } from "@/lib/publish/platforms";
-import { runQueuedPublishingJob } from "@/lib/publish/server-publish-runner";
 
 export async function POST(request: Request) {
   try {
@@ -142,16 +141,7 @@ export async function POST(request: Request) {
       jobs.push(job);
     }
 
-    const resolvedJobs = [];
-    for (const job of jobs) {
-      if (job.status === "queued" && job.executionMode === "electron_automation" && job.accountId) {
-        resolvedJobs.push(await runQueuedPublishingJob(job.id));
-        continue;
-      }
-      resolvedJobs.push(job);
-    }
-
-    return NextResponse.json({ jobs: resolvedJobs });
+    return NextResponse.json({ jobs });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "创建发布任务失败。" }, { status: 500 });
   }

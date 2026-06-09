@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { CheckCircle, ImageIcon, LoaderCircle, Save, Type, XCircle } from "lucide-react";
+import { getDefaultModelNameForProvider, modelProviderOptions, type ModelSection } from "@/lib/config/model-providers";
 import type { AppConfig, ModelApiConfig } from "@/lib/types";
 
 interface ProbeOutcome {
@@ -18,8 +19,6 @@ interface ProbeResult {
   image: ProbeOutcome;
 }
 
-type ModelSection = "text" | "image";
-
 const modelLabels: Record<ModelSection, { title: string; description: string; icon: typeof Type }> = {
   text: {
     title: "文字模型",
@@ -28,7 +27,7 @@ const modelLabels: Record<ModelSection, { title: string; description: string; ic
   },
   image: {
     title: "图片模型",
-    description: "用于内容配图生成。未配置时继续使用图片提示词回退。",
+    description: "用于内容配图生成。GPT 服务商默认使用 gpt-image-2。",
     icon: ImageIcon,
   },
 };
@@ -42,16 +41,6 @@ const fieldLabels: Record<keyof ModelApiConfig, string> = {
 };
 
 const editableFields: Array<keyof ModelApiConfig> = ["provider", "baseUrl", "modelName", "apiKey"];
-
-const providerOptions = [
-  { value: "openai", label: "GPT / OpenAI" },
-  { value: "newapi-auto", label: "NewAPI 自动探测" },
-  { value: "volcengine-ark", label: "火山方舟 / 豆包" },
-  { value: "dashscope-qwen", label: "通义千问" },
-  { value: "tencent-hunyuan", label: "腾讯混元" },
-  { value: "deepseek", label: "DeepSeek" },
-  { value: "generic-compatible", label: "OpenAI 兼容接口" },
-];
 
 function getModelConfig(config: AppConfig, section: ModelSection) {
   return section === "text" ? config.contentModelApiConfig : config.imageModelApiConfig;
@@ -70,6 +59,10 @@ export function SettingsForm({ initialConfig }: { initialConfig: AppConfig }) {
         ...current,
         [field]: field === "timeout" ? Number(value) : value,
       };
+
+      if (field === "provider") {
+        nextModelConfig.modelName = getDefaultModelNameForProvider(section, value);
+      }
 
       if (section === "text") {
         return {
@@ -138,17 +131,14 @@ export function SettingsForm({ initialConfig }: { initialConfig: AppConfig }) {
                     {field === "provider" ? (
                       <select
                         className="input-base"
-                        value={String(modelConfig.provider ?? "")}
+                        value={String(modelConfig.provider ?? "openai")}
                         onChange={(event) => updateModel(section, field, event.target.value)}
                       >
-                        {providerOptions.map((option) => (
+                        {modelProviderOptions.map((option) => (
                           <option key={option.value} value={option.value}>
                             {option.label}
                           </option>
                         ))}
-                        {providerOptions.some((option) => option.value === modelConfig.provider) ? null : (
-                          <option value={modelConfig.provider}>{modelConfig.provider || "自定义服务商"}</option>
-                        )}
                       </select>
                     ) : (
                       <input

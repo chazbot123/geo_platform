@@ -1,4 +1,5 @@
 import { defaultAppConfig } from "@/lib/config/defaults";
+import { isVisibleModelProvider } from "@/lib/config/model-providers";
 import { normalizeApiKey } from "@/lib/integrations/auth";
 import {
   isNewApiAutoProvider,
@@ -9,7 +10,8 @@ import { ensureStorageReady, getConfig, saveConfig } from "@/lib/storage/data-st
 import type { AppConfig } from "@/lib/types";
 
 function normalizeProviderName(provider: string) {
-  return normalizeOpenAICompatibleProviderName(provider);
+  const normalized = normalizeOpenAICompatibleProviderName(provider);
+  return isVisibleModelProvider(normalized) ? normalized : "openai";
 }
 
 function sanitizeBaseUrl(baseUrl: string) {
@@ -40,6 +42,17 @@ function normalizeBaseUrl(provider: string, baseUrl: string) {
   return resolveConfiguredOpenAICompatibleEndpoint(normalizedProvider, trimmed);
 }
 
+function normalizeModelConfig(config: AppConfig["contentModelApiConfig"]) {
+  const provider = normalizeProviderName(config.provider);
+
+  return {
+    ...config,
+    provider,
+    baseUrl: normalizeBaseUrl(provider, config.baseUrl),
+    apiKey: normalizeApiKey(config.apiKey),
+  };
+}
+
 function normalizeConfig(config: AppConfig): AppConfig {
   const mergedPublishConfig = {
     ...defaultAppConfig.publishApiConfig,
@@ -50,24 +63,9 @@ function normalizeConfig(config: AppConfig): AppConfig {
 
   return {
     ...config,
-    stage1ModelApiConfig: {
-      ...config.stage1ModelApiConfig,
-      provider: normalizeProviderName(config.stage1ModelApiConfig.provider),
-      baseUrl: normalizeBaseUrl(config.stage1ModelApiConfig.provider, config.stage1ModelApiConfig.baseUrl),
-      apiKey: normalizeApiKey(config.stage1ModelApiConfig.apiKey),
-    },
-    contentModelApiConfig: {
-      ...config.contentModelApiConfig,
-      provider: normalizeProviderName(config.contentModelApiConfig.provider),
-      baseUrl: normalizeBaseUrl(config.contentModelApiConfig.provider, config.contentModelApiConfig.baseUrl),
-      apiKey: normalizeApiKey(config.contentModelApiConfig.apiKey),
-    },
-    imageModelApiConfig: {
-      ...config.imageModelApiConfig,
-      provider: normalizeProviderName(config.imageModelApiConfig.provider),
-      baseUrl: normalizeBaseUrl(config.imageModelApiConfig.provider, config.imageModelApiConfig.baseUrl),
-      apiKey: normalizeApiKey(config.imageModelApiConfig.apiKey),
-    },
+    stage1ModelApiConfig: normalizeModelConfig(config.stage1ModelApiConfig),
+    contentModelApiConfig: normalizeModelConfig(config.contentModelApiConfig),
+    imageModelApiConfig: normalizeModelConfig(config.imageModelApiConfig),
     publishApiConfig: {
       provider: normalizedPublishProvider,
       baseUrl: mergedPublishConfig.baseUrl,

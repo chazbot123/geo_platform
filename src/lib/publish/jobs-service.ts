@@ -82,6 +82,7 @@ export async function createPublishingJob(input: {
     imageUrls: draft.imageUrls,
     localImagePaths: draft.localImagePaths,
   });
+  const status = resolveInitialStatus(draft.platform);
   const job: PublishingJobRecord = {
     id: createRecordId(),
     taskId: input.taskId,
@@ -90,7 +91,7 @@ export async function createPublishingJob(input: {
     accountId: account?.id,
     accountName: account?.displayName ?? account?.accountName,
     executionMode: resolveExecutionMode(draft.platform),
-    status: resolveInitialStatus(draft.platform),
+    status,
     draftTitle: draft.title,
     draftBody: draft.body,
     draftTags: draft.tags,
@@ -114,6 +115,9 @@ export async function createPublishingJob(input: {
       createdAt: now(),
       updatedAt: now(),
     }),
+    queuedAt: status === "queued" ? now() : undefined,
+    retryCount: 0,
+    maxRetries: 3,
     createdAt: now(),
     updatedAt: now(),
   };
@@ -179,6 +183,9 @@ export async function createAccountPublishingJob(input: {
       createdAt: now(),
       updatedAt: now(),
     }),
+    queuedAt: descriptor?.automationStatus === "ready" ? now() : undefined,
+    retryCount: 0,
+    maxRetries: 3,
     createdAt: now(),
     updatedAt: now(),
   };
@@ -252,6 +259,9 @@ export async function createContentPoolPublishingJob(input: {
     executionStage: status,
     resumeKey: `${input.item.taskId}:${input.item.publishPlatform}:${input.item.accountId}:${input.item.id}`,
     lastExecutionAt: now(),
+    queuedAt: status === "queued" ? now() : undefined,
+    retryCount: 0,
+    maxRetries: 3,
     createdAt: now(),
     updatedAt: now(),
   };

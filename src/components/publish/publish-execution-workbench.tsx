@@ -176,6 +176,10 @@ function ArticleRow({
           <span>更新：{formatDateTime(job.lastExecutionAt ?? job.updatedAt)}</span>
           <span>状态：{jobStatusLabels[job.status]}</span>
           <span className="truncate">账号：{job.accountName ?? "--"}</span>
+          <span>Retry: {job.retryCount ?? 0}/{job.maxRetries ?? 3}</span>
+          <span>Next: {formatDateTime(job.nextRunAt ?? job.backoffUntil)}</span>
+          <span className="truncate">Risk: {job.accountRiskState ?? "--"}</span>
+          <span className="truncate">Queue: {job.queueBlockedReason ?? "--"}</span>
           {job.publishUrl ? (
             <a className="inline-flex items-center gap-1 text-accent hover:underline" href={job.publishUrl} target="_blank" rel="noreferrer">
               <ExternalLink className="h-3.5 w-3.5" />

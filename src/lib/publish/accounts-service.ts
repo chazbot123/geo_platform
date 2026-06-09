@@ -88,6 +88,12 @@ export async function listAuthenticatedPlatformAccounts(platform?: SocialPlatfor
     (item) =>
       item.loginStatus === "authenticated" &&
       item.status !== "disabled" &&
+      item.status !== "cooling_down" &&
+      item.status !== "needs_login" &&
+      item.status !== "verification_blocked" &&
+      item.riskState !== "disabled" &&
+      item.riskState !== "verification_blocked" &&
+      item.riskState !== "needs_login" &&
       (!platform || item.platform === platform),
   );
 }
@@ -95,7 +101,8 @@ export async function listAuthenticatedPlatformAccounts(platform?: SocialPlatfor
 export function isPublishablePlatformAccount(account: PlatformAccountRecord) {
   return (
     account.loginStatus === "authenticated" &&
-    account.status === "valid" &&
+    (account.status === "valid" || account.status === "active") &&
+    (!account.riskState || account.riskState === "active") &&
     account.provider === "electron" &&
     account.authType !== "manual"
   );
@@ -226,6 +233,7 @@ export async function createPlatformAccount(input: {
     sessionPartition,
     loginStatus: input.loginStatus ?? "idle",
     status: input.status ?? "saved",
+    riskState: input.status === "valid" || input.status === "active" ? "active" : undefined,
     remark: input.remark?.trim(),
     createdAt: now(),
     updatedAt: now(),
@@ -325,6 +333,9 @@ export async function markPlatformAccountLoginStarted(accountId: string) {
   return updatePlatformAccountRecord(accountId, {
     loginStatus: "pending",
     status: "saved",
+    riskState: undefined,
+    riskReason: undefined,
+    cooldownUntil: undefined,
     lastLoginStartedAt: now(),
     lastError: undefined,
   });
@@ -340,7 +351,10 @@ export async function markPlatformAccountLoginResult(
 ) {
   return updatePlatformAccountRecord(accountId, {
     loginStatus: result.loginStatus,
-    status: result.status ?? (result.loginStatus === "authenticated" ? "valid" : "saved"),
+    status: result.status ?? (result.loginStatus === "authenticated" ? "active" : "saved"),
+    riskState: result.loginStatus === "authenticated" ? "active" : "needs_login",
+    riskReason: result.loginStatus === "authenticated" ? undefined : result.lastError,
+    cooldownUntil: result.loginStatus === "authenticated" ? undefined : undefined,
     lastError: result.lastError,
     lastLoginCompletedAt: now(),
     lastValidatedAt: now(),

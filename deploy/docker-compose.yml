@@ -27,6 +27,13 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME:?Set ADMIN_USERNAME in the deployment environment}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in the deployment environment}
       CORS_ORIGIN: ${CORS_ORIGIN:-*}
+      RELEASE_BASE_URL: ${RELEASE_BASE_URL:?Set RELEASE_BASE_URL to the HTTPS origin that serves release files}
+      RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS:-60000}
+      PUBLIC_RATE_LIMIT_MAX: ${PUBLIC_RATE_LIMIT_MAX:-60}
+      ADMIN_RATE_LIMIT_MAX: ${ADMIN_RATE_LIMIT_MAX:-300}
+      RELEASES_DIR: /var/www/releases
+    volumes:
+      - release-files:/var/www/releases
 
   admin-web:
     build:

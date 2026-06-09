@@ -398,7 +398,17 @@ export type LegacyPublishPlatform = PublishPlatform;
 
 export type PlatformAccountProvider = "electron" | "manual";
 export type PlatformAccountAuthType = "session" | "cookie" | "manual";
-export type PlatformAccountStatus = "saved" | "valid" | "invalid" | "disabled";
+export type PlatformAccountRiskState =
+  | "active"
+  | "cooling_down"
+  | "needs_login"
+  | "verification_blocked"
+  | "disabled";
+export type PlatformAccountStatus =
+  | PlatformAccountRiskState
+  | "saved"
+  | "valid"
+  | "invalid";
 export type PlatformAccountLoginStatus = "idle" | "pending" | "authenticated" | "failed" | "cancelled";
 export type PublishingJobStatus =
   | "drafted"
@@ -438,6 +448,13 @@ export interface PlatformAccountRecord {
   lastError?: string;
   lastPublishCompletedAt?: string;
   lastPublishError?: string;
+  riskState?: PlatformAccountRiskState;
+  riskReason?: string;
+  riskUpdatedAt?: string;
+  cooldownUntil?: string;
+  manualResumeAt?: string;
+  dailyPublishCap?: number;
+  platformCooldownMinutes?: number;
   authPayloadPreview?: string;
   remark?: string;
   createdAt: string;
@@ -517,6 +534,13 @@ export interface PublishingJobRecord {
   executionStage?: string;
   resumeKey?: string;
   lastExecutionAt?: string;
+  queuedAt?: string;
+  nextRunAt?: string;
+  retryCount?: number;
+  maxRetries?: number;
+  backoffUntil?: string;
+  queueBlockedReason?: string;
+  accountRiskState?: PlatformAccountRiskState;
   sessionToken?: string;
   failureStage?: string;
   errorMessage?: string;
@@ -558,6 +582,29 @@ export interface PublishProgressSnapshot {
 export interface AccountPublishedJobsGroup {
   accountId: string;
   jobs: PublishingJobRecord[];
+}
+
+export type PublishAuditEventType =
+  | "job_created"
+  | "job_blocked"
+  | "job_started"
+  | "job_result"
+  | "job_retry_scheduled"
+  | "account_paused"
+  | "account_resumed";
+
+export interface PublishAuditLogEntry {
+  id: string;
+  eventType: PublishAuditEventType;
+  jobId?: string;
+  taskId?: string;
+  platform?: SocialPlatform;
+  accountId?: string;
+  accountName?: string;
+  status?: PublishingJobStatus;
+  reason?: string;
+  details?: Record<string, unknown>;
+  createdAt: string;
 }
 
 export interface PublishableAccountSummary {

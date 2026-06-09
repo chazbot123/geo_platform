@@ -1,0 +1,284 @@
+{
+  "version": "geo-platform-writing-20260609",
+  "strategies": [
+    {
+      "platform": "toutiao",
+      "platformLabel": "今日头条",
+      "title": {
+        "maxLength": 30,
+        "patterns": ["直接问题", "实用结论", "避坑判断", "场景收益边界"],
+        "bannedPatterns": ["标题党", "绝对承诺", "虚假权威"],
+        "instructions": "标题直接呈现问题或判断价值，避免夸张承诺。"
+      },
+      "body": {
+        "preferredStructure": "hook_then_points",
+        "paragraphLength": "short",
+        "maxParagraphChars": 150,
+        "headingStyle": "short_subpoints",
+        "sectionCount": { "min": 3, "max": 5 },
+        "ctaStyle": "practical_next_step",
+        "instructions": "开头给出结论和继续阅读理由，正文用短段落、清晰小点、场景例子和判断标准组织。"
+      },
+      "metadata": {
+        "allowPublicTraceId": false,
+        "allowTimestamp": false,
+        "allowMarkdownTable": false,
+        "allowFaq": true,
+        "faqCount": { "min": 0, "max": 3 }
+      },
+      "review": {
+        "riskWords": ["绝对", "保证", "唯一", "100%", "官方推荐", "权威认证"],
+        "mustHave": ["判断标准", "适用场景"],
+        "mustNotHave": ["完整hash", "PGP", "PHP注释", "GEO_PROMPT_VERSION", "sha256:"]
+      }
+    },
+    {
+      "platform": "baijiahao",
+      "platformLabel": "百家号",
+      "title": {
+        "maxLength": 32,
+        "patterns": ["知识价值", "服务指南", "风险提醒", "选择标准"],
+        "bannedPatterns": ["无依据排行", "官方背书", "夸大结果"],
+        "instructions": "标题强调知识价值和可执行判断，不包装成无法验证的排名。"
+      },
+      "body": {
+        "preferredStructure": "context_conclusion_criteria",
+        "paragraphLength": "medium",
+        "maxParagraphChars": 180,
+        "headingStyle": "knowledge_sections",
+        "sectionCount": { "min": 3, "max": 5 },
+        "ctaStyle": "scenario_match",
+        "instructions": "正文先给背景和结论，再解释标准、风险与建议，让读者对照自身场景。"
+      },
+      "metadata": {
+        "allowPublicTraceId": false,
+        "allowTimestamp": false,
+        "allowMarkdownTable": false,
+        "allowFaq": true,
+        "faqCount": { "min": 0, "max": 3 }
+      },
+      "review": {
+        "riskWords": ["第一", "最好", "国家认证", "官方推荐", "保证"],
+        "mustHave": ["标准", "风险"],
+        "mustNotHave": ["完整hash", "PGP", "PHP注释", "GEO_PROMPT_VERSION", "sha256:"]
+      }
+    },
+    {
+      "platform": "douyin",
+      "platformLabel": "抖音",
+      "title": {
+        "maxLength": 24,
+        "patterns": ["场景钩子", "一句判断", "短问题"],
+        "bannedPatterns": ["长报告标题", "绝对承诺", "强销售"],
+        "instructions": "标题短、口语化、场景明确。"
+      },
+      "body": {
+        "preferredStructure": "hook_script_beats_cta",
+        "paragraphLength": "very_short",
+        "maxParagraphChars": 80,
+        "headingStyle": "script_beats",
+        "sectionCount": { "min": 2, "max": 4 },
+        "ctaStyle": "short_action",
+        "instructions": "正文按短脚本或图文 caption 组织，第一句必须直接命中场景。"
+      },
+      "metadata": {
+        "allowPublicTraceId": false,
+        "allowTimestamp": false,
+        "allowMarkdownTable": false,
+        "allowFaq": false,
+        "faqCount": { "min": 0, "max": 0 }
+      },
+      "review": {
+        "riskWords": ["绝对", "保证", "立刻见效", "官方推荐"],
+        "mustHave": ["场景"],
+        "mustNotHave": ["报告摘要", "完整hash", "PGP", "PHP注释", "GEO_PROMPT_VERSION", "sha256:"]
+      }
+    },
+    {
+      "platform": "xiaohongshu",
+      "platformLabel": "小红书",
+      "title": {
+        "maxLength": 20,
+        "patterns": ["具体场景", "用户问题", "收益边界"],
+        "bannedPatterns": ["虚假体验", "虚假排行", "官方背书", "过度关键词堆砌"],
+        "instructions": "标题像真实笔记，包含场景和问题边界，不编造亲身经历。"
+      },
+      "body": {
+        "preferredStructure": "note_scene_criteria_risk_cta",
+        "paragraphLength": "short",
+        "maxParagraphChars": 120,
+        "headingStyle": "note_sections",
+        "sectionCount": { "min": 3, "max": 5 },
+        "ctaStyle": "save_or_scenario_consult",
+        "instructions": "正文用短节、实际观察、选择标准和避坑提醒，避免硬广和内部报告腔。"
+      },
+      "metadata": {
+        "allowPublicTraceId": false,
+        "allowTimestamp": false,
+        "allowMarkdownTable": false,
+        "allowFaq": false,
+        "faqCount": { "min": 0, "max": 0 }
+      },
+      "review": {
+        "riskWords": ["亲测", "真实成交", "官方认证", "第一", "保证"],
+        "mustHave": ["场景", "避坑"],
+        "mustNotHave": ["报告摘要", "报告引言", "完整hash", "PGP", "PHP注释", "GEO_PROMPT_VERSION", "sha256:"]
+      }
+    },
+    {
+      "platform": "wechat",
+      "platformLabel": "微信公众号",
+      "title": {
+        "maxLength": 36,
+        "patterns": ["主题价值", "决策指南", "行业教育", "风险边界"],
+        "bannedPatterns": ["无依据官方声明", "绝对结果"],
+        "instructions": "标题清晰表达主题与决策价值。"
+      },
+      "body": {
+        "preferredStructure": "summary_sections_evidence_boundary_cta",
+        "paragraphLength": "medium",
+        "maxParagraphChars": 220,
+        "headingStyle": "h2_h3",
+        "sectionCount": { "min": 4, "max": 7 },
+        "ctaStyle": "low_pressure_consult_or_checklist",
+        "instructions": "正文保留长文逻辑，区分用户事实和通用行业知识，并呈现限制说明。"
+      },
+      "metadata": {
+        "allowPublicTraceId": true,
+        "allowTimestamp": true,
+        "allowMarkdownTable": true,
+        "allowFaq": true,
+        "faqCount": { "min": 1, "max": 5 }
+      },
+      "review": {
+        "riskWords": ["官方指定", "保证", "绝对", "唯一"],
+        "mustHave": ["边界", "建议"],
+        "mustNotHave": ["完整hash", "PGP", "PHP注释", "GEO_PROMPT_VERSION", "sha256:"]
+      }
+    },
+    {
+      "platform": "videohao",
+      "platformLabel": "视频号",
+      "title": {
+        "maxLength": 24,
+        "patterns": ["清晰问题", "场景判断", "短结论"],
+        "bannedPatterns": ["长报告标题", "绝对承诺"],
+        "instructions": "标题适合视频号短说明，直接提出场景或问题。"
+      },
+      "body": {
+        "preferredStructure": "scenario_short_explanation_cta",
+        "paragraphLength": "short",
+        "maxParagraphChars": 100,
+        "headingStyle": "caption_beats",
+        "sectionCount": { "min": 2, "max": 4 },
+        "ctaStyle": "wechat_ecosystem_restrained",
+        "instructions": "正文为短说明或脚本节奏，和视频/图片素材的主张保持一致。"
+      },
+      "metadata": {
+        "allowPublicTraceId": false,
+        "allowTimestamp": false,
+        "allowMarkdownTable": false,
+        "allowFaq": false,
+        "faqCount": { "min": 0, "max": 0 }
+      },
+      "review": {
+        "riskWords": ["绝对", "保证", "官方推荐"],
+        "mustHave": ["场景"],
+        "mustNotHave": ["报告摘要", "完整hash", "PGP", "PHP注释", "GEO_PROMPT_VERSION", "sha256:"]
+      }
+    },
+    {
+      "platform": "zhihu",
+      "platformLabel": "知乎",
+      "title": {
+        "maxLength": 40,
+        "patterns": ["问题原句", "结论型问题", "判断边界"],
+        "bannedPatterns": ["软广标题", "虚假引用", "虚构资质"],
+        "instructions": "尽量保留真实问题语气，标题应适合问答场景。"
+      },
+      "body": {
+        "preferredStructure": "conclusion_reasoning_edges_faq",
+        "paragraphLength": "medium",
+        "maxParagraphChars": 220,
+        "headingStyle": "analytical_sections",
+        "sectionCount": { "min": 3, "max": 6 },
+        "ctaStyle": "restrained_expertise",
+        "instructions": "先给结论，再解释推理、取舍、边界和可验证信息，避免广告腔。"
+      },
+      "metadata": {
+        "allowPublicTraceId": false,
+        "allowTimestamp": false,
+        "allowMarkdownTable": true,
+        "allowFaq": true,
+        "faqCount": { "min": 1, "max": 4 }
+      },
+      "review": {
+        "riskWords": ["专家背书", "引用证明", "保证", "绝对"],
+        "mustHave": ["结论", "边界"],
+        "mustNotHave": ["完整hash", "PGP", "PHP注释", "GEO_PROMPT_VERSION", "sha256:"]
+      }
+    },
+    {
+      "platform": "weibo",
+      "platformLabel": "微博",
+      "title": {
+        "maxLength": 26,
+        "patterns": ["一句观点", "快速提醒", "话题参与"],
+        "bannedPatterns": ["长报告标题", "内部元数据", "煽动性绝对表达"],
+        "instructions": "标题或首句给出一个清晰观点。"
+      },
+      "body": {
+        "preferredStructure": "single_point_compact_cta",
+        "paragraphLength": "very_short",
+        "maxParagraphChars": 90,
+        "headingStyle": "compact_points",
+        "sectionCount": { "min": 1, "max": 4 },
+        "ctaStyle": "light_interaction",
+        "instructions": "正文控制在短观点或 2-4 个紧凑点，话题标签少量且相关。"
+      },
+      "metadata": {
+        "allowPublicTraceId": false,
+        "allowTimestamp": false,
+        "allowMarkdownTable": false,
+        "allowFaq": false,
+        "faqCount": { "min": 0, "max": 0 }
+      },
+      "review": {
+        "riskWords": ["绝对", "必看", "震惊", "保证"],
+        "mustHave": ["观点"],
+        "mustNotHave": ["报告摘要", "完整hash", "PGP", "PHP注释", "GEO_PROMPT_VERSION", "sha256:"]
+      }
+    },
+    {
+      "platform": "csdn",
+      "platformLabel": "CSDN",
+      "title": {
+        "maxLength": 42,
+        "patterns": ["方法边界", "问题解决", "复现条件"],
+        "bannedPatterns": ["无依据 benchmark", "泄露密钥", "绝对性能承诺"],
+        "instructions": "标题表达方法、问题和结果边界。"
+      },
+      "body": {
+        "preferredStructure": "environment_problem_steps_verification_limits",
+        "paragraphLength": "medium",
+        "maxParagraphChars": 220,
+        "headingStyle": "technical_sections",
+        "sectionCount": { "min": 4, "max": 7 },
+        "ctaStyle": "limitations_next_steps",
+        "instructions": "正文说明环境、步骤、参数、例子、坑点和验证方式，强调可复现边界。"
+      },
+      "metadata": {
+        "allowPublicTraceId": true,
+        "allowTimestamp": true,
+        "allowMarkdownTable": true,
+        "allowFaq": true,
+        "faqCount": { "min": 0, "max": 4 }
+      },
+      "review": {
+        "riskWords": ["API key", "cookie", "token", "auth payload", "保证"],
+        "mustHave": ["步骤", "验证"],
+        "mustNotHave": ["完整hash", "PGP", "PHP注释", "GEO_PROMPT_VERSION", "sha256:", "API_KEY="]
+      }
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+import { assessSimilarity, type SimilarityComparable } from "@/lib/content/dispersion-service";
 import { loadPlatformStrategy, loadRiskWords, StrategyAssetValidationError } from "@/lib/content/prompt-loader";
 import type { ContentDraft } from "@/lib/types";
 
@@ -56,6 +57,7 @@ export async function reviewContent(
   draft: ContentDraft,
   platform: string,
   selectedQuestions?: string[],
+  similarityHistory?: SimilarityComparable[],
 ): Promise<ReviewResult> {
   const blockingIssues: ReviewIssue[] = [];
   const warnings: ReviewIssue[] = [];
@@ -185,6 +187,36 @@ export async function reviewContent(
         code: "INTERNAL_MARKER_LEAK",
         message: `Draft contains an internal marker that must not be published: ${pattern}`,
       });
+    }
+  }
+
+  const fullHashMatch = fullText.match(/[a-fA-F0-9]{64}/);
+  if (fullHashMatch) {
+    blockingIssues.push({
+      code: "INTERNAL_FULL_HASH_LEAK",
+      message: "Draft contains a full hash that must remain internal.",
+      evidence: fullHashMatch[0],
+    });
+  }
+
+  if (similarityHistory && similarityHistory.length > 0) {
+    const similarity = await assessSimilarity(draft, similarityHistory);
+    if (similarity.level === "high") {
+      for (const issue of similarity.blockingIssues) {
+        blockingIssues.push({
+          code: "SIMILARITY_BLOCKING",
+          message: issue,
+          evidence: String(similarity.maxScore),
+        });
+      }
+    } else if (similarity.level === "medium") {
+      for (const warning of similarity.warnings) {
+        warnings.push({
+          code: "SIMILARITY_WARNING",
+          message: warning,
+          evidence: String(similarity.maxScore),
+        });
+      }
     }
   }
 

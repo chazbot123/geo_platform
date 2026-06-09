@@ -52,6 +52,11 @@ function formatDate(value) {
   return new Date(value).toLocaleString("zh-CN", { hour12: false });
 }
 
+function maskHash(hash) {
+  if (!hash) return "-";
+  return `${hash.slice(0, 8)}...${hash.slice(-8)}`;
+}
+
 function feedbackQuery() {
   const params = new URLSearchParams();
   for (const [id, key] of [
@@ -156,6 +161,62 @@ async function loadSimpleList(path, target, render) {
   });
 }
 
+async function loadLicenses() {
+  const payload = await api("/api/admin/license-codes");
+  const list = $("#licensesList");
+  list.innerHTML = "";
+
+  if (!payload.licenseCodes.length) {
+    list.innerHTML = '<div class="empty">暂无授权码。</div>';
+    return;
+  }
+
+  payload.licenseCodes.forEach((item) => {
+    const node = document.createElement("div");
+    node.className = "plain-item";
+    node.innerHTML = `
+      <strong>${maskHash(item.codeHash)}</strong>
+      <span>${item.status} · max ${item.maxDevices} · ${item.issuedTo || "未填写发放对象"} · expires ${formatDate(item.expiresAt)}</span>
+      <button class="secondary" data-license-id="${item.id}" ${item.status === "disabled" ? "disabled" : ""}>停用</button>
+    `;
+    node.querySelector("button").addEventListener("click", async () => {
+      await api(`/api/admin/license-codes/${encodeURIComponent(item.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: "disabled", disabledReason: "Disabled in admin web" }),
+      });
+      showToast("授权码已停用", "success");
+      await loadLicenses();
+    });
+    list.appendChild(node);
+  });
+}
+
+async function createLicense() {
+  const code = $("#licenseCodeInput").value.trim();
+  if (!code) {
+    showToast("请输入授权码", "error");
+    return;
+  }
+
+  await api("/api/admin/license-codes", {
+    method: "POST",
+    body: JSON.stringify({
+      code,
+      issuedTo: $("#licenseIssuedToInput").value.trim(),
+      maxDevices: Number.parseInt($("#licenseMaxDevicesInput").value, 10) || 1,
+      expiresAt: $("#licenseExpiresAtInput").value ? new Date($("#licenseExpiresAtInput").value).toISOString() : "",
+      notes: $("#licenseNotesInput").value.trim(),
+    }),
+  });
+
+  ["licenseCodeInput", "licenseIssuedToInput", "licenseExpiresAtInput", "licenseNotesInput"].forEach((id) => {
+    $(`#${id}`).value = "";
+  });
+  $("#licenseMaxDevicesInput").value = "1";
+  showToast("授权码已创建", "success");
+  await loadLicenses();
+}
+
 function bindEvents() {
   $("#loginButton").addEventListener("click", async () => {
     const username = $("#usernameInput").value;
@@ -195,11 +256,10 @@ function bindEvents() {
   $("#refreshDevicesButton").addEventListener("click", () =>
     loadSimpleList("/api/admin/devices", "devicesList", (item) => `<strong>${item.fingerprint}</strong><span>${item.status} · ${formatDate(item.last_seen_at)}</span>`),
   );
-  $("#refreshLicensesButton").addEventListener("click", () =>
-    loadSimpleList("/api/admin/license-codes", "licensesList", (item) => `<strong>${item.code}</strong><span>${item.status} · max ${item.max_devices}</span>`),
-  );
+  $("#refreshLicensesButton").addEventListener("click", () => loadLicenses().catch((error) => showToast(error.message, "error")));
+  $("#createLicenseButton").addEventListener("click", () => createLicense().catch((error) => showToast(error.message, "error")));
   $("#refreshBindingsButton").addEventListener("click", () =>
-    loadSimpleList("/api/admin/device-license-bindings", "bindingsList", (item) => `<strong>${item.code}</strong><span>${item.fingerprint} · ${item.status}</span>`),
+    loadSimpleList("/api/admin/device-license-bindings", "bindingsList", (item) => `<strong>${maskHash(item.code)}</strong><span>${item.fingerprint} · ${item.status}</span>`),
   );
 }
 

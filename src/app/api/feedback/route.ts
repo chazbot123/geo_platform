@@ -1,24 +1,11 @@
 import { NextResponse } from "next/server";
 import type { FeedbackPayload } from "@/lib/feedback/client";
-import { FEEDBACK_ISSUE_TYPES } from "@/lib/feedback/client";
+import { isFeedbackPayload } from "@/lib/feedback/validation";
 
 export const runtime = "nodejs";
 
-const DEFAULT_FEEDBACK_ENDPOINT = "http://8.134.115.153/api/feedback";
-
-function isFeedbackPayload(payload: Partial<FeedbackPayload>): payload is FeedbackPayload {
-  return (
-    typeof payload.id === "string" &&
-    FEEDBACK_ISSUE_TYPES.includes(payload.type as FeedbackPayload["type"]) &&
-    typeof payload.message === "string" &&
-    payload.message.trim().length > 0 &&
-    typeof payload.contact === "string" &&
-    typeof payload.appVersion === "string" &&
-    typeof payload.deviceFingerprint === "string" &&
-    typeof payload.platform === "string" &&
-    typeof payload.clientTime === "string" &&
-    typeof payload.createdAt === "string"
-  );
+function configuredEndpoint() {
+  return process.env.GEO_FEEDBACK_ENDPOINT?.trim() || "";
 }
 
 export async function POST(request: Request) {
@@ -29,8 +16,17 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "反馈内容不完整" }, { status: 400 });
     }
 
-    const endpoint = process.env.GEO_FEEDBACK_ENDPOINT ?? DEFAULT_FEEDBACK_ENDPOINT;
-    const response = await fetch(endpoint, {
+    const endpoint = configuredEndpoint();
+    if (!endpoint) {
+      return NextResponse.json({ error: "反馈服务端点未配置" }, { status: 503 });
+    }
+
+    const upstreamUrl = new URL(endpoint);
+    if (process.env.NODE_ENV === "production" && upstreamUrl.protocol !== "https:") {
+      return NextResponse.json({ error: "生产环境反馈端点必须使用 HTTPS" }, { status: 503 });
+    }
+
+    const response = await fetch(upstreamUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -40,7 +36,7 @@ export async function POST(request: Request) {
 
     if (!response.ok) {
       return NextResponse.json(
-        { error: typeof result.error === "string" ? result.error : "服务器暂时不可用，请稍后重试" },
+        { error: typeof result.error === "string" ? result.error : "服务端暂时不可用，请稍后重试" },
         { status: response.status },
       );
     }

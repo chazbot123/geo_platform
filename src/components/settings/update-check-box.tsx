@@ -53,8 +53,7 @@ export function UpdateCheckBox({ currentVersion }: { currentVersion: string }) {
     }
   }
 
-  const noticeClass =
-    notice?.tone === "success" ? "text-emerald-400" : notice?.tone === "error" ? "text-danger" : "text-accent";
+  const noticeClass = notice?.tone === "success" ? "text-emerald-400" : notice?.tone === "error" ? "text-danger" : "text-accent";
 
   return (
     <section className="rounded-lg border border-stroke bg-panel/70 p-5 shadow-panel">
@@ -62,7 +61,7 @@ export function UpdateCheckBox({ currentVersion }: { currentVersion: string }) {
         <div className="space-y-1">
           <h3 className="font-display text-lg font-bold text-ink">检查更新</h3>
           <p className="text-sm leading-6 text-muted">
-            当前版本 {currentVersion}。更新只从服务器 release 清单和安装包下载，不执行远程脚本或源码。
+            当前版本 {currentVersion}。更新只从服务端 release 清单和安装包下载，不执行远程脚本或源码。
           </p>
         </div>
         <button

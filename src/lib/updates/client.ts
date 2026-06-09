@@ -100,15 +100,23 @@ export async function checkLatestUpdate(input: UpdateCheckInput = {}) {
   return result as LatestReleaseManifest;
 }
 
-async function calculateSha256(buffer: ArrayBuffer) {
+export async function calculateSha256(buffer: ArrayBuffer) {
   const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
   return Array.from(new Uint8Array(hashBuffer))
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
 }
 
+export async function verifySha256(buffer: ArrayBuffer, expectedSha256: string) {
+  const actualSha256 = await calculateSha256(buffer);
+  return {
+    actualSha256,
+    matches: actualSha256.toLowerCase() === expectedSha256.toLowerCase(),
+  };
+}
+
 function getFileNameFromUrl(url: string) {
-  const parsed = new URL(url);
+  const parsed = new URL(url, window.location.href);
   const fileName = parsed.pathname.split("/").filter(Boolean).pop();
   return fileName ? decodeURIComponent(fileName) : "GEO-Desktop-Update.exe";
 }
@@ -124,8 +132,8 @@ export async function downloadAndVerifyRelease(manifest: LatestReleaseManifest):
   }
 
   const buffer = await response.arrayBuffer();
-  const actualSha256 = await calculateSha256(buffer);
-  if (actualSha256.toLowerCase() !== manifest.asset.sha256.toLowerCase()) {
+  const { actualSha256, matches } = await verifySha256(buffer, manifest.asset.sha256);
+  if (!matches) {
     throw new Error("安装包校验失败，已阻止下载。");
   }
 

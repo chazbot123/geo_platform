@@ -1,0 +1,75 @@
+{
+  "version": "geo-risk-language-20260609",
+  "description": "Audited public-content risk language rules for GEO platform drafts.",
+  "blockingWords": [
+    "绝对",
+    "保证",
+    "包治",
+    "稳赚",
+    "必赚",
+    "唯一",
+    "100%",
+    "永久",
+    "无风险",
+    "零风险",
+    "万能",
+    "官方推荐",
+    "国家认证",
+    "权威认证",
+    "独家秘方",
+    "祖传秘方",
+    "PGP SIGNATURE",
+    "<?php",
+    "GEO_PROMPT_VERSION:",
+    "GEO_CONTENT_ID:",
+    "auth payload"
+  ],
+  "warningWords": [
+    "最好",
+    "第一",
+    "领先",
+    "顶级",
+    "极致",
+    "完美",
+    "所有人都适合",
+    "没有缺点",
+    "立竿见影",
+    "一劳永逸",
+    "业内公认",
+    "专家推荐"
+  ],
+  "contextualRules": [
+    {
+      "pattern": "[a-fA-F0-9]{64}",
+      "risk": "blocking",
+      "reason": "正文包含疑似完整 SHA-256 hash，内部追踪信息不得公开。"
+    },
+    {
+      "pattern": "(?:API[_-]?KEY|TOKEN|COOKIE|SESSION)\\s*[:=]",
+      "risk": "blocking",
+      "reason": "正文包含疑似密钥、token、cookie 或 session 字段。"
+    },
+    {
+      "pattern": "\\d+%.*(?:有效|成功|治愈|满意|提升)",
+      "risk": "warning",
+      "reason": "具体百分比效果需要可核验来源。"
+    },
+    {
+      "pattern": "(?:客户|用户|案例).*(?:张三|李四|王五|某某)",
+      "risk": "warning",
+      "reason": "疑似虚构客户案例，需要替换为可说明来源的事实或删除。"
+    },
+    {
+      "pattern": "(?:医疗|法律|金融).*(?:确定|一定|保证|无风险)",
+      "risk": "blocking",
+      "reason": "高风险领域出现确定性承诺，必须改写为边界化表达。"
+    }
+  ],
+  "preferredPhrases": [
+    "需要结合具体情况判断",
+    "以下是常见判断标准",
+    "建议核验资质/合同/现场情况",
+    "如果场景不同，结论可能变化",
+    "本文基于已提供资料和可核验信息整理"
+  ]
+}

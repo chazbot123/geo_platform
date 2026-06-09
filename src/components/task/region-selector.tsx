@@ -23,16 +23,16 @@ export function RegionSelector({ province, city, district, onChange }: RegionSel
   }, [city, cityOptions]);
 
   return (
-    <div className="rounded-2xl border border-stroke-strong bg-surface/30 p-5 md:col-span-2 xl:col-span-3">
+    <div className="rounded-lg border border-stroke-strong bg-surface/30 p-5 sm:col-span-2">
       <div className="flex flex-col gap-2 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <p className="label-base mb-1">地区选择</p>
           <h4 className="flex items-center gap-2 font-display text-lg font-bold text-ink">
             <MapPinned className="h-4 w-4 text-accent" />
-            选择省份 / 城市 / 城区
+            选择省份 / 城市 / 区县
           </h4>
           <p className="mt-2 text-sm leading-relaxed text-muted">
-            支持三级级联选择。你可以只停在省级，也可以继续选择到城市或城区。
+            支持三级联动选择。可以只选择省份，也可以继续选择到城市或区县。
           </p>
         </div>
         <p className="text-xs font-mono uppercase tracking-[0.16em] text-muted">
@@ -42,7 +42,7 @@ export function RegionSelector({ province, city, district, onChange }: RegionSel
 
       <div className="mt-5 grid gap-4 md:grid-cols-3">
         <label className="group relative">
-          <span className="label-base group-focus-within:text-accent transition-colors">省份</span>
+          <span className="label-base transition-colors group-focus-within:text-accent">省份</span>
           <select
             className="input-base peer"
             value={province}
@@ -65,7 +65,7 @@ export function RegionSelector({ province, city, district, onChange }: RegionSel
         </label>
 
         <label className="group relative">
-          <span className="label-base group-focus-within:text-accent transition-colors">城市</span>
+          <span className="label-base transition-colors group-focus-within:text-accent">城市</span>
           <select
             className="input-base peer"
             value={city}
@@ -89,7 +89,7 @@ export function RegionSelector({ province, city, district, onChange }: RegionSel
         </label>
 
         <label className="group relative">
-          <span className="label-base group-focus-within:text-accent transition-colors">城区</span>
+          <span className="label-base transition-colors group-focus-within:text-accent">区县</span>
           <select
             className="input-base peer"
             value={district}
@@ -102,7 +102,7 @@ export function RegionSelector({ province, city, district, onChange }: RegionSel
               })
             }
           >
-            <option value="">{city ? "请选择城区" : "请先选择城市"}</option>
+            <option value="">{city ? "请选择区县" : "请先选择城市"}</option>
             {districtOptions.map((item) => (
               <option key={`${province}-${city}-${item.name}`} value={item.name}>
                 {item.name}

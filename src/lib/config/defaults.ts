@@ -19,7 +19,7 @@ export const defaultAppConfig: AppConfig = {
     provider: "openai",
     baseUrl: "",
     apiKey: "",
-    modelName: "gpt-image2",
+    modelName: "gpt-image-2",
     timeout: 15000,
   },
   publishApiConfig: {

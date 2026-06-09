@@ -6,7 +6,7 @@ import {
 } from "@/lib/storage/data-store";
 import { createContentPoolPublishingJob, recordPublishingJobResult } from "@/lib/publish/jobs-service";
 import { getPlatformDescriptor, publishPlatformDescriptors } from "@/lib/publish/platforms";
-import { runQueuedPublishingJob } from "@/lib/publish/server-publish-runner";
+import { runDuePublishingJob } from "@/lib/publish/publish-queue-service";
 import type {
   ContentPoolItem,
   ContentPoolItemStatus,
@@ -175,7 +175,12 @@ export async function runNextPublishArticle() {
   await markContentStatus(job, "publishing");
 
   if (job.status === "queued" && job.executionMode === "electron_automation" && job.accountId) {
-    job = await runQueuedPublishingJob(job.id);
+    job = await runDuePublishingJob(job.id);
+  }
+
+  if (job.status === "queued" && job.queueBlockedReason) {
+    await markContentStatus(job, "pending_publish");
+    return getPublishExecutionState();
   }
 
   if (job.status === "published") {

@@ -203,7 +203,8 @@ function getPlatformPublishProgress(input = {}) {
 function setupPersistencePaths() {
   const userDataPath = app.getPath("userData");
   const sessionDataPath = path.join(userDataPath, "session-data");
-  const dataPath = path.join(userDataPath, "data");
+  const externalDataPath = String(process.env.GEO_DATA_DIR || "").trim();
+  const dataPath = externalDataPath || path.join(userDataPath, "data");
   fs.mkdirSync(sessionDataPath, { recursive: true });
   fs.mkdirSync(dataPath, { recursive: true });
   app.setPath("sessionData", sessionDataPath);
@@ -1390,7 +1391,26 @@ function detectBrokenPublishText(payload = {}) {
   ]
     .map((item) => String(item || ""))
     .filter(Boolean);
-  const brokenPattern = /�|\?{3,}|鍥|涓|绗|鏍|濉|寰|鐧|姝|彂|熶|叆|堕|煡|獙/;
+  const brokenPattern = new RegExp(
+    [
+      "\\uFFFD",
+      "\\?{3,}",
+      "\\u9365",
+      "\\u6D93",
+      "\\u7ED7",
+      "\\u93CD",
+      "\\u6FC9",
+      "\\u5BF0",
+      "\\u9427",
+      "\\u59DD",
+      "\\u5F42",
+      "\\u71B6",
+      "\\u53C6",
+      "\\u5815",
+      "\\u7161",
+      "\\u7359",
+    ].join("|"),
+  );
   const matched = values.find((value) => brokenPattern.test(value));
   return matched ? matched.slice(0, 120) : "";
 }
