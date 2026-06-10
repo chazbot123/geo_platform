@@ -15,8 +15,18 @@ export interface ElectronPlatformLoginRequest {
   sessionPartition?: string;
 }
 
+export interface ElectronPlatformAccountProfile {
+  accountName?: string;
+  displayName?: string;
+  platformAccountId?: string;
+  avatarUrl?: string;
+  sourceUrl?: string;
+}
+
 export interface ElectronPlatformLoginResult {
-  status: "closed" | "opened" | "unsupported";
+  status: "closed" | "opened" | "authenticated" | "unsupported";
+  reason?: string;
+  profile?: ElectronPlatformAccountProfile;
 }
 
 export interface ElectronPlatformSessionValidationRequest {

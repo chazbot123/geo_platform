@@ -70,6 +70,18 @@ function accountPublishabilityText(account: PlatformAccountRecord, isBridgeReady
   return "当前平台尚未开放账号登录。";
 }
 
+function buildLoginSuccessPatch(loginResult: Awaited<ReturnType<typeof openPlatformLoginWindow>>) {
+  return {
+    loginStatus: "authenticated" as const,
+    status: "valid" as const,
+    lastError: undefined,
+    accountName: loginResult.profile?.accountName,
+    displayName: loginResult.profile?.displayName,
+    platformAccountId: loginResult.profile?.platformAccountId,
+    avatarUrl: loginResult.profile?.avatarUrl,
+  };
+}
+
 function buildPublishedJobsMap(groups: AccountPublishedJobsGroup[]) {
   return Object.fromEntries(groups.map((group) => [group.accountId, group.jobs]));
 }
@@ -255,12 +267,19 @@ export function PlatformAccountCenter({
         throw new Error("当前桌面壳未暴露登录桥，无法打开平台登录窗。");
       }
 
-      const validationResult = await validatePlatformSessionWindow({
-        platform,
-        publishUrl: loginRequest.loginUrl,
-        sessionPartition: loginRequest.sessionPartition,
-      });
-      await applyDesktopLoginValidation(targetAccountId, platform, validationResult);
+      if (loginResult.status === "authenticated") {
+        await sendAccountPatch(targetAccountId, buildLoginSuccessPatch(loginResult));
+        await refreshAccounts();
+        setMessage(`${platformLabel(platform)}登录完成，已自动同步账号信息。`);
+      } else {
+        const validationResult = await validatePlatformSessionWindow({
+          platform,
+          publishUrl: loginRequest.loginUrl,
+          sessionPartition: loginRequest.sessionPartition,
+        });
+        await applyDesktopLoginValidation(targetAccountId, platform, validationResult);
+      }
+      window.dispatchEvent(new Event("geo-workflow-status-refresh"));
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "发起登录失败");
     } finally {

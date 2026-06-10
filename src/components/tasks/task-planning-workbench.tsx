@@ -100,6 +100,18 @@ function validationFailureText(status: string, reason?: string) {
   return "平台会话校验未通过，请重新登录。";
 }
 
+function buildLoginSuccessPatch(loginResult: Awaited<ReturnType<typeof openPlatformLoginWindow>>) {
+  return {
+    loginStatus: "authenticated" as const,
+    status: "valid" as const,
+    lastError: undefined,
+    accountName: loginResult.profile?.accountName,
+    displayName: loginResult.profile?.displayName,
+    platformAccountId: loginResult.profile?.platformAccountId,
+    avatarUrl: loginResult.profile?.avatarUrl,
+  };
+}
+
 function AccountAvatar({ account, platform }: { account: PlatformAccountRecord; platform: SocialPlatform }) {
   const fallback = getSocialPlatformIcon(platform);
   return (
@@ -249,30 +261,36 @@ export function TaskPlanningWorkbench() {
         throw new Error("当前环境缺少桌面登录桥，请启动 GEO 桌面版。");
       }
 
-      const validation = await validatePlatformSessionWindow({
-        platform,
-        publishUrl: payload.loginRequest.loginUrl,
-        sessionPartition: payload.loginRequest.sessionPartition,
-      });
-
-      if (validation.status === "authenticated") {
-        await patchAccountStatus(payload.account.id, {
-          loginStatus: "authenticated",
-          status: "valid",
-          lastError: undefined,
-        });
-        setNotice(`${platformLabels[platform]}账号已登录并通过校验。`);
+      if (loginResult.status === "authenticated") {
+        await patchAccountStatus(payload.account.id, buildLoginSuccessPatch(loginResult));
+        setNotice(`${platformLabels[platform]}账号已登录，已自动同步账号信息。`);
       } else {
-        const lastError = validationFailureText(validation.status, validation.reason);
-        await patchAccountStatus(payload.account.id, {
-          loginStatus: "failed",
-          status: "invalid",
-          lastError,
+        const validation = await validatePlatformSessionWindow({
+          platform,
+          publishUrl: payload.loginRequest.loginUrl,
+          sessionPartition: payload.loginRequest.sessionPartition,
         });
-        setError(`${platformLabels[platform]}登录未完成：${lastError}`);
+
+        if (validation.status === "authenticated") {
+          await patchAccountStatus(payload.account.id, {
+            loginStatus: "authenticated",
+            status: "valid",
+            lastError: undefined,
+          });
+          setNotice(`${platformLabels[platform]}账号已登录并通过校验。`);
+        } else {
+          const lastError = validationFailureText(validation.status, validation.reason);
+          await patchAccountStatus(payload.account.id, {
+            loginStatus: "failed",
+            status: "invalid",
+            lastError,
+          });
+          setError(`${platformLabels[platform]}登录未完成：${lastError}`);
+        }
       }
 
       await detectAccounts(true);
+      window.dispatchEvent(new Event("geo-workflow-status-refresh"));
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "发起平台登录失败。");
       await loadAccounts().catch(() => undefined);

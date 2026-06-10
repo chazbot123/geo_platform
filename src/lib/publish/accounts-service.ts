@@ -348,9 +348,13 @@ export async function markPlatformAccountLoginResult(
     loginStatus: PlatformAccountLoginStatus;
     status?: PlatformAccountStatus;
     lastError?: string;
+    accountName?: string;
+    displayName?: string;
+    platformAccountId?: string;
+    avatarUrl?: string;
   },
 ) {
-  return updatePlatformAccountRecord(accountId, {
+  const patch: Partial<PlatformAccountRecord> = {
     loginStatus: result.loginStatus,
     status: result.status ?? (result.loginStatus === "authenticated" ? "active" : "saved"),
     riskState: result.loginStatus === "authenticated" ? "active" : "needs_login",
@@ -359,7 +363,20 @@ export async function markPlatformAccountLoginResult(
     lastError: result.lastError,
     lastLoginCompletedAt: now(),
     lastValidatedAt: now(),
-  });
+  };
+  if (result.accountName?.trim()) {
+    patch.accountName = result.accountName.trim();
+  }
+  if (typeof result.displayName === "string") {
+    patch.displayName = result.displayName.trim() || undefined;
+  }
+  if (typeof result.platformAccountId === "string") {
+    patch.platformAccountId = result.platformAccountId.trim() || undefined;
+  }
+  if (typeof result.avatarUrl === "string") {
+    patch.avatarUrl = result.avatarUrl.trim() || undefined;
+  }
+  return updatePlatformAccountRecord(accountId, patch);
 }
 
 export function getPlatformAccountSessionPartition(account: Pick<PlatformAccountRecord, "id" | "sessionPartition">) {

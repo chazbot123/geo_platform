@@ -546,6 +546,212 @@ function getPlatformSessionSpec(platform, publishUrl) {
   }
 }
 
+async function getSessionCookieCount(spec, partition) {
+  const partitionSession = partition ? session.fromPartition(partition) : session.defaultSession;
+  try {
+    const cookies = await partitionSession.cookies.get({ url: spec.publishUrl });
+    return cookies.length;
+  } catch {
+    return 0;
+  }
+}
+
+async function inspectLoadedPlatformPage(windowInstance, spec, cookieCount) {
+  const inspection = await windowInstance.webContents.executeJavaScript(
+    `(() => {
+      const currentUrl = window.location.href;
+      const pageText = String(document.body?.innerText || document.body?.textContent || "").replace(/\\s+/g, " ").trim();
+      const loginUrlHints = ${JSON.stringify(spec.loginUrlHints)};
+      const loginTextHints = ${JSON.stringify(spec.loginTextHints)};
+      const lowerUrl = currentUrl.toLowerCase();
+      const matchedUrlHint = loginUrlHints.find((hint) => lowerUrl.includes(String(hint).toLowerCase())) || "";
+      const visibleControls = Array.from(document.querySelectorAll("input, textarea, button, [role='button'], a"))
+        .filter((element) => {
+          const style = window.getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
+        });
+      const hasLoginInput = visibleControls.some((element) => {
+        const text = [
+          element.getAttribute("placeholder"),
+          element.getAttribute("aria-label"),
+          element.getAttribute("name"),
+          element.getAttribute("type"),
+          element.textContent,
+        ].filter(Boolean).join(" ");
+        return /手机号|手机|验证码|密码|账号|email|e-mail|password|tel|login|signin/i.test(text);
+      });
+      const hasLoginAction = visibleControls.some((element) => {
+        const text = String(element.textContent || element.getAttribute("aria-label") || "").replace(/\\s+/g, "");
+        return /扫码登录|账号登录|密码登录|验证码登录|立即登录|请先登录|登录公众平台|百度账号登录/.test(text);
+      });
+      const hasLoginFormSignal = Boolean(matchedUrlHint || hasLoginInput || hasLoginAction);
+      const matchedTextHint = hasLoginFormSignal ? (loginTextHints.find((hint) => pageText.includes(hint)) || "") : "";
+      return {
+        currentUrl,
+        matchedUrlHint,
+        matchedTextHint,
+      };
+    })()`,
+    true,
+  );
+
+  if (inspection?.matchedUrlHint || inspection?.matchedTextHint) {
+    return {
+      status: cookieCount > 0 ? "expired" : "missing_session",
+      reason: inspection?.matchedTextHint
+        ? `页面显示登录提示：${inspection.matchedTextHint}`
+        : `页面跳转到登录相关地址：${inspection?.matchedUrlHint || inspection?.currentUrl || "unknown"}`,
+      currentUrl: inspection?.currentUrl || spec.publishUrl,
+      cookieCount,
+    };
+  }
+
+  return {
+    status: "authenticated",
+    reason: cookieCount > 0 ? `检测到 ${cookieCount} 个会话 Cookie，且页面未出现登录提示。` : "页面未出现登录提示，判定为已登录。",
+    currentUrl: inspection?.currentUrl || spec.publishUrl,
+    cookieCount,
+  };
+}
+
+function buildPlatformAccountProfileProbe(platform) {
+  switch (String(platform || "").trim()) {
+    case "toutiao":
+      return {
+        displayNameSelectors: [".user-name", ".header-user-name", ".user__name", ".header-right .name", ".header-user-info .name", ".avatar-name"],
+        avatarSelectors: [".header-avatar img", ".user-avatar img", ".avatar img", "img[src*='toutiaoimg.com']"],
+        accountIdSelectors: [".user-id", ".account-id", "[data-e2e='user-id']"],
+        idPatterns: ["头条号[:：\\\\s]*([A-Za-z0-9_-]{4,})", "账号ID[:：\\\\s]*([A-Za-z0-9_-]{4,})", "ID[:：\\\\s]*([A-Za-z0-9_-]{4,})"],
+      };
+    case "douyin":
+      return {
+        displayNameSelectors: [".semi-navigation-header .user-name", ".creator-header-user-name", ".account-info-name", ".creator-header .name", "[data-e2e='creator-name']"],
+        avatarSelectors: [".semi-navigation-header img", ".creator-header img", ".account-avatar img", "img[src*='douyinpic.com']"],
+        accountIdSelectors: [".account-id", "[data-e2e='account-id']", ".creator-header .user-id"],
+        idPatterns: ["抖音号[:：\\\\s]*([A-Za-z0-9._-]{4,})", "账号ID[:：\\\\s]*([A-Za-z0-9._-]{4,})", "ID[:：\\\\s]*([A-Za-z0-9._-]{4,})"],
+      };
+    default:
+      return {
+        displayNameSelectors: [],
+        avatarSelectors: [],
+        accountIdSelectors: [],
+        idPatterns: ["账号ID[:：\\\\s]*([A-Za-z0-9._-]{4,})", "ID[:：\\\\s]*([A-Za-z0-9._-]{4,})"],
+      };
+  }
+}
+
+async function extractPlatformAccountProfile(windowInstance, input = {}) {
+  const probe = buildPlatformAccountProfileProbe(input.platform);
+  return windowInstance.webContents.executeJavaScript(
+    `(() => {
+      const probe = ${JSON.stringify(probe)};
+      const blockedNames = new Set(["主页", "创作", "文章", "视频", "微头条", "管理", "数据", "收益", "任务", "创作中心", "发布", "发布作品", "内容管理", "作品管理", "首页", "消息", "登录", "退出登录"]);
+      const normalizeText = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+      const isVisible = (element) => {
+        if (!element) return false;
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
+      };
+      const pickTextBySelectors = (selectors) => {
+        for (const selector of selectors || []) {
+          const node = document.querySelector(selector);
+          const text = normalizeText(node?.textContent);
+          if (text && isVisible(node) && !blockedNames.has(text) && text.length >= 2 && text.length <= 40) return text;
+        }
+        return "";
+      };
+      const pickAvatarBySelectors = (selectors) => {
+        for (const selector of selectors || []) {
+          const node = document.querySelector(selector);
+          if (!node || !isVisible(node)) continue;
+          const src = normalizeText(node.getAttribute("src") || node.getAttribute("data-src") || "");
+          if (src && /^https?:\\/\\//i.test(src)) return src;
+          const backgroundImage = normalizeText(window.getComputedStyle(node).backgroundImage || "");
+          const matched = backgroundImage.match(/url\\(["']?(https?:[^"')]+)["']?\\)/i);
+          if (matched?.[1]) return matched[1];
+        }
+        return "";
+      };
+      const parseJson = (value) => {
+        try {
+          return JSON.parse(value);
+        } catch (_) {
+          return null;
+        }
+      };
+      const storageCandidates = [];
+      const walkObject = (node, trail, depth) => {
+        if (!node || depth > 3) return;
+        if (typeof node === "string") {
+          storageCandidates.push([trail.join("."), node]);
+          return;
+        }
+        if (typeof node !== "object") return;
+        if (Array.isArray(node)) {
+          node.slice(0, 8).forEach((item, index) => walkObject(item, [...trail, String(index)], depth + 1));
+          return;
+        }
+        Object.entries(node).slice(0, 30).forEach(([key, value]) => walkObject(value, [...trail, key], depth + 1));
+      };
+      for (const storage of [window.localStorage, window.sessionStorage]) {
+        try {
+          for (let index = 0; index < storage.length; index += 1) {
+            const key = storage.key(index);
+            if (!key || !/user|account|profile|creator|login|member/i.test(key)) continue;
+            const raw = storage.getItem(key);
+            if (!raw) continue;
+            const parsed = parseJson(raw);
+            if (parsed) walkObject(parsed, [key], 0);
+          }
+        } catch (_) {
+          // Ignore storage access errors.
+        }
+      }
+      const pickStorageValue = (pattern, validator) => {
+        for (const [trail, value] of storageCandidates) {
+          if (!pattern.test(trail)) continue;
+          const text = normalizeText(value);
+          if (text && (!validator || validator(text))) return text;
+        }
+        return "";
+      };
+      const fallbackName = Array.from(document.querySelectorAll("header *, nav *, [class*='header'] *, [class*='avatar'] *"))
+        .filter((element) => isVisible(element))
+        .map((element) => normalizeText(element.textContent))
+        .find((text) => text && !blockedNames.has(text) && text.length >= 2 && text.length <= 32) || "";
+      const pageText = normalizeText(document.body?.innerText || "");
+      let platformAccountId = pickTextBySelectors(probe.accountIdSelectors).replace(/^(账号ID|ID|抖音号|头条号)[:：\\s]*/i, "")
+        || pickStorageValue(/uid|user_id|userid|sec_uid|secuid|account_id|accountid|profile_id|profileid|memberid/i, (text) => text.length >= 4)
+        || "";
+      if (!platformAccountId) {
+        for (const source of probe.idPatterns || []) {
+          const matched = pageText.match(new RegExp(source, "i"));
+          if (matched?.[1]) {
+            platformAccountId = normalizeText(matched[1]);
+            break;
+          }
+        }
+      }
+      const displayName = pickTextBySelectors(probe.displayNameSelectors)
+        || pickStorageValue(/nickname|nick_name|screen_name|display_name|displayname|name|user_name|username|authorname/i, (text) => !blockedNames.has(text) && text.length >= 2 && text.length <= 40)
+        || fallbackName;
+      const avatarUrl = pickAvatarBySelectors(probe.avatarSelectors)
+        || pickStorageValue(/avatar|avatarurl|avatar_url|head_url|headurl|portrait|image/i, (text) => /^https?:\\/\\//i.test(text));
+      const accountName = normalizeText(displayName || platformAccountId || "");
+      return {
+        accountName: accountName || undefined,
+        displayName: normalizeText(displayName) || undefined,
+        platformAccountId: normalizeText(platformAccountId) || undefined,
+        avatarUrl: normalizeText(avatarUrl) || undefined,
+        sourceUrl: normalizeText(window.location.href) || undefined,
+      };
+    })()`,
+    true,
+  );
+}
+
 async function inspectPlatformSession(input = {}) {
   const spec = getPlatformSessionSpec(input.platform, input.publishUrl);
   const partition = typeof input.sessionPartition === "string" ? input.sessionPartition.trim() : "";
@@ -565,14 +771,7 @@ async function inspectPlatformSession(input = {}) {
     authPayload: input.authPayload,
   });
 
-  const partitionSession = partition ? session.fromPartition(partition) : session.defaultSession;
-  let cookieCount = 0;
-  try {
-    const cookies = await partitionSession.cookies.get({ url: spec.publishUrl });
-    cookieCount = cookies.length;
-  } catch {
-    cookieCount = 0;
-  }
+  const cookieCount = await getSessionCookieCount(spec, partition);
 
   const validationWindow = createScopedWindow({
     title: `${input.platform || "平台"} 会话检测`,
@@ -590,65 +789,7 @@ async function inspectPlatformSession(input = {}) {
       await validationWindow.loadURL(spec.publishUrl);
       await waitForWindowStable(validationWindow);
     }
-    const inspection = await validationWindow.webContents.executeJavaScript(
-      `(() => {
-        const currentUrl = window.location.href;
-        const pageText = String(document.body?.innerText || document.body?.textContent || "").replace(/\\s+/g, " ").trim();
-        const loginUrlHints = ${JSON.stringify(spec.loginUrlHints)};
-        const loginTextHints = ${JSON.stringify(spec.loginTextHints)};
-        const lowerUrl = currentUrl.toLowerCase();
-        const matchedUrlHint = loginUrlHints.find((hint) => lowerUrl.includes(String(hint).toLowerCase())) || "";
-        const visibleControls = Array.from(document.querySelectorAll("input, textarea, button, [role='button'], a"))
-          .filter((element) => {
-            const style = window.getComputedStyle(element);
-            const rect = element.getBoundingClientRect();
-            return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
-          });
-        const hasLoginInput = visibleControls.some((element) => {
-          const text = [
-            element.getAttribute("placeholder"),
-            element.getAttribute("aria-label"),
-            element.getAttribute("name"),
-            element.getAttribute("type"),
-            element.textContent,
-          ].filter(Boolean).join(" ");
-          return /手机号|手机|验证码|密码|账号|email|e-mail|password|tel|login|signin/i.test(text);
-        });
-        const hasLoginAction = visibleControls.some((element) => {
-          const text = String(element.textContent || element.getAttribute("aria-label") || "").replace(/\\s+/g, "");
-          return /扫码登录|账号登录|密码登录|验证码登录|立即登录|请先登录|登录公众平台|百度账号登录/.test(text);
-        });
-        const hasLoginFormSignal = Boolean(matchedUrlHint || hasLoginInput || hasLoginAction);
-        const matchedTextHint = hasLoginFormSignal ? (loginTextHints.find((hint) => pageText.includes(hint)) || "") : "";
-        return {
-          currentUrl,
-          matchedUrlHint,
-          matchedTextHint,
-          hasLoginInput,
-          hasLoginAction,
-          pageTextSample: pageText.slice(0, 240),
-        };
-      })()`,
-      true,
-    );
-
-    if (inspection?.matchedUrlHint || inspection?.matchedTextHint) {
-      return {
-        status: cookieCount > 0 ? "expired" : "missing_session",
-        reason: inspection?.matchedTextHint
-          ? `页面显示登录提示：${inspection.matchedTextHint}`
-          : `页面跳转到登录相关地址：${inspection?.matchedUrlHint || inspection?.currentUrl || "unknown"}`,
-        currentUrl: inspection?.currentUrl || spec.publishUrl,
-        cookieCount,
-      };
-    }
-
-    return {
-      status: "authenticated",
-      reason: cookieCount > 0 ? `检测到 ${cookieCount} 个会话 Cookie，且页面未出现登录提示。` : "页面未出现登录提示，判定为已登录。",
-      currentUrl: inspection?.currentUrl || spec.publishUrl,
-      cookieCount,
-    };
+    return inspectLoadedPlatformPage(validationWindow, spec, cookieCount);
   } catch (error) {
     return {
       status: "unknown",
@@ -671,6 +812,64 @@ function openPlatformLoginWindow(input = {}) {
 
   return new Promise((resolve) => {
     const loginWindow = createScopedWindow(input);
+    const spec = getPlatformSessionSpec(input.platform, loginUrl);
+    const partition = typeof input.sessionPartition === "string" ? input.sessionPartition.trim() : "";
+    let settled = false;
+    let inspecting = false;
+    let queuedInspection = false;
+    let periodicInspection = null;
+
+    const finish = (payload) => {
+      if (settled) return;
+      settled = true;
+      if (periodicInspection) {
+        clearInterval(periodicInspection);
+        periodicInspection = null;
+      }
+      resolve(payload);
+    };
+
+    const finishAuthenticated = (payload) => {
+      finish(payload);
+      if (!loginWindow.isDestroyed()) {
+        loginWindow.close();
+      }
+    };
+
+    const inspectLoginState = async () => {
+      if (settled || loginWindow.isDestroyed()) {
+        return;
+      }
+      if (inspecting) {
+        queuedInspection = true;
+        return;
+      }
+      inspecting = true;
+      try {
+        await waitForWindowStable(loginWindow);
+        const cookieCount = await getSessionCookieCount(spec, partition);
+        const sessionState = await inspectLoadedPlatformPage(loginWindow, spec, cookieCount);
+        if (sessionState.status === "authenticated") {
+          const profile = await extractPlatformAccountProfile(loginWindow, input).catch(() => ({}));
+          finishAuthenticated({
+            status: "authenticated",
+            reason: sessionState.reason,
+            profile,
+          });
+          return;
+        }
+      } catch (_) {
+        // Ignore transient inspection failures while the login page is still loading.
+      } finally {
+        inspecting = false;
+        if (queuedInspection && !settled) {
+          queuedInspection = false;
+          setTimeout(() => {
+            void inspectLoginState();
+          }, 600);
+        }
+      }
+    };
 
     loginWindow.webContents.setWindowOpenHandler(({ url }) => {
       shell.openExternal(url).catch(() => {});
@@ -678,12 +877,27 @@ function openPlatformLoginWindow(input = {}) {
     });
 
     loginWindow.on("closed", () => {
-      resolve({ status: "closed" });
+      finish({ status: "closed" });
     });
 
+    loginWindow.webContents.on("did-finish-load", () => {
+      void inspectLoginState();
+    });
+    loginWindow.webContents.on("did-navigate", () => {
+      void inspectLoginState();
+    });
+    loginWindow.webContents.on("did-navigate-in-page", () => {
+      void inspectLoginState();
+    });
+
+    periodicInspection = setInterval(() => {
+      void inspectLoginState();
+    }, 1500);
     loginWindow.loadURL(loginUrl).catch(() => {
-      resolve({ status: "unsupported" });
-      loginWindow.close();
+      finish({ status: "unsupported" });
+      if (!loginWindow.isDestroyed()) {
+        loginWindow.close();
+      }
     });
   });
 }

@@ -5,10 +5,13 @@ import type { PlatformAccountLoginStatus, PlatformAccountStatus } from "@/lib/ty
 
 export async function PATCH(request: Request, context: { params: { accountId: string } }) {
   try {
-    const { action, remark, displayName, loginStatus, status, lastError } = (await request.json()) as {
+    const { action, remark, accountName, displayName, platformAccountId, avatarUrl, loginStatus, status, lastError } = (await request.json()) as {
       action?: "manual_resume";
       remark?: string;
+      accountName?: string;
       displayName?: string;
+      platformAccountId?: string;
+      avatarUrl?: string;
       loginStatus?: PlatformAccountLoginStatus;
       status?: PlatformAccountStatus;
       lastError?: string;
@@ -21,10 +24,17 @@ export async function PATCH(request: Request, context: { params: { accountId: st
           loginStatus,
           status,
           lastError,
+          accountName,
+          displayName,
+          platformAccountId,
+          avatarUrl,
         })
       : await updatePlatformAccountRecord(context.params.accountId, {
           remark,
+          accountName,
           displayName,
+          platformAccountId,
+          avatarUrl,
           status,
           lastError,
         });
