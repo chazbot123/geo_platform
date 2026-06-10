@@ -17,7 +17,20 @@ export function getDefaultModelNameForProvider(section: ModelSection, provider: 
     return "";
   }
 
-  return section === "image" ? "gpt-image-2" : "gpt5.5";
+  return section === "image" ? "gpt-image-2" : "gpt-5.5";
+}
+
+export function resolveModelNameForProviderChange(
+  section: ModelSection,
+  provider: string,
+  currentModelName: string,
+  currentBaseUrl: string,
+) {
+  if (currentBaseUrl.trim()) {
+    return currentModelName;
+  }
+
+  return getDefaultModelNameForProvider(section, provider);
 }
 
 export function isVisibleModelProvider(provider: string) {

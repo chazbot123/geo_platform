@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getAppConfig } from "@/lib/config/service";
 import {
+  extractOpenAICompatibleErrorMessage,
   NewAPIProbeError,
   OpenAICompatibleHttpError,
   callConfiguredTextModel,
@@ -37,7 +38,13 @@ async function probeTextConfig(modelConfig: ModelApiConfig): Promise<ProbeOutcom
     }
     if (error instanceof OpenAICompatibleHttpError) {
       const endpoint = resolveConfiguredOpenAICompatibleEndpoint(modelConfig.provider, modelConfig.baseUrl);
-      return { ok: false, endpoint, provider: modelConfig.provider, error: `HTTP ${error.status}` };
+      const detail = extractOpenAICompatibleErrorMessage(error.responseBody);
+      return {
+        ok: false,
+        endpoint,
+        provider: modelConfig.provider,
+        error: detail ? `HTTP ${error.status}: ${detail}` : `HTTP ${error.status}`,
+      };
     }
     if (error instanceof Error && error.message === "REQUEST_TIMEOUT") {
       const endpoint = resolveConfiguredOpenAICompatibleEndpoint(modelConfig.provider, modelConfig.baseUrl);

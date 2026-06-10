@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { CheckCircle, ImageIcon, LoaderCircle, Save, Type, XCircle } from "lucide-react";
-import { getDefaultModelNameForProvider, modelProviderOptions, type ModelSection } from "@/lib/config/model-providers";
+import { modelProviderOptions, resolveModelNameForProviderChange, type ModelSection } from "@/lib/config/model-providers";
 import type { AppConfig, ModelApiConfig } from "@/lib/types";
 
 interface ProbeOutcome {
@@ -61,7 +61,7 @@ export function SettingsForm({ initialConfig }: { initialConfig: AppConfig }) {
       };
 
       if (field === "provider") {
-        nextModelConfig.modelName = getDefaultModelNameForProvider(section, value);
+        nextModelConfig.modelName = resolveModelNameForProviderChange(section, value, current.modelName, current.baseUrl);
       }
 
       if (section === "text") {

@@ -5,14 +5,14 @@ export const defaultAppConfig: AppConfig = {
     provider: "openai",
     baseUrl: "",
     apiKey: "",
-    modelName: "gpt5.5",
+    modelName: "gpt-5.5",
     timeout: 120000,
   },
   contentModelApiConfig: {
     provider: "openai",
     baseUrl: "",
     apiKey: "",
-    modelName: "gpt5.5",
+    modelName: "gpt-5.5",
     timeout: 20000,
   },
   imageModelApiConfig: {

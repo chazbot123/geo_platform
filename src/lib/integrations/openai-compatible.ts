@@ -41,12 +41,14 @@ export interface OpenAICompatibleProviderProfile {
 export class OpenAICompatibleHttpError extends Error {
   status: number;
   endpoint: string;
+  responseBody: string;
 
-  constructor(status: number, endpoint: string) {
+  constructor(status: number, endpoint: string, responseBody = "") {
     super(`HTTP_${status}@${endpoint}`);
     this.name = "OpenAICompatibleHttpError";
     this.status = status;
     this.endpoint = endpoint;
+    this.responseBody = responseBody;
   }
 }
 
@@ -80,6 +82,33 @@ export class OpenAICompatibleResponseParseError extends Error {
     this.name = "OpenAICompatibleResponseParseError";
     this.endpoint = endpoint;
   }
+}
+
+export function extractOpenAICompatibleErrorMessage(rawBody: string) {
+  const trimmed = rawBody.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  try {
+    const payload = JSON.parse(trimmed) as {
+      error?: { message?: string; code?: string; type?: string } | string;
+      message?: string;
+    };
+    if (payload?.error && typeof payload.error === "object") {
+      return String(payload.error.message || payload.error.code || payload.error.type || "").trim();
+    }
+    if (typeof payload?.error === "string" && payload.error.trim()) {
+      return payload.error.trim();
+    }
+    if (typeof payload?.message === "string" && payload.message.trim()) {
+      return payload.message.trim();
+    }
+  } catch {
+    return trimmed.slice(0, 300);
+  }
+
+  return "";
 }
 
 export interface NewAPIProbeAttempt {
@@ -551,11 +580,10 @@ async function performTextRequest(
       throw error;
     }
 
-    if (!response.ok) {
-      throw new OpenAICompatibleHttpError(response.status, endpoint);
-    }
-
     const rawBody = await response.text();
+    if (!response.ok) {
+      throw new OpenAICompatibleHttpError(response.status, endpoint, rawBody);
+    }
     const payload = parseResponsePayload(endpoint, rawBody);
     const rawText = extractMessageContent(payload.choices?.[0]?.message?.content);
     return {
