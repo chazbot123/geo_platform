@@ -31,6 +31,7 @@ export function LicenseStatusBox() {
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<LicenseStatusResponse | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
+  const [deviceFingerprint, setDeviceFingerprint] = useState("");
 
   async function refreshStatus() {
     setLoading(true);
@@ -69,6 +70,7 @@ export function LicenseStatusBox() {
   }
 
   useEffect(() => {
+    setDeviceFingerprint(getLicenseDeviceFingerprint());
     void refreshStatus();
   }, []);
 
@@ -100,7 +102,7 @@ export function LicenseStatusBox() {
             <span>{statusLabel[status?.status ?? "inactive"] ?? status?.status ?? "未激活"}</span>
           </div>
           <div className="mt-3 grid gap-2 text-xs text-muted sm:grid-cols-2">
-            <span>设备：{getLicenseDeviceFingerprint().slice(0, 18)}...</span>
+            <span>设备：{deviceFingerprint ? `${deviceFingerprint.slice(0, 18)}...` : "-"}</span>
             <span>授权：{maskHash(status?.license?.codeHash)}</span>
             <span>设备数：{status?.license?.maxDevices ?? "-"}</span>
             <span>到期：{status?.license?.expiresAt ? new Date(status.license.expiresAt).toLocaleDateString("zh-CN") : "长期"}</span>

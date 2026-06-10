@@ -108,17 +108,16 @@ export function AppShell({ title, description, children }: { title: string; desc
       <div className="mx-auto grid max-w-[1680px] items-start gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
         <aside className="glass-panel sticky top-3 rounded-lg p-3">
           <div className="border-b border-stroke px-2 pb-4">
-            <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
               <Link href="/enterprise" className="flex min-w-0 items-center gap-3">
                 <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-accent text-sm font-semibold text-white">
-                  GEO
+                  极EO
                 </span>
                 <span className="min-w-0">
-                  <span className="block truncate text-base font-semibold tracking-tight text-ink">GEO Desktop</span>
-                  <span className="block truncate text-xs text-muted">本地内容生产流程</span>
+                  <span className="block truncate text-base font-semibold tracking-tight text-ink">极EO</span>
+                  <span className="block text-xs text-muted">读懂人群分布，精准把握流量</span>
                 </span>
               </Link>
-              <span className="status-pill shrink-0">本地</span>
             </div>
           </div>
 

@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "GEO 桌面版 | 工作流",
+  title: "极EO | 读懂人群分布，精准把握流量",
   description: "GEO 桌面发布与内容生产工作流",
 };
 
