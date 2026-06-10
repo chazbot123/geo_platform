@@ -109,20 +109,6 @@ function mergeAssets(current: EnterpriseAsset[], incoming: EnterpriseAsset[]) {
   return Array.from(byId.values());
 }
 
-function buildRegionOptions() {
-  const options = new Set<string>();
-  for (const province of chinaRegions) {
-    options.add(province.name);
-    for (const city of province.children ?? []) {
-      options.add(`${province.name}${city.name}`);
-      for (const district of city.children ?? []) {
-        options.add(`${province.name}${city.name}${district.name}`);
-      }
-    }
-  }
-  return Array.from(options);
-}
-
 function buildRegion(selection: RegionSelection) {
   return [selection.province, selection.city, selection.district].filter(Boolean).join("");
 }
@@ -201,7 +187,17 @@ export function EnterpriseProfileWorkbench() {
   const [dirty, setDirty] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
-  const regionOptions = useMemo(() => buildRegionOptions(), []);
+
+  const provinces = useMemo(() => chinaRegions.map(r => r.name), []);
+  const cities = useMemo(() => {
+    const province = chinaRegions.find(r => r.name === regionSelection.province);
+    return province?.children?.map(r => r.name) ?? [];
+  }, [regionSelection.province]);
+  const districts = useMemo(() => {
+    const province = chinaRegions.find(r => r.name === regionSelection.province);
+    const city = province?.children?.find(r => r.name === regionSelection.city);
+    return city?.children?.map(r => r.name) ?? [];
+  }, [regionSelection.province, regionSelection.city]);
 
   const missingFields = useMemo(() => requiredFields.filter((field) => !fields[field].trim()), [fields]);
   const canContinue = missingFields.length === 0 && Boolean(lastSavedAt) && !dirty;
@@ -260,6 +256,18 @@ export function EnterpriseProfileWorkbench() {
     setDirty(true);
     setStatusMessage("");
     setErrorMessage("");
+  }
+
+  function updateRegionPart(part: 'province' | 'city' | 'district', value: string) {
+    const nextSelection = { ...regionSelection, [part]: value };
+    if (part === 'province' && value !== regionSelection.province) {
+      nextSelection.city = "";
+      nextSelection.district = "";
+    } else if (part === 'city' && value !== regionSelection.city) {
+      nextSelection.district = "";
+    }
+    setRegionSelection(nextSelection);
+    updateField("region", buildRegion(nextSelection));
   }
 
   function updateRegion(nextValue: string) {
@@ -444,7 +452,7 @@ export function EnterpriseProfileWorkbench() {
                   );
                 })}
               </div>
-              <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_320px]">
+              <div className="grid gap-4 sm:grid-cols-2">
                 <label>
                   <span className="mb-2 block text-sm font-medium text-ink">
                     产品服务<span className="ml-1 text-red-500">*</span>
@@ -458,28 +466,47 @@ export function EnterpriseProfileWorkbench() {
                   {!fields.productService.trim() ? <span className="mt-1 block text-xs text-red-500">必填</span> : null}
                 </label>
 
-                <label className="group">
+                <div className="group">
                   <span className="mb-2 flex items-center gap-2 text-sm font-medium text-ink group-focus-within:text-accent">
                     <MapPinned className="h-4 w-4 text-accent" />
                     地区<span className="ml-1 text-red-500">*</span>
                   </span>
-                  <input
-                    list="enterprise-region-options"
-                    value={fields.region}
-                    onChange={(event) => updateRegion(event.target.value)}
-                    placeholder="输入或选择地区"
-                    className="h-10 w-full rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none transition focus:border-accent"
-                  />
-                  <datalist id="enterprise-region-options">
-                    {regionOptions.map((option) => (
-                      <option key={option} value={option} />
-                    ))}
-                  </datalist>
-                  <p className="mt-1 text-xs text-muted">
-                    {buildRegion(regionSelection) ? `已解析为：${buildRegion(regionSelection)}` : "可直接输入省市区，也可从下拉建议里选。"}
-                  </p>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={regionSelection.province}
+                      onChange={(e) => updateRegionPart('province', e.target.value)}
+                      className="h-10 min-w-0 flex-1 rounded-md border border-line bg-surface px-2 text-sm text-ink outline-none transition focus:border-accent"
+                    >
+                      <option value="">省份</option>
+                      {provinces.map((p) => (
+                        <option key={p} value={p}>{p}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={regionSelection.city}
+                      onChange={(e) => updateRegionPart('city', e.target.value)}
+                      disabled={!cities.length}
+                      className="h-10 min-w-0 flex-1 rounded-md border border-line bg-surface px-2 text-sm text-ink outline-none transition focus:border-accent disabled:bg-surface-soft disabled:opacity-50"
+                    >
+                      <option value="">城市</option>
+                      {cities.map((c) => (
+                        <option key={c} value={c}>{c}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={regionSelection.district}
+                      onChange={(e) => updateRegionPart('district', e.target.value)}
+                      disabled={!districts.length}
+                      className="h-10 min-w-0 flex-1 rounded-md border border-line bg-surface px-2 text-sm text-ink outline-none transition focus:border-accent disabled:bg-surface-soft disabled:opacity-50"
+                    >
+                      <option value="">区县</option>
+                      {districts.map((d) => (
+                        <option key={d} value={d}>{d}</option>
+                      ))}
+                    </select>
+                  </div>
                   {!fields.region.trim() ? <span className="mt-1 block text-xs text-red-500">必填</span> : null}
-                </label>
+                </div>
               </div>
             </div>
 

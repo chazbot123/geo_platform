@@ -223,6 +223,16 @@ function ensureDataDir() {
   process.env.GEO_DATA_DIR = userDataDir;
 }
 
+function hideWindowMenu(windowInstance) {
+  if (!windowInstance) {
+    return;
+  }
+  windowInstance.setMenuBarVisibility(false);
+  if (typeof windowInstance.removeMenu === "function") {
+    windowInstance.removeMenu();
+  }
+}
+
 async function startNextServer() {
   if (isDev) {
     return DEV_SERVER_URL;
@@ -252,18 +262,20 @@ async function createWindow() {
     minWidth: 1200,
     minHeight: 760,
     backgroundColor: "#08101d",
+    autoHideMenuBar: true,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
       preload: preloadPath,
     },
   });
+  hideWindowMenu(mainWindow);
 
   await mainWindow.loadURL(appUrl);
 }
 
 function createScopedWindow(input = {}) {
-  return new BrowserWindow({
+  const scopedWindow = new BrowserWindow({
     show: input.show !== false,
     width: 1280,
     height: 900,
@@ -280,6 +292,8 @@ function createScopedWindow(input = {}) {
       partition: typeof input.sessionPartition === "string" && input.sessionPartition.trim() ? input.sessionPartition.trim() : undefined,
     },
   });
+  hideWindowMenu(scopedWindow);
+  return scopedWindow;
 }
 
 function parseCookieHeader(authPayload) {
