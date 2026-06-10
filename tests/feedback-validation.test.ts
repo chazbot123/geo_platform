@@ -15,6 +15,15 @@ const validPayload = {
 };
 
 describe("feedback payload validation", () => {
+  it("uses clean Chinese issue type labels", () => {
+    expect(FEEDBACK_ISSUE_TYPES).toContain("模型连接问题");
+    expect(FEEDBACK_ISSUE_TYPES).toContain("内容生成问题");
+    expect(FEEDBACK_ISSUE_TYPES).toContain("账号登录问题");
+    expect(FEEDBACK_ISSUE_TYPES).toContain("发布失败问题");
+    expect(FEEDBACK_ISSUE_TYPES).toContain("界面体验问题");
+    expect(FEEDBACK_ISSUE_TYPES).toContain("其他问题");
+  });
+
   it("accepts complete payloads using approved issue types", () => {
     expect(isFeedbackPayload(validPayload)).toBe(true);
   });

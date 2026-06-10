@@ -1,6 +1,7 @@
 const state = {
   auth: sessionStorage.getItem("geo-admin-auth") || "",
   selectedFeedback: null,
+  activeTab: "authorization",
 };
 
 const statusLabels = {
@@ -10,7 +11,23 @@ const statusLabels = {
   ignored: "忽略",
 };
 
+const licenseStatusLabels = {
+  available: "可用",
+  active: "已绑定",
+  expired: "已过期",
+  disabled: "已禁用",
+};
+
 const $ = (selector) => document.querySelector(selector);
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
 
 function showToast(text, tone = "info") {
   const toast = $("#toast");
@@ -29,7 +46,7 @@ async function api(path, options = {}) {
   const response = await fetch(path, {
     ...options,
     headers: {
-      "Content-Type": "application/json",
+      ...(options.body instanceof ArrayBuffer ? {} : { "Content-Type": "application/json" }),
       ...authHeaders(),
       ...(options.headers || {}),
     },
@@ -50,6 +67,19 @@ function setLoggedIn(loggedIn) {
 function formatDate(value) {
   if (!value) return "-";
   return new Date(value).toLocaleString("zh-CN", { hour12: false });
+}
+
+function formatBytes(bytes) {
+  const size = Number(bytes);
+  if (!Number.isFinite(size) || size <= 0) return "未知大小";
+  const units = ["B", "KB", "MB", "GB"];
+  let value = size;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
 }
 
 function maskHash(hash) {
@@ -88,10 +118,10 @@ async function loadFeedback() {
     const button = document.createElement("button");
     button.className = "feedback-item";
     button.innerHTML = `
-      <span class="row-title">${item.type}</span>
-      <span class="badge">${statusLabels[item.status] || item.status}</span>
-      <span class="muted clamp">${item.message}</span>
-      <span class="meta">${item.appVersion || "-"} · ${formatDate(item.createdAt)}</span>
+      <span class="row-title">${escapeHtml(item.type)}</span>
+      <span class="badge">${escapeHtml(statusLabels[item.status] || item.status)}</span>
+      <span class="muted clamp">${escapeHtml(item.message)}</span>
+      <span class="meta">${escapeHtml(item.appVersion || "-")} · ${formatDate(item.createdAt)}</span>
     `;
     button.addEventListener("click", () => showFeedbackDetail(item.id));
     list.appendChild(button);
@@ -104,13 +134,13 @@ async function showFeedbackDetail(id) {
   state.selectedFeedback = item;
   $("#feedbackDetail").className = "detail";
   $("#feedbackDetail").innerHTML = `
-    <h3>${item.type}</h3>
-    <p class="message">${item.message}</p>
+    <h3>${escapeHtml(item.type)}</h3>
+    <p class="message">${escapeHtml(item.message)}</p>
     <dl>
-      <dt>联系方式</dt><dd>${item.contact || "-"}</dd>
-      <dt>版本</dt><dd>${item.appVersion || "-"}</dd>
-      <dt>设备</dt><dd>${item.deviceFingerprint || "-"}</dd>
-      <dt>平台</dt><dd>${item.os || "-"}</dd>
+      <dt>联系方式</dt><dd>${escapeHtml(item.contact || "-")}</dd>
+      <dt>版本</dt><dd>${escapeHtml(item.appVersion || "-")}</dd>
+      <dt>设备</dt><dd>${escapeHtml(item.deviceFingerprint || "-")}</dd>
+      <dt>平台</dt><dd>${escapeHtml(item.os || "-")}</dd>
       <dt>客户端时间</dt><dd>${formatDate(item.clientTime)}</dd>
       <dt>服务端时间</dt><dd>${formatDate(item.serverTime)}</dd>
     </dl>
@@ -124,7 +154,7 @@ async function showFeedbackDetail(id) {
     </label>
     <label>
       <span>处理备注</span>
-      <textarea id="handlerNote">${item.handlerNote || ""}</textarea>
+      <textarea id="handlerNote">${escapeHtml(item.handlerNote || "")}</textarea>
     </label>
     <button id="saveStatusButton">保存状态</button>
   `;
@@ -144,64 +174,96 @@ async function saveFeedbackStatus() {
   await loadFeedback();
 }
 
-async function loadSimpleList(path, target, render) {
-  const payload = await api(path);
-  const key = Object.keys(payload)[0];
-  const list = $(`#${target}`);
-  list.innerHTML = "";
-  if (!payload[key].length) {
-    list.innerHTML = '<div class="empty">暂无记录。</div>';
-    return;
-  }
-  payload[key].forEach((item) => {
-    const node = document.createElement("div");
-    node.className = "plain-item";
-    node.innerHTML = render(item);
-    list.appendChild(node);
-  });
+async function loadAuthorization() {
+  const [licensePayload, bindingPayload] = await Promise.all([
+    api("/api/admin/license-codes"),
+    api("/api/admin/device-license-bindings"),
+  ]);
+
+  renderLicenses(licensePayload.licenseCodes || []);
+  renderBindings(bindingPayload.bindings || []);
 }
 
-async function loadLicenses() {
-  const payload = await api("/api/admin/license-codes");
+function renderLicenses(licenses) {
   const list = $("#licensesList");
   list.innerHTML = "";
-
-  if (!payload.licenseCodes.length) {
+  if (!licenses.length) {
     list.innerHTML = '<div class="empty">暂无授权码。</div>';
     return;
   }
 
-  payload.licenseCodes.forEach((item) => {
+  for (const item of licenses) {
     const node = document.createElement("div");
-    node.className = "plain-item";
+    const statusLabel = licenseStatusLabels[item.status] || item.status;
+    const displayCode = item.code || maskHash(item.codeHash);
+    node.className = "record-item";
     node.innerHTML = `
-      <strong>${maskHash(item.codeHash)}</strong>
-      <span>${item.status} · max ${item.maxDevices} · ${item.issuedTo || "未填写发放对象"} · expires ${formatDate(item.expiresAt)}</span>
-      <button class="secondary" data-license-id="${item.id}" ${item.status === "disabled" ? "disabled" : ""}>停用</button>
+      <div class="record-header">
+        <strong class="record-title code-value">${escapeHtml(displayCode)}</strong>
+        <span class="badge ${escapeHtml(item.status)}">${escapeHtml(statusLabel)}</span>
+      </div>
+      <div class="record-meta">
+        <span><strong>发放对象</strong> ${escapeHtml(item.issuedTo || "未填写")}</span>
+        <span><strong>设备数</strong> ${item.maxDevices} 台 · <strong>到期</strong> ${formatDate(item.expiresAt)}</span>
+      </div>
+      <div class="item-actions">
+        <button class="secondary" data-reset-license="${item.id}">重置绑定</button>
+        <button class="secondary danger" data-disable-license="${item.id}" ${item.status === "disabled" ? "disabled" : ""}>禁用</button>
+      </div>
     `;
-    node.querySelector("button").addEventListener("click", async () => {
-      await api(`/api/admin/license-codes/${encodeURIComponent(item.id)}`, {
+    list.appendChild(node);
+  }
+
+  list.querySelectorAll("[data-reset-license]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await api(`/api/admin/license-codes/${encodeURIComponent(button.dataset.resetLicense)}/reset-binding`, { method: "POST" });
+      showToast("绑定已重置", "success");
+      await loadAuthorization();
+    });
+  });
+
+  list.querySelectorAll("[data-disable-license]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await api(`/api/admin/license-codes/${encodeURIComponent(button.dataset.disableLicense)}`, {
         method: "PATCH",
         body: JSON.stringify({ status: "disabled", disabledReason: "Disabled in admin web" }),
       });
-      showToast("授权码已停用", "success");
-      await loadLicenses();
+      showToast("授权已禁用", "success");
+      await loadAuthorization();
     });
-    list.appendChild(node);
   });
 }
 
-async function createLicense() {
-  const code = $("#licenseCodeInput").value.trim();
-  if (!code) {
-    showToast("请输入授权码", "error");
+function renderBindings(bindings) {
+  const list = $("#bindingsList");
+  list.innerHTML = "";
+  if (!bindings.length) {
+    list.innerHTML = '<div class="empty">暂无绑定记录。</div>';
     return;
   }
 
-  await api("/api/admin/license-codes", {
+  for (const item of bindings) {
+    const node = document.createElement("div");
+    node.className = "record-item";
+    node.innerHTML = `
+      <div class="record-header">
+        <strong class="record-title">${escapeHtml(item.fingerprint)}</strong>
+        <span class="badge ${escapeHtml(item.status)}">${escapeHtml(item.status)}</span>
+      </div>
+      <div class="record-meta">
+        <span><strong>机器码</strong> ${escapeHtml(item.machine_code || "-")}</span>
+        <span><strong>绑定时间</strong> ${formatDate(item.bound_at)}</span>
+      </div>
+    `;
+    list.appendChild(node);
+  }
+}
+
+async function createLicense() {
+  const response = await api("/api/admin/license-codes", {
     method: "POST",
     body: JSON.stringify({
-      code,
+      code: $("#licenseCodeInput").value.trim(),
       issuedTo: $("#licenseIssuedToInput").value.trim(),
       maxDevices: Number.parseInt($("#licenseMaxDevicesInput").value, 10) || 1,
       expiresAt: $("#licenseExpiresAtInput").value ? new Date($("#licenseExpiresAtInput").value).toISOString() : "",
@@ -213,8 +275,83 @@ async function createLicense() {
     $(`#${id}`).value = "";
   });
   $("#licenseMaxDevicesInput").value = "1";
+  $("#createdLicenseOutput").textContent = response.license?.code ? `新授权码：${response.license.code}` : "授权码已创建";
   showToast("授权码已创建", "success");
-  await loadLicenses();
+  await loadAuthorization();
+}
+
+async function loadReleases() {
+  const payload = await api("/api/admin/releases");
+  const list = $("#releasesList");
+  list.innerHTML = "";
+  const releases = payload.releases || [];
+  if (!releases.length) {
+    list.innerHTML = '<div class="empty">暂无版本包。</div>';
+    return;
+  }
+
+  for (const item of releases) {
+    const node = document.createElement("div");
+    node.className = "plain-item";
+    node.innerHTML = `
+      <strong>${escapeHtml(item.version)} · ${escapeHtml(item.platform)}/${escapeHtml(item.arch)}</strong>
+      <span>${item.publishedAt ? `已发布 ${formatDate(item.publishedAt)}` : "未发布"} · ${formatBytes(item.size)} · ${maskHash(item.sha256)}</span>
+      <span class="break-all">${escapeHtml(item.downloadUrl)}</span>
+      <div class="item-actions">
+        <button class="secondary" data-publish-release="${item.id}" ${item.publishedAt ? "disabled" : ""}>发布</button>
+        <a class="button-link secondary" href="${escapeHtml(item.downloadUrl)}" target="_blank" rel="noreferrer">下载</a>
+      </div>
+    `;
+    list.appendChild(node);
+  }
+
+  list.querySelectorAll("[data-publish-release]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await api(`/api/admin/releases/${encodeURIComponent(button.dataset.publishRelease)}/publish`, { method: "POST" });
+      showToast("版本已发布", "success");
+      await loadReleases();
+    });
+  });
+}
+
+async function uploadRelease() {
+  const file = $("#releaseFileInput").files?.[0];
+  const version = $("#releaseVersionInput").value.trim();
+  if (!file || !version) {
+    showToast("请填写版本号并选择更新包", "error");
+    return;
+  }
+
+  const buffer = await file.arrayBuffer();
+  await api("/api/admin/releases", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/octet-stream",
+      "X-Release-Version": version,
+      "X-Release-Platform": $("#releasePlatformInput").value.trim() || "win32",
+      "X-Release-Arch": $("#releaseArchInput").value.trim() || "x64",
+      "X-Release-Min-Supported-Version": $("#releaseMinVersionInput").value.trim(),
+      "X-Release-Mandatory": $("#releaseMandatoryInput").checked ? "true" : "false",
+      "X-Release-File-Name": encodeURIComponent(file.name),
+      "X-Release-Notes": encodeURIComponent($("#releaseNotesInput").value.trim()),
+    },
+    body: buffer,
+  });
+
+  $("#releaseFileInput").value = "";
+  $("#releaseNotesInput").value = "";
+  showToast("版本包已上传，发布后客户端才会收到更新", "success");
+  await loadReleases();
+}
+
+async function loadActiveTab() {
+  if (state.activeTab === "authorization") {
+    await loadAuthorization();
+  } else if (state.activeTab === "feedback") {
+    await loadFeedback();
+  } else if (state.activeTab === "releases") {
+    await loadReleases();
+  }
 }
 
 function bindEvents() {
@@ -223,7 +360,7 @@ function bindEvents() {
     const password = $("#passwordInput").value;
     state.auth = `Basic ${btoa(`${username}:${password}`)}`;
     try {
-      await loadFeedback();
+      await loadAuthorization();
       sessionStorage.setItem("geo-admin-auth", state.auth);
       setLoggedIn(true);
     } catch (error) {
@@ -238,33 +375,34 @@ function bindEvents() {
     setLoggedIn(false);
   });
 
+  document.querySelectorAll(".tab").forEach((tab) => {
+    tab.addEventListener("click", async () => {
+      state.activeTab = tab.dataset.tab;
+      document.querySelectorAll(".tab").forEach((item) => item.classList.remove("active"));
+      tab.classList.add("active");
+      ["authorization", "feedback", "releases"].forEach((name) => {
+        $(`#${name}Tab`).classList.toggle("hidden", state.activeTab !== name);
+      });
+      try {
+        await loadActiveTab();
+      } catch (error) {
+        showToast(error.message, "error");
+      }
+    });
+  });
+
+  $("#refreshAuthorizationButton").addEventListener("click", () => loadAuthorization().catch((error) => showToast(error.message, "error")));
+  $("#createLicenseButton").addEventListener("click", () => createLicense().catch((error) => showToast(error.message, "error")));
   $("#refreshFeedbackButton").addEventListener("click", () => loadFeedback().catch((error) => showToast(error.message, "error")));
   ["typeFilter", "statusFilter", "versionFilter", "deviceFilter"].forEach((id) => {
     $(`#${id}`).addEventListener("change", () => loadFeedback().catch((error) => showToast(error.message, "error")));
   });
-
-  document.querySelectorAll(".tab").forEach((tab) => {
-    tab.addEventListener("click", () => {
-      document.querySelectorAll(".tab").forEach((item) => item.classList.remove("active"));
-      tab.classList.add("active");
-      ["feedback", "devices", "licenses", "bindings"].forEach((name) => {
-        $(`#${name}Tab`).classList.toggle("hidden", tab.dataset.tab !== name);
-      });
-    });
-  });
-
-  $("#refreshDevicesButton").addEventListener("click", () =>
-    loadSimpleList("/api/admin/devices", "devicesList", (item) => `<strong>${item.fingerprint}</strong><span>${item.status} · ${formatDate(item.last_seen_at)}</span>`),
-  );
-  $("#refreshLicensesButton").addEventListener("click", () => loadLicenses().catch((error) => showToast(error.message, "error")));
-  $("#createLicenseButton").addEventListener("click", () => createLicense().catch((error) => showToast(error.message, "error")));
-  $("#refreshBindingsButton").addEventListener("click", () =>
-    loadSimpleList("/api/admin/device-license-bindings", "bindingsList", (item) => `<strong>${maskHash(item.code)}</strong><span>${item.fingerprint} · ${item.status}</span>`),
-  );
+  $("#refreshReleasesButton").addEventListener("click", () => loadReleases().catch((error) => showToast(error.message, "error")));
+  $("#uploadReleaseButton").addEventListener("click", () => uploadRelease().catch((error) => showToast(error.message, "error")));
 }
 
 bindEvents();
 setLoggedIn(Boolean(state.auth));
 if (state.auth) {
-  loadFeedback().catch(() => setLoggedIn(false));
+  loadAuthorization().catch(() => setLoggedIn(false));
 }

@@ -12,6 +12,7 @@ import {
   RotateCcw,
 } from "lucide-react";
 import { dispatchWorkflowStatusRefresh } from "@/components/layout/app-shell";
+import { requireLicensedAction } from "@/lib/license/guard";
 import type {
   ContentPoolItem,
   ContentPoolRecord,
@@ -273,6 +274,12 @@ export function PublishExecutionWorkbench() {
   }
 
   async function runNext() {
+    const licenseGuard = await requireLicensedAction("execute_publish");
+    if (!licenseGuard.allowed) {
+      setError(licenseGuard.message ?? "当前设备未授权，请先激活授权码。");
+      return;
+    }
+
     setBusy(true);
     setError("");
     setNotice("");
@@ -295,6 +302,12 @@ export function PublishExecutionWorkbench() {
   }
 
   async function markManualDone(jobId: string) {
+    const licenseGuard = await requireLicensedAction("execute_publish");
+    if (!licenseGuard.allowed) {
+      setError(licenseGuard.message ?? "当前设备未授权，请先激活授权码。");
+      return;
+    }
+
     setBusy(true);
     setError("");
     setNotice("");

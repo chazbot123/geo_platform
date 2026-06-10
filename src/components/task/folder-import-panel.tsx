@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FolderOpen, LoaderCircle, Sparkles } from "lucide-react";
+import { requireLicensedAction } from "@/lib/license/guard";
 import type { FolderImportPreview, TaskCreateInput } from "@/lib/types";
 
 type FileWithRelativePath = File & { webkitRelativePath: string };
@@ -37,6 +38,12 @@ export function FolderImportPanel({ onApply }: FolderImportPanelProps) {
   async function analyze() {
     if (!selectedFiles.length) {
       setError("请先选择一个资料文件夹。");
+      return;
+    }
+
+    const licenseGuard = await requireLicensedAction("import_files");
+    if (!licenseGuard.allowed) {
+      setError(licenseGuard.message ?? "当前设备未授权，请先激活授权码。");
       return;
     }
 

@@ -7,6 +7,7 @@ import { FolderImportPanel } from "@/components/task/folder-import-panel";
 import { LocalFilePathInput } from "@/components/task/local-file-path-input";
 import { RegionSelector } from "@/components/task/region-selector";
 import { useTaskDraftStore } from "@/hooks/use-task-draft-store";
+import { requireLicensedAction } from "@/lib/license/guard";
 import { jizhidaoSuiteRequiredPreset } from "@/lib/task-presets";
 import type { FolderImportPreview, SearchProvider, TaskCreateInput } from "@/lib/types";
 
@@ -114,6 +115,12 @@ export function TaskCreator() {
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const licenseGuard = await requireLicensedAction("create_task");
+    if (!licenseGuard.allowed) {
+      setError(licenseGuard.message ?? "当前设备未授权，请先激活授权码。");
+      return;
+    }
+
     setSubmitting(true);
     setError("");
 

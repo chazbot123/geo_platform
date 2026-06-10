@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2, FileText, ImageIcon, Loader2, MapPinned, Save, UploadCloud } from "lucide-react";
 import { dispatchWorkflowStatusRefresh } from "@/components/layout/app-shell";
 import { chinaRegions } from "@/lib/regions/china-admin";
+import { requireLicensedAction } from "@/lib/license/guard";
 import type { EnterpriseAsset, EnterpriseParseStatus, EnterpriseProfile, EnterpriseProfileFields } from "@/lib/enterprise/types";
 
 const emptyFields: EnterpriseProfileFields = {
@@ -280,6 +281,12 @@ export function EnterpriseProfileWorkbench() {
       return;
     }
 
+    const licenseGuard = await requireLicensedAction("import_files");
+    if (!licenseGuard.allowed) {
+      setErrorMessage(licenseGuard.message ?? "当前设备未授权，请先激活授权码。");
+      return;
+    }
+
     const selectedFiles = Array.from(files);
     const localAssets = selectedFiles.map((file) => fileToAsset(file, getAssetKind(file)));
 
@@ -337,6 +344,12 @@ export function EnterpriseProfileWorkbench() {
   }
 
   async function saveProfile() {
+    const licenseGuard = await requireLicensedAction("save_enterprise");
+    if (!licenseGuard.allowed) {
+      setErrorMessage(licenseGuard.message ?? "当前设备未授权，请先激活授权码。");
+      return;
+    }
+
     setSaving(true);
     setErrorMessage("");
     setStatusMessage("");

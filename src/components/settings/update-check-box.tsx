@@ -8,6 +8,7 @@ import {
   formatBytes,
   type LatestReleaseManifest,
 } from "@/lib/updates/client";
+import { requireLicensedAction } from "@/lib/license/guard";
 
 type Notice = { tone: "success" | "error" | "info"; text: string };
 
@@ -37,6 +38,12 @@ export function UpdateCheckBox({ currentVersion }: { currentVersion: string }) {
 
   async function handleDownload() {
     if (!manifest) {
+      return;
+    }
+
+    const licenseGuard = await requireLicensedAction("download_update");
+    if (!licenseGuard.allowed) {
+      setNotice({ tone: "error", text: licenseGuard.message ?? "当前设备未授权，请先激活授权码。" });
       return;
     }
 

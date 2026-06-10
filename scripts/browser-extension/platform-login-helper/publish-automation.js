@@ -6,6 +6,188 @@
     const upper = Math.max(min, max);
     return Math.floor(lower + Math.random() * (upper - lower + 1));
   };
+  const randomFloatBetween = (min, max) => {
+    const lower = Math.min(min, max);
+    const upper = Math.max(min, max);
+    return lower + Math.random() * (upper - lower);
+  };
+  const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+  let lastMousePosition = null;
+
+  function resolveTypingDelay(char, index, text, minDelay, maxDelay) {
+    const baseDelay = randomBetween(minDelay, maxDelay);
+    if (/[\n\r]/.test(char)) {
+      return baseDelay + randomBetween(180, 420);
+    }
+    if (/[。！？!?；;，,、：:）)\]}】」』]/.test(char)) {
+      return baseDelay + randomBetween(80, 260);
+    }
+    if (/\s/.test(char)) {
+      return Math.max(35, baseDelay - randomBetween(20, 55));
+    }
+    if (index > 0 && index % randomBetween(18, 32) === 0) {
+      return baseDelay + randomBetween(120, 360);
+    }
+    if (text.length > 120 && index > 0 && index % randomBetween(45, 70) === 0) {
+      return baseDelay + randomBetween(260, 620);
+    }
+    return baseDelay;
+  }
+
+  function findScrollableParent(node) {
+    let current = node?.parentElement || null;
+    while (current && current !== document.body && current !== document.documentElement) {
+      const style = window.getComputedStyle(current);
+      const canScrollY = /(auto|scroll|overlay)/.test(`${style.overflowY} ${style.overflow}`);
+      if (canScrollY && current.scrollHeight > current.clientHeight + 8) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+    return window;
+  }
+
+  function getScrollViewport(scrollTarget) {
+    if (scrollTarget === window) {
+      return {
+        top: 0,
+        height: window.innerHeight || document.documentElement.clientHeight || 800,
+      };
+    }
+    const rect = scrollTarget.getBoundingClientRect();
+    return { top: rect.top, height: rect.height };
+  }
+
+  function dispatchWheelPulse(node, deltaY) {
+    if (typeof WheelEvent === "undefined") {
+      return;
+    }
+    node.dispatchEvent(
+      new WheelEvent("wheel", {
+        bubbles: true,
+        cancelable: true,
+        deltaY,
+        deltaMode: 0,
+        clientX: Math.round(window.innerWidth * randomFloatBetween(0.35, 0.65)),
+        clientY: Math.round(window.innerHeight * randomFloatBetween(0.35, 0.65)),
+      }),
+    );
+  }
+
+  async function humanScrollElementIntoView(node, options = {}) {
+    if (!(node instanceof HTMLElement)) {
+      return;
+    }
+    const scrollTarget = findScrollableParent(node);
+    const maxSteps = options.scrollSteps ?? randomBetween(4, 8);
+    const targetRatio = options.scrollTargetRatio ?? randomFloatBetween(0.42, 0.58);
+    const pauseMin = options.scrollPauseMin ?? 90;
+    const pauseMax = options.scrollPauseMax ?? 220;
+
+    for (let step = 0; step < maxSteps; step += 1) {
+      const rect = node.getBoundingClientRect();
+      const viewport = getScrollViewport(scrollTarget);
+      const desiredTop = viewport.top + viewport.height * targetRatio - rect.height / 2;
+      const delta = rect.top - desiredTop;
+      if (Math.abs(delta) <= 18) {
+        break;
+      }
+
+      const maxDistance = randomBetween(260, 560);
+      const scrollDelta = clamp(delta * randomFloatBetween(0.38, 0.68), -maxDistance, maxDistance);
+      dispatchWheelPulse(node, scrollDelta);
+      if (scrollTarget === window) {
+        window.scrollBy({ top: scrollDelta, left: 0, behavior: "auto" });
+      } else {
+        scrollTarget.scrollBy({ top: scrollDelta, left: 0, behavior: "auto" });
+      }
+      await sleep(randomBetween(pauseMin, pauseMax));
+    }
+
+    const finalRect = node.getBoundingClientRect();
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 800;
+    if (finalRect.top < 12 || finalRect.bottom > viewportHeight - 12) {
+      node.scrollIntoView({ block: "center", inline: "center" });
+      await sleep(randomBetween(pauseMin, pauseMax));
+    }
+  }
+
+  function pickClickPoint(rect) {
+    const xPadding = Math.min(10, Math.max(2, rect.width / 3));
+    const yPadding = Math.min(10, Math.max(2, rect.height / 3));
+    const minX = rect.left + xPadding;
+    const maxX = rect.right - xPadding;
+    const minY = rect.top + yPadding;
+    const maxY = rect.bottom - yPadding;
+    return {
+      clientX: Math.round(randomFloatBetween(Math.min(minX, maxX), Math.max(minX, maxX))),
+      clientY: Math.round(randomFloatBetween(Math.min(minY, maxY), Math.max(minY, maxY))),
+    };
+  }
+
+  function dispatchPointerMove(node, type, clientX, clientY, overrides = {}) {
+    if (typeof PointerEvent === "undefined") {
+      return;
+    }
+    node.dispatchEvent(
+      new PointerEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        pointerId: 1,
+        pointerType: "mouse",
+        isPrimary: true,
+        clientX,
+        clientY,
+        button: 0,
+        buttons: 0,
+        ...overrides,
+      }),
+    );
+  }
+
+  function dispatchMouseMove(node, type, clientX, clientY, overrides = {}) {
+    node.dispatchEvent(
+      new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        view: window,
+        clientX,
+        clientY,
+        button: 0,
+        buttons: 0,
+        ...overrides,
+      }),
+    );
+  }
+
+  async function moveMouseAlongPath(node, clientX, clientY, options = {}) {
+    const start = lastMousePosition || {
+      clientX: randomBetween(24, Math.max(48, (window.innerWidth || 1024) - 24)),
+      clientY: randomBetween(24, Math.max(48, (window.innerHeight || 768) - 24)),
+    };
+    const steps = options.pathSteps ?? randomBetween(6, 12);
+    const pauseMin = options.pathPauseMin ?? 12;
+    const pauseMax = options.pathPauseMax ?? 38;
+    const curveX = (start.clientX + clientX) / 2 + randomBetween(-90, 90);
+    const curveY = (start.clientY + clientY) / 2 + randomBetween(-70, 70);
+
+    for (let index = 1; index <= steps; index += 1) {
+      const t = index / steps;
+      const eased = t * t * (3 - 2 * t);
+      const oneMinus = 1 - eased;
+      const nextX =
+        oneMinus * oneMinus * start.clientX + 2 * oneMinus * eased * curveX + eased * eased * clientX;
+      const nextY =
+        oneMinus * oneMinus * start.clientY + 2 * oneMinus * eased * curveY + eased * eased * clientY;
+      const jitter = index === steps ? 0 : randomFloatBetween(-1.8, 1.8);
+      dispatchPointerMove(node, "pointermove", Math.round(nextX + jitter), Math.round(nextY - jitter));
+      dispatchMouseMove(node, "mousemove", Math.round(nextX + jitter), Math.round(nextY - jitter));
+      await sleep(randomBetween(pauseMin, pauseMax));
+    }
+    lastMousePosition = { clientX, clientY };
+  }
 
   function normalize(value) {
     return String(value || "")
@@ -145,12 +327,11 @@
     const afterClickMin = options.afterClickMin ?? 220;
     const afterClickMax = options.afterClickMax ?? 420;
 
-    node.scrollIntoView({ block: "center", inline: "center" });
+    await humanScrollElementIntoView(node, options);
     await sleep(randomBetween(beforeMoveMin, beforeMoveMax));
 
     const rect = node.getBoundingClientRect();
-    const clientX = rect.left + Math.max(6, Math.min(rect.width - 6, rect.width * 0.45));
-    const clientY = rect.top + Math.max(6, Math.min(rect.height - 6, rect.height * 0.5));
+    const { clientX, clientY } = pickClickPoint(rect);
 
     const dispatchPointer = (type, overrides = {}) => {
       if (typeof PointerEvent === "undefined") {
@@ -190,6 +371,7 @@
     };
 
     node.focus();
+    await moveMouseAlongPath(node, clientX, clientY, options);
     dispatchPointer("pointerover");
     dispatchMouse("mouseover");
     dispatchPointer("pointerenter");
@@ -250,10 +432,12 @@
       return;
     }
     node.focus();
-    for (const char of normalized) {
+    const chars = Array.from(normalized);
+    for (let index = 0; index < chars.length; index += 1) {
+      const char = chars[index];
       setNativeInputValue(node, `${node.value || ""}${char}`);
       dispatchInputEvents(node);
-      await sleep(randomBetween(minDelay, maxDelay));
+      await sleep(resolveTypingDelay(char, index, normalized, minDelay, maxDelay));
     }
   }
 
@@ -393,9 +577,11 @@
     if (!normalized) {
       return;
     }
-    for (const char of normalized) {
+    const chars = Array.from(normalized);
+    for (let index = 0; index < chars.length; index += 1) {
+      const char = chars[index];
       insertEditableText(node, char);
-      await sleep(randomBetween(minDelay, maxDelay));
+      await sleep(resolveTypingDelay(char, index, normalized, minDelay, maxDelay));
     }
   }
 

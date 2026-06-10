@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
+import { adminLicense, hashLicenseCode, publicLicense } from "./license-presenter.js";
 
 const { Pool } = pg;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -12,6 +13,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.PORT ?? 8080);
 const releaseBaseUrl = (process.env.RELEASE_BASE_URL ?? "").replace(/\/$/, "");
 const releasesDir = process.env.RELEASES_DIR ?? "/var/www/releases";
+const releaseUploadLimit = process.env.RELEASE_UPLOAD_LIMIT ?? "500mb";
 const rateLimitWindowMs = Number(process.env.RATE_LIMIT_WINDOW_MS ?? 60_000);
 const publicRateLimitMax = Number(process.env.PUBLIC_RATE_LIMIT_MAX ?? 60);
 const adminRateLimitMax = Number(process.env.ADMIN_RATE_LIMIT_MAX ?? 300);
@@ -30,6 +32,7 @@ const feedbackTypes = new Set([
 
 const feedbackStatuses = new Set(["new", "processing", "resolved", "ignored"]);
 const licenseStatuses = new Set(["available", "active", "expired", "disabled"]);
+const allowedReleaseExtensions = new Set([".exe", ".msi", ".zip", ".7z"]);
 const rateLimitBuckets = new Map();
 
 function trimString(value, maxLength) {
@@ -118,25 +121,53 @@ function normalizeReleasePath(value) {
   return normalized.startsWith("releases/") ? normalized.slice("releases/".length) : normalized;
 }
 
+function safeFileName(value) {
+  return String(value ?? "")
+    .replace(/\\/g, "/")
+    .split("/")
+    .pop()
+    ?.replace(/[^a-zA-Z0-9._-]/g, "-")
+    .replace(/-+/g, "-")
+    .slice(0, 160) || "";
+}
+
+function decodeHeader(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
+}
+
+function generateLicenseCode() {
+  const bytes = crypto.randomBytes(12).toString("hex").toUpperCase();
+  return `GEO-${bytes.slice(0, 4)}-${bytes.slice(4, 8)}-${bytes.slice(8, 12)}-${bytes.slice(12, 16)}-${bytes.slice(16, 20)}-${bytes.slice(20, 24)}`;
+}
+
 function buildReleaseUrl(artifactPath) {
   const normalizedPath = `/releases/${artifactPath}`;
   return releaseBaseUrl ? `${releaseBaseUrl}${normalizedPath}` : normalizedPath;
 }
 
-function hashLicenseCode(code) {
-  return crypto.createHash("sha256").update(code).digest("hex");
-}
-
-function publicLicense(row) {
+function toRelease(row) {
+  const artifactPath = normalizeReleasePath(row.artifact_path);
   return {
     id: row.id,
-    codeHash: row.code_hash ?? hashLicenseCode(row.code ?? ""),
-    maxDevices: row.max_devices,
-    expiresAt: row.expires_at,
-    status: row.status,
-    issuedTo: row.issued_to ?? "",
+    version: row.version,
+    platform: row.platform,
+    arch: row.arch,
+    channel: row.channel,
+    artifactPath,
+    downloadUrl: artifactPath ? buildReleaseUrl(artifactPath) : "",
+    sha256: row.sha256,
+    size: Number(row.size ?? 0),
+    notesPath: row.notes_path,
+    minSupportedVersion: row.min_supported_version,
+    mandatory: Boolean(row.mandatory),
+    publishedAt: row.published_at,
     createdAt: row.created_at,
-    activatedAt: row.activated_at,
   };
 }
 
@@ -312,6 +343,7 @@ async function upsertDevice(fingerprint, platform, machineCode = "") {
 const app = express();
 const publicRateLimit = createRateLimiter({ name: "public", max: publicRateLimitMax });
 const adminRateLimit = createRateLimiter({ name: "admin", max: adminRateLimitMax });
+const releaseUpload = express.raw({ type: "application/octet-stream", limit: releaseUploadLimit });
 
 app.use(cors({ origin: process.env.CORS_ORIGIN?.split(",") ?? true }));
 app.use(express.json({ limit: "64kb" }));
@@ -384,7 +416,7 @@ app.get("/api/releases/latest", publicRateLimit, async (request, response) => {
       `
         SELECT *
         FROM release_metadata
-        WHERE platform = $1 AND arch = $2
+        WHERE platform = $1 AND arch = $2 AND published_at IS NOT NULL
         ORDER BY string_to_array(version, '.')::int[] DESC, published_at DESC NULLS LAST, created_at DESC
         LIMIT 1
       `,
@@ -607,11 +639,11 @@ app.get("/api/admin/devices", adminRateLimit, requireAdmin, async (_request, res
 
 app.get("/api/admin/license-codes", adminRateLimit, requireAdmin, async (_request, response) => {
   const result = await pool.query("SELECT * FROM license_codes ORDER BY created_at DESC LIMIT 200");
-  response.json({ licenseCodes: result.rows.map(publicLicense) });
+  response.json({ licenseCodes: result.rows.map(adminLicense) });
 });
 
 app.post("/api/admin/license-codes", adminRateLimit, requireAdmin, async (request, response) => {
-  const code = trimString(request.body?.code, 160);
+  const code = trimString(request.body?.code, 160) || generateLicenseCode();
   const maxDevices = Math.max(1, Number.parseInt(String(request.body?.maxDevices ?? "1"), 10) || 1);
   const expiresAt = trimString(request.body?.expiresAt, 80) || null;
   const issuedTo = trimString(request.body?.issuedTo, 200);
@@ -630,7 +662,7 @@ app.post("/api/admin/license-codes", adminRateLimit, requireAdmin, async (reques
     `,
     [code, hashLicenseCode(code), maxDevices, expiresAt, issuedTo, notes],
   );
-  response.status(201).json({ license: publicLicense(result.rows[0]) });
+  response.status(201).json({ license: adminLicense(result.rows[0]) });
 });
 
 app.patch("/api/admin/license-codes/:id", adminRateLimit, requireAdmin, async (request, response) => {
@@ -649,7 +681,7 @@ app.patch("/api/admin/license-codes/:id", adminRateLimit, requireAdmin, async (r
     response.status(404).json({ error: "License not found" });
     return;
   }
-  response.json({ license: publicLicense(result.rows[0]) });
+  response.json({ license: adminLicense(result.rows[0]) });
 });
 
 app.get("/api/admin/device-license-bindings", adminRateLimit, requireAdmin, async (_request, response) => {
@@ -664,6 +696,147 @@ app.get("/api/admin/device-license-bindings", adminRateLimit, requireAdmin, asyn
     `,
   );
   response.json({ bindings: result.rows });
+});
+
+app.post("/api/admin/license-codes/:id/reset-binding", adminRateLimit, requireAdmin, async (request, response) => {
+  await pool.query("BEGIN");
+  try {
+    const licenseResult = await pool.query("SELECT * FROM license_codes WHERE id = $1 FOR UPDATE", [request.params.id]);
+    if (licenseResult.rowCount === 0) {
+      await pool.query("ROLLBACK");
+      response.status(404).json({ error: "License not found" });
+      return;
+    }
+
+    const license = licenseResult.rows[0];
+    await pool.query(
+      `
+        UPDATE device_license_bindings
+        SET status = 'revoked', revoked_at = NOW()
+        WHERE license_code_id = $1 AND status = 'active' AND revoked_at IS NULL
+      `,
+      [license.id],
+    );
+
+    const nextStatus = license.status === "disabled" || license.status === "expired" ? license.status : "available";
+    const updatedLicense = await pool.query(
+      "UPDATE license_codes SET status = $1, activated_at = NULL WHERE id = $2 RETURNING *",
+      [nextStatus, license.id],
+    );
+
+    await pool.query("COMMIT");
+    response.json({ license: adminLicense(updatedLicense.rows[0]) });
+  } catch (error) {
+    await pool.query("ROLLBACK");
+    jsonLog("error", "license_reset_failed", { error: error instanceof Error ? error.message : String(error) });
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to reset license binding" });
+  }
+});
+
+app.get("/api/admin/releases", adminRateLimit, requireAdmin, async (_request, response) => {
+  const result = await pool.query(
+    `
+      SELECT *
+      FROM release_metadata
+      ORDER BY created_at DESC
+      LIMIT 200
+    `,
+  );
+  response.json({ releases: result.rows.map(toRelease) });
+});
+
+app.post("/api/admin/releases", adminRateLimit, requireAdmin, releaseUpload, async (request, response) => {
+  const fileBuffer = Buffer.isBuffer(request.body) ? request.body : Buffer.alloc(0);
+  const version = trimString(request.get("x-release-version"), 80);
+  const platform = trimString(request.get("x-release-platform"), 40) || "win32";
+  const arch = trimString(request.get("x-release-arch"), 40) || "x64";
+  const channel = trimString(request.get("x-release-channel"), 40) || "stable";
+  const originalName = safeFileName(decodeHeader(request.get("x-release-file-name")));
+  const notes = decodeHeader(request.get("x-release-notes"));
+  const minSupportedVersion = trimString(request.get("x-release-min-supported-version"), 80);
+  const mandatory = request.get("x-release-mandatory") === "true";
+  const extension = path.extname(originalName).toLowerCase();
+
+  if (!version || !fileBuffer.length || !originalName) {
+    response.status(400).json({ error: "Release version, file name, and package body are required" });
+    return;
+  }
+  if (!allowedReleaseExtensions.has(extension)) {
+    response.status(400).json({ error: "Release package type is not allowed" });
+    return;
+  }
+
+  const sha256 = crypto.createHash("sha256").update(fileBuffer).digest("hex");
+  const releaseFolder = path.join(releasesDir, version, platform, arch);
+  const artifactName = `${version}-${Date.now()}-${originalName}`;
+  const artifactPath = path.posix.join(version, platform, arch, artifactName);
+  const notesPath = notes ? path.posix.join(version, platform, arch, `notes-${version}.md`) : "";
+
+  try {
+    await fs.mkdir(releaseFolder, { recursive: true });
+    await fs.writeFile(path.join(releaseFolder, artifactName), fileBuffer);
+    if (notesPath) {
+      await fs.writeFile(path.join(releaseFolder, `notes-${version}.md`), notes, "utf8");
+    }
+
+    const result = await pool.query(
+      `
+        INSERT INTO release_metadata (
+          version, platform, arch, channel, artifact_path, sha256, size,
+          notes_path, min_supported_version, mandatory
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        ON CONFLICT (version, platform, arch)
+        DO UPDATE SET
+          channel = EXCLUDED.channel,
+          artifact_path = EXCLUDED.artifact_path,
+          sha256 = EXCLUDED.sha256,
+          size = EXCLUDED.size,
+          notes_path = EXCLUDED.notes_path,
+          min_supported_version = EXCLUDED.min_supported_version,
+          mandatory = EXCLUDED.mandatory,
+          published_at = NULL
+        RETURNING *
+      `,
+      [version, platform, arch, channel, artifactPath, sha256, fileBuffer.length, notesPath, minSupportedVersion, mandatory],
+    );
+
+    response.status(201).json({ release: toRelease(result.rows[0]) });
+  } catch (error) {
+    jsonLog("error", "release_upload_failed", { error: error instanceof Error ? error.message : String(error), version, platform, arch });
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to upload release" });
+  }
+});
+
+app.post("/api/admin/releases/:id/publish", adminRateLimit, requireAdmin, async (request, response) => {
+  const result = await pool.query(
+    "UPDATE release_metadata SET published_at = NOW() WHERE id = $1 RETURNING *",
+    [request.params.id],
+  );
+  if (result.rowCount === 0) {
+    response.status(404).json({ error: "Release not found" });
+    return;
+  }
+  response.json({ release: toRelease(result.rows[0]) });
+});
+
+app.patch("/api/admin/releases/:id", adminRateLimit, requireAdmin, async (request, response) => {
+  const mandatory = Boolean(request.body?.mandatory);
+  const minSupportedVersion = trimString(request.body?.minSupportedVersion, 80);
+  const result = await pool.query(
+    `
+      UPDATE release_metadata
+      SET mandatory = $1, min_supported_version = $2
+      WHERE id = $3
+      RETURNING *
+    `,
+    [mandatory, minSupportedVersion, request.params.id],
+  );
+  if (result.rowCount === 0) {
+    response.status(404).json({ error: "Release not found" });
+    return;
+  }
+  response.json({ release: toRelease(result.rows[0]) });
 });
 
 await migrate();

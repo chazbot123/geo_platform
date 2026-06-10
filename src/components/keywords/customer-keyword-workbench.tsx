@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { ArrowRight, Check, Loader2, RefreshCw, Save } from "lucide-react";
 import { dispatchWorkflowStatusRefresh } from "@/components/layout/app-shell";
+import { requireLicensedAction } from "@/lib/license/guard";
 import type {
   CustomerKeywordCandidate,
   CustomerKeywordHeat,
@@ -105,6 +106,12 @@ export function CustomerKeywordWorkbench() {
   }
 
   async function generate() {
+    const licenseGuard = await requireLicensedAction("generate_content");
+    if (!licenseGuard.allowed) {
+      setError(licenseGuard.message ?? "当前设备未授权，请先激活授权码。");
+      return;
+    }
+
     setGenerating(true);
     setMessage("");
     setError("");
@@ -131,6 +138,12 @@ export function CustomerKeywordWorkbench() {
   }
 
   async function saveSelection() {
+    const licenseGuard = await requireLicensedAction("save_keywords");
+    if (!licenseGuard.allowed) {
+      setError(licenseGuard.message ?? "当前设备未授权，请先激活授权码。");
+      return;
+    }
+
     setSaving(true);
     setMessage("");
     setError("");

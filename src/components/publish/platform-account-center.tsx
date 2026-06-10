@@ -6,6 +6,7 @@ import { openPlatformLoginWindow, validatePlatformSessionWindow } from "@/lib/pu
 import { toDisplayImageItems } from "@/lib/publish/image-display";
 import { detectDesktopBridge, hasElectronDesktopBridge, type DesktopBridgeAvailability } from "@/lib/publish/local-bridge-client";
 import { auditPlatformAccountSession, buildDesktopSessionFailureReason, describeAccountPublishability } from "@/lib/publish/account-session-validator";
+import { requireLicensedAction } from "@/lib/license/guard";
 import { publishPlatformDescriptors } from "@/lib/publish/platforms";
 import type { AccountPublishedJobsGroup, PlatformAccountRecord, PublishingJobRecord, SocialPlatform } from "@/lib/types";
 
@@ -230,6 +231,12 @@ export function PlatformAccountCenter({
   }
 
   async function startLogin(platform: SocialPlatform = TOUTIAO_PLATFORM, accountId?: string) {
+    const licenseGuard = await requireLicensedAction("manage_publish_account");
+    if (!licenseGuard.allowed) {
+      setMessage(licenseGuard.message ?? "当前设备未授权，请先激活授权码。");
+      return;
+    }
+
     if (!isBridgeReady) {
       setMessage(bridgeAvailability.reason ?? "未检测到可用桌面桥，请先启动 GEO 桌面版。");
       return;
@@ -288,6 +295,12 @@ export function PlatformAccountCenter({
   }
 
   async function createManualAccount(platform: SocialPlatform) {
+    const licenseGuard = await requireLicensedAction("manage_publish_account");
+    if (!licenseGuard.allowed) {
+      setMessage(licenseGuard.message ?? "当前设备未授权，请先激活授权码。");
+      return;
+    }
+
     const descriptor = platformDescriptor(platform);
     const accountName = (manualAccountNames[platform] ?? "").trim();
     if (!descriptor) {
@@ -328,6 +341,12 @@ export function PlatformAccountCenter({
   }
 
   async function patchAccount(accountId: string, patch: Record<string, unknown>, successMessage: string) {
+    const licenseGuard = await requireLicensedAction("manage_publish_account");
+    if (!licenseGuard.allowed) {
+      setMessage(licenseGuard.message ?? "当前设备未授权，请先激活授权码。");
+      return;
+    }
+
     setLoadingKey(accountId);
     setMessage("");
     try {
@@ -342,6 +361,12 @@ export function PlatformAccountCenter({
   }
 
   async function removeAccount(accountId: string) {
+    const licenseGuard = await requireLicensedAction("manage_publish_account");
+    if (!licenseGuard.allowed) {
+      setMessage(licenseGuard.message ?? "当前设备未授权，请先激活授权码。");
+      return;
+    }
+
     setLoadingKey(accountId);
     setMessage("");
     try {

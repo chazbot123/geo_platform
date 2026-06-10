@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>GEO 后台管理</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <main class="shell">
@@ -12,17 +12,21 @@
         <div>
           <p class="eyebrow">GEO Admin</p>
           <h1>后台管理</h1>
+          <p class="topbar-subtitle">授权、反馈和版本发布的内部运营控制台。</p>
         </div>
-        <button id="logoutButton" class="secondary">退出登录</button>
+        <button id="logoutButton" class="secondary hidden">退出登录</button>
       </header>
 
-      <section id="loginPanel" class="panel">
-        <h2>登录保护</h2>
-        <p class="muted">请输入部署环境配置的后台账号。凭据只保存在当前浏览器会话中。</p>
+      <section id="loginPanel" class="login-panel">
+        <div>
+          <p class="section-kicker">Protected console</p>
+          <h2>登录保护</h2>
+          <p class="muted">请输入部署环境配置的后台账号。凭据只保存在当前浏览器会话中。</p>
+        </div>
         <div class="login-grid">
           <label>
             <span>账号</span>
-            <input id="usernameInput" autocomplete="username" />
+            <input id="usernameInput" autocomplete="username" value="geo-admin" />
           </label>
           <label>
             <span>密码</span>
@@ -33,22 +37,92 @@
       </section>
 
       <section id="adminPanel" class="hidden">
-        <nav class="tabs">
-          <button class="tab active" data-tab="feedback">反馈</button>
-          <button class="tab" data-tab="devices">设备</button>
-          <button class="tab" data-tab="licenses">授权码</button>
-          <button class="tab" data-tab="bindings">绑定关系</button>
+        <nav class="tabs" aria-label="后台功能">
+          <button class="tab active" data-tab="authorization">授权管理</button>
+          <button class="tab" data-tab="feedback">意见箱</button>
+          <button class="tab" data-tab="releases">版本管理</button>
         </nav>
 
-        <section id="feedbackTab" class="panel">
-          <div class="panel-heading">
+        <section id="authorizationTab" class="workspace">
+          <div class="workspace-heading">
             <div>
-              <h2>意见反馈</h2>
-              <p class="muted">按问题类型、处理状态、版本和设备筛选。</p>
+              <p class="section-kicker">License operations</p>
+              <h2>授权管理</h2>
+              <p class="muted">生成一机一码授权，查看设备绑定，必要时重置绑定或禁用授权。</p>
+            </div>
+            <button id="refreshAuthorizationButton" class="secondary">刷新</button>
+          </div>
+
+          <div class="license-create">
+            <section class="form-panel">
+              <div class="panel-title-row">
+                <div>
+                  <h3>创建授权码</h3>
+                  <p class="muted">授权码留空时由系统自动生成，用户输入授权码后自动绑定当前设备。</p>
+                </div>
+              </div>
+              <div class="form-grid">
+                <label>
+                  <span>授权码</span>
+                  <input id="licenseCodeInput" placeholder="留空自动生成" autocomplete="off" />
+                </label>
+                <label>
+                  <span>发放对象</span>
+                  <input id="licenseIssuedToInput" placeholder="客户名称或订单备注" />
+                </label>
+                <label>
+                  <span>设备数</span>
+                  <input id="licenseMaxDevicesInput" type="number" min="1" value="1" />
+                </label>
+                <label>
+                  <span>到期时间</span>
+                  <input id="licenseExpiresAtInput" type="datetime-local" />
+                </label>
+                <label class="span-2">
+                  <span>备注</span>
+                  <input id="licenseNotesInput" placeholder="内部备注，可选" />
+                </label>
+                <button id="createLicenseButton">生成授权码</button>
+              </div>
+            </section>
+            <section class="result-panel">
+              <span class="result-label">最新生成</span>
+              <output id="createdLicenseOutput" class="output">生成后在这里显示完整授权码。</output>
+            </section>
+          </div>
+
+          <div class="split-layout">
+            <section class="data-panel">
+              <div class="panel-title-row">
+                <div>
+                  <h3>授权列表</h3>
+                  <p class="muted">查看状态、可用设备数、发放对象和到期时间。</p>
+                </div>
+              </div>
+              <div id="licensesList" class="list"></div>
+            </section>
+            <section class="data-panel">
+              <div class="panel-title-row">
+                <div>
+                  <h3>设备绑定</h3>
+                  <p class="muted">用户激活授权码后自动写入设备指纹和机器码。</p>
+                </div>
+              </div>
+              <div id="bindingsList" class="list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="feedbackTab" class="workspace hidden">
+          <div class="workspace-heading">
+            <div>
+              <p class="section-kicker">Feedback inbox</p>
+              <h2>意见箱</h2>
+              <p class="muted">收集桌面端上传到服务器数据库的反馈，并维护处理状态。</p>
             </div>
             <button id="refreshFeedbackButton" class="secondary">刷新</button>
           </div>
-          <div class="filters">
+          <div class="filters toolbar">
             <select id="typeFilter">
               <option value="">全部类型</option>
               <option>模型连接问题</option>
@@ -74,46 +148,44 @@
           </div>
         </section>
 
-        <section id="devicesTab" class="panel hidden">
-          <div class="panel-heading">
-            <h2>设备占位</h2>
-            <button id="refreshDevicesButton" class="secondary">刷新</button>
-          </div>
-          <div id="devicesList" class="list"></div>
-        </section>
-
-        <section id="licensesTab" class="panel hidden">
-          <div class="panel-heading">
+        <section id="releasesTab" class="workspace hidden">
+          <div class="workspace-heading">
             <div>
-              <h2>授权码</h2>
-              <p class="muted">新建授权码、查看状态并停用授权。完整授权码只在创建时输入，不在列表中回显。</p>
+              <p class="section-kicker">Release control</p>
+              <h2>版本管理</h2>
+              <p class="muted">上传 GEO 更新包，生成 SHA-256，并发布最新版本清单。</p>
             </div>
-            <button id="refreshLicensesButton" class="secondary">刷新</button>
+            <button id="refreshReleasesButton" class="secondary">刷新</button>
           </div>
-          <div class="filters">
-            <input id="licenseCodeInput" placeholder="新授权码" autocomplete="off" />
-            <input id="licenseIssuedToInput" placeholder="发放对象" />
-            <input id="licenseMaxDevicesInput" placeholder="设备数" type="number" min="1" value="1" />
-            <input id="licenseExpiresAtInput" placeholder="到期时间（可选）" type="datetime-local" />
-          </div>
-          <div class="filters">
-            <input id="licenseNotesInput" placeholder="备注（可选）" />
-            <button id="createLicenseButton">创建授权码</button>
-          </div>
-          <div id="licensesList" class="list"></div>
-        </section>
 
-        <section id="bindingsTab" class="panel hidden">
-          <div class="panel-heading">
-            <h2>绑定关系占位</h2>
-            <button id="refreshBindingsButton" class="secondary">刷新</button>
+          <div class="filters">
+            <input id="releaseVersionInput" placeholder="版本号，例如 0.2.0" />
+            <input id="releasePlatformInput" value="win32" />
+            <input id="releaseArchInput" value="x64" />
+            <input id="releaseMinVersionInput" placeholder="最低支持版本，可选" />
           </div>
-          <div id="bindingsList" class="list"></div>
+          <div class="filters">
+            <label class="file-picker">
+              <span>选择更新包</span>
+              <input id="releaseFileInput" type="file" accept=".exe,.msi,.zip,.7z" />
+            </label>
+            <label class="checkbox-row">
+              <input id="releaseMandatoryInput" type="checkbox" />
+              <span>强制更新</span>
+            </label>
+            <button id="uploadReleaseButton">上传版本包</button>
+          </div>
+          <label class="block-label">
+            <span>更新说明</span>
+            <textarea id="releaseNotesInput" placeholder="写给用户看的更新说明"></textarea>
+          </label>
+
+          <div id="releasesList" class="list"></div>
         </section>
       </section>
 
       <p id="toast" class="toast hidden"></p>
     </main>
-    <script src="/app.js" type="module"></script>
+    <script src="app.js" type="module"></script>
   </body>
 </html>

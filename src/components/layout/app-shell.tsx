@@ -10,14 +10,12 @@ import {
   Circle,
   FileQuestion,
   FolderKanban,
-  MessageSquare,
   Moon,
   PenLine,
-  RefreshCw,
   Rocket,
-  Settings,
   Sun,
 } from "lucide-react";
+import { settingsItems } from "@/components/layout/navigation-items";
 import { cn } from "@/lib/utils";
 import type { WorkflowStatus, WorkflowStepKey } from "@/lib/workflow/status-service";
 
@@ -28,12 +26,6 @@ const workflowItems = [
   { key: "contentPool", href: "/content-pool", label: "内容池", icon: FolderKanban },
   { key: "publishExecution", href: "/publish-execution", label: "执行发布", icon: Rocket },
 ] satisfies Array<{ key: WorkflowStepKey; href: string; label: string; icon: typeof Building2 }>;
-
-const settingsItems = [
-  { href: "/settings", label: "模型设置", icon: Settings },
-  { href: "/feedback", label: "意见反馈", icon: MessageSquare },
-  { href: "/updates", label: "检查更新", icon: RefreshCw },
-];
 
 const emptyWorkflowStatus: WorkflowStatus = {
   updatedAt: "",

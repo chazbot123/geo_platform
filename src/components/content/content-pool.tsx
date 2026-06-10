@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { AlertTriangle, CheckCircle2, History, ImageIcon, RefreshCw, Repeat2, ShieldCheck, Wand2 } from "lucide-react";
 import { dispatchWorkflowStatusRefresh } from "@/components/layout/app-shell";
+import { requireLicensedAction } from "@/lib/license/guard";
 import type {
   ContentPoolItem,
   ContentPoolItemStatus,
@@ -239,6 +240,12 @@ export function ContentPoolWorkbench() {
   }
 
   async function regeneratePool() {
+    const licenseGuard = await requireLicensedAction("generate_content");
+    if (!licenseGuard.allowed) {
+      setError(licenseGuard.message ?? "当前设备未授权，请先激活授权码。");
+      return;
+    }
+
     setBusy(true);
     setError("");
     setNotice("");
@@ -259,6 +266,12 @@ export function ContentPoolWorkbench() {
 
   async function runItemAction(itemId: string, action: "rewrite" | "confirm_medium" | "disperse") {
     if (!visibleRecord) return;
+    const licenseGuard = await requireLicensedAction("mutate_content_pool");
+    if (!licenseGuard.allowed) {
+      setError(licenseGuard.message ?? "当前设备未授权，请先激活授权码。");
+      return;
+    }
+
     setBusy(true);
     setError("");
     setNotice("");
