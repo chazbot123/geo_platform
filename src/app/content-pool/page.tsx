@@ -1,13 +1,16 @@
+import { Suspense } from "react";
 import { AppShell } from "@/components/layout/app-shell";
 import { ContentPoolWorkbench } from "@/components/content/content-pool";
 
 export default function ContentPoolPage() {
   return (
     <AppShell
-      title="内容池"
-      description="管理当前任务的文章、风险处理、平台适配和图片提示；历史任务通过筛选入口查看。"
+      title="生成结果中心"
+      description="查看当前任务的文章生成进度、最终结果和发布准备状态；正文与图片进入详情页查看。"
     >
-      <ContentPoolWorkbench />
+      <Suspense fallback={<section className="section-card text-sm text-muted">正在读取生成结果。</section>}>
+        <ContentPoolWorkbench />
+      </Suspense>
     </AppShell>
   );
 }

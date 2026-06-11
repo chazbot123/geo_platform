@@ -3,6 +3,7 @@ import { getPromptVersion, normalizeAiScenario, normalizePlatform } from "@/lib/
 import { reviewContent, type ReviewResult } from "@/lib/content/review-service";
 import { planDispersion } from "@/lib/content/dispersion-service";
 import { buildGeoContentExecutionPackage } from "@/lib/content/execution-package";
+import { generateArticleForContentPool } from "@/lib/content/article-generation-service";
 import { runContentModel } from "@/lib/integrations/content/client";
 import {
   getContentPool,
@@ -25,6 +26,10 @@ import type {
   SocialPlatform,
   TaskBundle,
 } from "@/lib/types";
+
+const activeGenerationTasks = new Set<string>();
+const activeRetryTasks = new Set<string>();
+const generationResumeStatuses = new Set(["generation_queued", "generation_running"]);
 
 function splitParagraphs(content: string) {
   return content
@@ -270,65 +275,364 @@ function isContentPoolReady(item: Pick<ContentPoolItem, "riskLevel" | "pipeline"
   return item.riskLevel === "low" && item.pipeline.negativeCheck.hits.length === 0;
 }
 
-function plannedTimeFor(plan: PublishTaskPlan, dayIndex: number, slotIndex: number) {
-  const planned = new Date(plan.createdAt);
-  planned.setDate(planned.getDate() + dayIndex);
-  planned.setHours(slotIndex === 0 ? 9 : 14, 30, 0, 0);
-  return planned.toISOString();
+function parseTimeValue(value: string) {
+  const [hours, minutes] = value.split(":").map((item) => Number.parseInt(item, 10));
+  return hours * 60 + minutes;
 }
 
-function buildDraftBody(input: {
-  companyName: string;
-  brandName: string;
-  productService: string;
-  region: string;
-  keyword: string;
-  platform: SocialPlatform;
-  aiPlatform: SearchProvider;
-}) {
-  const platformLabel = platformLabelMap[input.platform];
-  const aiLabel = providerLabelMap[input.aiPlatform];
-  return [
-    `围绕“${input.keyword}”，先给出清晰判断，再说明适用场景。`,
-    `${input.brandName || input.companyName}在${input.region || "本地"}提供${input.productService || "相关服务"}，内容会用${platformLabel}适合的表达方式展开，并兼顾${aiLabel}检索中的问答可读性。`,
-    "建议从需求背景、选择标准、风险提醒和行动建议四段组织，避免夸大承诺，保留可核验依据。",
-    "结尾引导用户带着具体场景咨询，减少泛泛转化话术。",
-  ].join("\n\n");
+function seededUnit(seed: number) {
+  const value = Math.sin(seed * 12.9898 + 78.233) * 43758.5453;
+  return value - Math.floor(value);
 }
 
-function buildReviewDraft(input: {
-  taskId: string;
-  title: string;
-  summary: string;
-  body: string;
-  keyword: string;
-  platform: SocialPlatform;
-  aiPlatform: SearchProvider;
-  timestamp: string;
-}): ContentDraft {
+function buildDailyPublishTimes(plan: PublishTaskPlan, dayIndex: number, accountSeed: number) {
+  const slotCount = Math.max(1, plan.articlesPerAccountPerDay);
+  const startMinutes = parseTimeValue(plan.timeWindow.start);
+  const endMinutes = parseTimeValue(plan.timeWindow.end);
+  const minIntervalMinutes = plan.minSameAccountIntervalHours * 60;
+  const totalWindowMinutes = Math.max(endMinutes - startMinutes, 0);
+  const requiredIntervalMinutes = Math.max(0, (slotCount - 1) * minIntervalMinutes);
+  const dayBase = new Date(plan.createdAt);
+  dayBase.setDate(dayBase.getDate() + dayIndex);
+
+  if (slotCount === 1) {
+    const offset = totalWindowMinutes > 0 ? Math.floor(seededUnit(accountSeed * 101 + dayIndex * 17) * (totalWindowMinutes + 1)) : 0;
+    const planned = new Date(dayBase);
+    planned.setHours(Math.floor((startMinutes + offset) / 60), (startMinutes + offset) % 60, 0, 0);
+    return [planned.toISOString()];
+  }
+
+  if (totalWindowMinutes <= requiredIntervalMinutes) {
+    return Array.from({ length: slotCount }, (_, slotIndex) => {
+      const minutes = Math.min(startMinutes + slotIndex * minIntervalMinutes, endMinutes);
+      const planned = new Date(dayBase);
+      planned.setHours(Math.floor(minutes / 60), minutes % 60, 0, 0);
+      return planned.toISOString();
+    });
+  }
+
+  const times: string[] = [];
+  let currentMinutes = startMinutes;
+  let remainingSlack = totalWindowMinutes - requiredIntervalMinutes;
+
+  for (let slotIndex = 0; slotIndex < slotCount; slotIndex += 1) {
+    const remainingSlots = slotCount - slotIndex;
+    const maxSlackBeforeCurrent = remainingSlots === 1 ? remainingSlack : Math.floor(remainingSlack / remainingSlots);
+    const slackBeforeCurrent =
+      remainingSlots === 1 ? remainingSlack : Math.floor(seededUnit(accountSeed * 101 + dayIndex * 17 + slotIndex * 23) * (maxSlackBeforeCurrent + 1));
+
+    currentMinutes += slackBeforeCurrent;
+    remainingSlack -= slackBeforeCurrent;
+
+    const planned = new Date(dayBase);
+    planned.setHours(Math.floor(currentMinutes / 60), currentMinutes % 60, 0, 0);
+    times.push(planned.toISOString());
+    currentMinutes += minIntervalMinutes;
+  }
+
+  return times;
+}
+
+function plannedTimeFor(plan: PublishTaskPlan, dayIndex: number, slotIndex: number, accountSeed: number) {
+  const dailyTimes = buildDailyPublishTimes(plan, dayIndex, accountSeed);
+  return dailyTimes[slotIndex] ?? dailyTimes.at(-1) ?? new Date(plan.createdAt).toISOString();
+}
+
+function buildPendingPipeline(platform: SocialPlatform, imagePrompt: string): ContentPoolPipelineState {
   return {
-    taskId: input.taskId,
-    title: input.title,
-    summary: input.summary,
-    content: input.body,
-    selectedKeywords: [input.keyword],
-    selectedKeywordTheme: input.keyword,
-    reportIntroduction: input.body.split(/\n+/).find(Boolean) ?? input.summary,
-    reportConclusion: "建议结合具体情况判断，并核验资质、合同和现场情况。",
-    reportSections: [
-      {
-        question: input.keyword,
-        heading: "判断标准",
-        summary: input.summary,
-        body: input.body,
-      },
-    ],
-    faq: [`${input.keyword}应该先看什么？`],
-    cta: "可以带着具体场景进一步确认适用边界。",
-    aiScenario: input.aiPlatform,
-    platform: input.platform,
-    contentAngle: "selection_criteria",
+    negativeCheck: {
+      status: "pending",
+      hits: [],
+    },
+    riskReview: {
+      status: "pending",
+      level: "low",
+      message: "等待后台开始处理。",
+    },
+    sampleDraft: {
+      status: "pending",
+      passed: false,
+    },
+    styleAdaptation: {
+      status: "pending",
+      platform,
+      notes: [],
+    },
+    dispersion: {
+      status: "pending",
+      changedDimensions: [],
+      message: "等待进入差异化处理。",
+    },
+    imageGeneration: {
+      status: "pending",
+      prompt: imagePrompt,
+      images: [],
+    },
+  };
+}
+
+function buildPendingContentPoolItem(input: {
+  plan: PublishTaskPlan;
+  sequence: number;
+  platform: SocialPlatform;
+  accountId: string;
+  accountName?: string;
+  keyword: ReturnType<typeof getSelectedQuestions>[number];
+  accountKeywordOffset: number;
+  plannedPublishTime: string;
+  timestamp: string;
+}): ContentPoolItem {
+  const imagePrompt = `${platformLabelMap[input.platform]}配图：${input.keyword.text}，真实产品服务场景，清晰、克制、适合图文发布`;
+  return {
+    id: `${input.plan.taskId}-${String(input.sequence).padStart(4, "0")}`,
+    sequence: input.sequence,
+    taskId: input.plan.taskId,
+    aiPlatform: input.plan.searchProvider,
+    publishPlatform: input.platform,
+    accountId: input.accountId,
+    accountName: input.accountName,
+    keywordId: input.keyword.id,
+    keywordSequence: input.keyword.sequence,
+    keywordText: input.keyword.text,
+    accountKeywordOffset: input.accountKeywordOffset,
+    plannedPublishTime: input.plannedPublishTime,
+    title: "",
+    summary: "",
+    body: "",
+    imagePrompt,
+    imageList: [],
+    riskLevel: "low",
+    status: "pending_generation",
+    pipeline: buildPendingPipeline(input.platform, imagePrompt),
+    publishable: false,
+    displayStatus: "pending",
+    internalStage: "brief_ready",
+    stageMessage: "等待开始生成。",
+    stageLog: [{ stage: "brief_ready", message: "已进入生成队列。", at: input.timestamp }],
+    createdAt: input.timestamp,
     updatedAt: input.timestamp,
+  };
+}
+
+function countFinishedGenerationItems(record: ContentPoolRecord) {
+  return record.items.filter((item) =>
+    item.status === "pending_publish" ||
+    item.status === "ready" ||
+    item.status === "sample" ||
+    item.status === "published" ||
+    item.status === "failed",
+  ).length;
+}
+
+function hasPendingGenerationItems(record: ContentPoolRecord) {
+  return record.items.some((item) => item.status === "pending_generation" || item.status === "generating");
+}
+
+function hasRetryQueueItems(record: ContentPoolRecord) {
+  return record.items.some((item) => item.status === "generating" || item.status === "failed" || item.riskLevel === "high");
+}
+
+function calculateGenerationProgress(record: ContentPoolRecord) {
+  if (!record.items.length) {
+    return 0;
+  }
+  return Math.round((countFinishedGenerationItems(record) / record.items.length) * 100);
+}
+
+function markRetryQueueState(record: ContentPoolRecord, status: "idle" | "queued" | "running", timestamp: string) {
+  return summarizeContentPool({
+    ...record,
+    retryQueueStatus: status,
+    retryRequestedAt: status === "queued" ? timestamp : (record.retryRequestedAt ?? timestamp),
+    retryFinishedAt: status === "idle" ? timestamp : undefined,
+    updatedAt: timestamp,
+  });
+}
+
+async function syncTaskGenerationProgress(taskId: string, status: "generation_queued" | "generation_running" | "generation_completed", record: ContentPoolRecord, startedAt: string, finishedAt?: string) {
+  await updateTaskStatus(taskId, status, {
+    generationStartedAt: startedAt,
+    generationFinishedAt: finishedAt,
+    generationProgress: status === "generation_completed" ? 100 : calculateGenerationProgress(record),
+    generatedArticleCount: record.generatedArticleCount ?? 0,
+    failedArticleCount: record.failedArticleCount ?? 0,
+  });
+}
+
+function replaceContentPoolItem(record: ContentPoolRecord, itemId: string, nextItem: ContentPoolItem) {
+  return summarizeContentPool({
+    ...record,
+    items: record.items.map((item) => (item.id === itemId ? nextItem : item)),
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+function markContentPoolItemGenerating(record: ContentPoolRecord, itemId: string) {
+  const timestamp = new Date().toISOString();
+  return summarizeContentPool({
+    ...record,
+    items: record.items.map((item) => {
+      if (item.id !== itemId) {
+        return item;
+      }
+      return {
+        ...item,
+        status: "generating",
+        displayStatus: "generating",
+        internalStage: "draft_generating",
+        stageMessage: "正在生成正文。",
+        stageLog: [...(item.stageLog ?? []), { stage: "draft_generating", message: "正在生成正文。", at: timestamp }],
+        updatedAt: timestamp,
+      };
+    }),
+    updatedAt: timestamp,
+  });
+}
+
+async function saveAndSyncGenerationRecord(taskId: string, status: "generation_queued" | "generation_running" | "generation_completed", record: ContentPoolRecord, startedAt: string, finishedAt?: string) {
+  const summarized = summarizeContentPool(record);
+  await saveContentPool(summarized);
+  await syncTaskGenerationProgress(taskId, status, summarized, startedAt, finishedAt);
+  return summarized;
+}
+
+async function saveRetryQueueRecord(record: ContentPoolRecord) {
+  const summarized = summarizeContentPool(record);
+  await saveContentPool(summarized);
+  return summarized;
+}
+
+async function buildPendingContentPoolRecord(bundle: TaskBundle, plan: PublishTaskPlan): Promise<ContentPoolRecord> {
+  const planned = new Date(plan.createdAt);
+  planned.setSeconds(0, 0);
+  const questions = getSelectedQuestions(bundle);
+  if (questions.length !== 5) {
+    throw new Error("请先保存 5 个客户问题。");
+  }
+
+  const timestamp = planned.toISOString();
+  const accountIds = plan.enabledPlatforms.flatMap((platform) =>
+    platform.enabled ? platform.accountIds.map((accountId) => ({ accountId, platform: platform.platform })) : [],
+  );
+  const accountNameMap = new Map<string, string>();
+  await Promise.all(
+    accountIds.map(async ({ accountId }) => {
+      const account = await getPlatformAccount(accountId);
+      accountNameMap.set(accountId, account?.displayName || account?.accountName || accountId);
+    }),
+  );
+
+  let sequence = 0;
+  const items: ContentPoolItem[] = [];
+
+  for (const platformPlan of plan.enabledPlatforms.filter((item) => item.enabled)) {
+    for (let accountIndex = 0; accountIndex < platformPlan.accountIds.length; accountIndex += 1) {
+      const accountId = platformPlan.accountIds[accountIndex];
+      const globalAccountIndex = accountIds.findIndex((item) => item.accountId === accountId);
+      const accountKeywordOffset = Math.max(globalAccountIndex, 0) % questions.length;
+      let accountArticleIndex = 0;
+
+      for (let dayIndex = 0; dayIndex < plan.days; dayIndex += 1) {
+        for (let slotIndex = 0; slotIndex < plan.articlesPerAccountPerDay; slotIndex += 1) {
+          sequence += 1;
+          const keywordIndex = (accountArticleIndex + accountKeywordOffset) % questions.length;
+          const keyword = questions[keywordIndex];
+          const plannedPublishTime = plannedTimeFor(plan, dayIndex, slotIndex, globalAccountIndex + 1);
+          items.push(
+            buildPendingContentPoolItem({
+              plan,
+              sequence,
+              platform: platformPlan.platform,
+              accountId,
+              accountName: accountNameMap.get(accountId),
+              keyword,
+              accountKeywordOffset,
+              plannedPublishTime,
+              timestamp,
+            }),
+          );
+          accountArticleIndex += 1;
+        }
+      }
+    }
+  }
+
+  return summarizeContentPool({
+    taskId: plan.taskId,
+    sourcePublishPlanUpdatedAt: plan.updatedAt,
+    currentTaskId: plan.taskId,
+    items,
+    retryQueueStatus: "idle",
+    generatedAt: timestamp,
+    updatedAt: timestamp,
+  });
+}
+
+function buildFailedContentPoolItem(input: {
+  plan: PublishTaskPlan;
+  sequence: number;
+  platform: SocialPlatform;
+  accountId: string;
+  accountName?: string;
+  keyword: ReturnType<typeof getSelectedQuestions>[number];
+  accountKeywordOffset: number;
+  plannedPublishTime: string;
+  error: unknown;
+  timestamp: string;
+}): ContentPoolItem {
+  const failedReason = input.error instanceof Error ? input.error.message : "文章生成失败。";
+  const imagePrompt = `${platformLabelMap[input.platform]}配图：${input.keyword.text}，真实产品服务场景，清晰、克制、适合图文发布`;
+  return {
+    id: `${input.plan.taskId}-${String(input.sequence).padStart(4, "0")}`,
+    sequence: input.sequence,
+    taskId: input.plan.taskId,
+    aiPlatform: input.plan.searchProvider,
+    publishPlatform: input.platform,
+    accountId: input.accountId,
+    accountName: input.accountName,
+    keywordId: input.keyword.id,
+    keywordSequence: input.keyword.sequence,
+    keywordText: input.keyword.text,
+    accountKeywordOffset: input.accountKeywordOffset,
+    plannedPublishTime: input.plannedPublishTime,
+    title: "",
+    summary: "",
+    body: "",
+    imagePrompt,
+    imageList: [],
+    riskLevel: "high",
+    status: "failed",
+    pipeline: {
+      negativeCheck: { status: "blocked", hits: [failedReason], checkedAt: input.timestamp },
+      riskReview: { status: "blocked", level: "high", message: failedReason, reviewedAt: input.timestamp },
+      sampleDraft: { status: "blocked", passed: false, checkedAt: input.timestamp },
+      styleAdaptation: { status: "blocked", platform: input.platform, notes: [] },
+      dispersion: { status: "blocked", changedDimensions: [], message: "生成失败，未进入降重结果。" },
+      imageGeneration: { status: "blocked", prompt: imagePrompt, images: [] },
+    },
+    publishable: false,
+    displayStatus: "failed",
+    internalStage: "failed",
+    stageMessage: failedReason,
+    stageLog: [{ stage: "failed", message: failedReason, at: input.timestamp }],
+    failedReason,
+    createdAt: input.timestamp,
+    updatedAt: input.timestamp,
+  };
+}
+
+function summarizeContentPool(record: ContentPoolRecord): ContentPoolRecord {
+  const generatedArticleCount = record.items.filter((item) => item.status === "pending_publish" || item.status === "ready").length;
+  const generatingArticleCount = record.items.filter((item) => item.status === "generating").length;
+  const failedArticleCount = record.items.filter((item) => item.status === "failed").length;
+  const pendingPublishArticleCount = record.items.filter((item) => item.status === "pending_publish").length;
+  return {
+    ...record,
+    totalArticleCount: record.items.length,
+    generatedArticleCount,
+    generatingArticleCount,
+    failedArticleCount,
+    pendingPublishArticleCount,
   };
 }
 
@@ -397,122 +701,85 @@ function buildPipeline(input: {
   };
 }
 
-async function buildContentPoolFromBundle(bundle: TaskBundle, plan: PublishTaskPlan): Promise<ContentPoolRecord> {
-  const questions = getSelectedQuestions(bundle);
-  if (questions.length !== 5) {
-    throw new Error("请先保存 5 个客户问题。");
-  }
+async function runContentGenerationBatch(bundle: TaskBundle, initialRecord: ContentPoolRecord, startedAt: string) {
+  let record = await saveAndSyncGenerationRecord(bundle.task.id, "generation_running", initialRecord, startedAt);
 
-  const timestamp = new Date().toISOString();
-  const accountIds = plan.enabledPlatforms.flatMap((platform) =>
-    platform.enabled ? platform.accountIds.map((accountId) => ({ accountId, platform: platform.platform })) : [],
-  );
-  const accountNameMap = new Map<string, string>();
-  await Promise.all(
-    accountIds.map(async ({ accountId }) => {
-      const account = await getPlatformAccount(accountId);
-      accountNameMap.set(accountId, account?.displayName || account?.accountName || accountId);
-    }),
-  );
+  const pendingItems = record.items
+    .filter((item) => item.status === "pending_generation" || item.status === "generating")
+    .sort((left, right) => left.sequence - right.sequence);
 
-  let sequence = 0;
-  const items: ContentPoolItem[] = [];
-  for (const platformPlan of plan.enabledPlatforms.filter((item) => item.enabled)) {
-    for (let accountIndex = 0; accountIndex < platformPlan.accountIds.length; accountIndex += 1) {
-      const accountId = platformPlan.accountIds[accountIndex];
-      const globalAccountIndex = accountIds.findIndex((item) => item.accountId === accountId);
-      const accountKeywordOffset = Math.max(globalAccountIndex, 0) % questions.length;
-      let accountArticleIndex = 0;
+  for (const pendingItem of pendingItems) {
+    record = markContentPoolItemGenerating(record, pendingItem.id);
+    record = await saveAndSyncGenerationRecord(bundle.task.id, "generation_running", record, startedAt);
 
-      for (let dayIndex = 0; dayIndex < plan.days; dayIndex += 1) {
-        for (let slotIndex = 0; slotIndex < plan.articlesPerAccountPerDay; slotIndex += 1) {
-          sequence += 1;
-          const keywordIndex = (accountArticleIndex + accountKeywordOffset) % questions.length;
-          const keyword = questions[keywordIndex];
-          const isSample = accountArticleIndex === 0;
-          const imagePrompt = `${platformLabelMap[platformPlan.platform]}配图：${keyword.text}，真实产品服务场景，清晰、克制、适合图文发布`;
-          const title = `${keyword.text}｜${platformLabelMap[platformPlan.platform]}内容 ${sequence}`;
-          const summary = `回答“${keyword.text}”，匹配${providerLabelMap[plan.searchProvider]}问答场景，并适配${platformLabelMap[platformPlan.platform]}发布。`;
-          const body = buildDraftBody({
-            companyName: bundle.product.productName,
-            brandName: bundle.product.category,
-            productService: bundle.product.sellingPoints,
-            region: bundle.product.city || bundle.product.province || bundle.product.district || bundle.product.scenarios,
-            keyword: keyword.text,
-            platform: platformPlan.platform,
-            aiPlatform: plan.searchProvider,
-          });
-          const reviewDraft = buildReviewDraft({
-            taskId: plan.taskId,
-            title,
-            summary,
-            body,
-            keyword: keyword.text,
-            platform: platformPlan.platform,
-            aiPlatform: plan.searchProvider,
-            timestamp,
-          });
-          const sameScopeHistory = items
-            .filter((item) => item.publishPlatform === platformPlan.platform && item.accountId === accountId)
-            .map((item) => ({
-              title: item.title,
-              summary: item.summary,
-              content: item.body,
-              reportIntroduction: item.body.split(/\n+/).find(Boolean),
-              faq: [`${item.keywordText}应该先看什么？`],
-              cta: "可以带着具体场景进一步确认适用边界。",
-            }));
-          const reviewResult = await reviewContent(reviewDraft, platformPlan.platform, [keyword.text], sameScopeHistory);
-          const risk = buildRiskFromReview(reviewResult);
-          const pipeline = buildPipeline({
-            platform: platformPlan.platform,
-            risk,
-            imagePrompt,
-            isSample,
-            timestamp,
-          });
-          const publishable = isContentPoolReady({ riskLevel: risk.level, pipeline });
-          const status: ContentPoolItemStatus = publishable ? (isSample ? "sample" : "pending_publish") : "sample";
-
-          items.push({
-            id: `${plan.taskId}-${String(sequence).padStart(4, "0")}`,
-            sequence,
-            taskId: plan.taskId,
-            aiPlatform: plan.searchProvider,
-            publishPlatform: platformPlan.platform,
-            accountId,
-            accountName: accountNameMap.get(accountId),
-            keywordId: keyword.id,
-            keywordSequence: keyword.sequence,
-            keywordText: keyword.text,
-            accountKeywordOffset,
-            plannedPublishTime: plannedTimeFor(plan, dayIndex, slotIndex),
-            title,
-            summary,
-            body,
-            imagePrompt,
-            imageList: [],
-            riskLevel: risk.level,
-            status,
-            pipeline,
-            publishable,
-            createdAt: timestamp,
-            updatedAt: timestamp,
-          });
-          accountArticleIndex += 1;
-        }
-      }
+    try {
+      const result = await generateArticleForContentPool({
+        taskId: pendingItem.taskId,
+        contentItemId: pendingItem.id,
+        sequence: pendingItem.sequence,
+        product: bundle.product,
+        theme: bundle.theme!,
+        searchProvider: pendingItem.aiPlatform,
+        platform: pendingItem.publishPlatform,
+        accountId: pendingItem.accountId,
+        accountName: pendingItem.accountName,
+        keywordId: pendingItem.keywordId,
+        keywordSequence: pendingItem.keywordSequence,
+        keywordText: pendingItem.keywordText,
+        accountKeywordOffset: pendingItem.accountKeywordOffset,
+        plannedPublishTime: pendingItem.plannedPublishTime,
+        previousComparableArticles: record.items
+          .filter((item) => item.id !== pendingItem.id && item.body && (item.publishPlatform === pendingItem.publishPlatform || item.accountId === pendingItem.accountId))
+          .map((item) => ({
+            title: item.title,
+            summary: item.summary,
+            body: item.body,
+          })),
+      });
+      record = replaceContentPoolItem(record, pendingItem.id, result.item);
+    } catch (error) {
+      record = replaceContentPoolItem(
+        record,
+        pendingItem.id,
+        buildFailedContentPoolItem({
+          plan: bundle.task.publishPlan!,
+          sequence: pendingItem.sequence,
+          platform: pendingItem.publishPlatform,
+          accountId: pendingItem.accountId,
+          accountName: pendingItem.accountName,
+          keyword: {
+            id: pendingItem.keywordId,
+            text: pendingItem.keywordText,
+            sequence: pendingItem.keywordSequence,
+          },
+          accountKeywordOffset: pendingItem.accountKeywordOffset,
+          plannedPublishTime: pendingItem.plannedPublishTime,
+          error,
+          timestamp: new Date().toISOString(),
+        }),
+      );
     }
+
+    record = await saveAndSyncGenerationRecord(bundle.task.id, "generation_running", record, startedAt);
   }
 
-  return {
-    taskId: plan.taskId,
-    sourcePublishPlanUpdatedAt: plan.updatedAt,
-    currentTaskId: plan.taskId,
-    items,
-    generatedAt: timestamp,
-    updatedAt: timestamp,
+  const finishedAt = new Date().toISOString();
+  record = {
+    ...record,
+    updatedAt: finishedAt,
   };
+  return saveAndSyncGenerationRecord(bundle.task.id, "generation_completed", record, startedAt, finishedAt);
+}
+
+function launchContentGenerationBatch(bundle: TaskBundle, record: ContentPoolRecord, startedAt: string) {
+  activeGenerationTasks.add(bundle.task.id);
+  void runContentGenerationBatch(bundle, record, startedAt)
+    .catch(async (error) => {
+      await markTaskFailed(bundle.task.id, "content_generation", error instanceof Error ? error.message : "内容生成失败。");
+    })
+    .finally(() => {
+      activeGenerationTasks.delete(bundle.task.id);
+    });
 }
 
 export async function getCurrentContentPool() {
@@ -523,14 +790,89 @@ export async function getCurrentContentPool() {
   }
 
   const existing = await getContentPool(currentBundle.task.id);
+  if (existing) {
+    await resumeContentPoolQueuesIfNeeded(currentBundle.task.id, currentBundle, existing);
+  }
+  const latestExisting = await getContentPool(currentBundle.task.id);
   const current =
-    existing && existing.sourcePublishPlanUpdatedAt === currentBundle.task.publishPlan.updatedAt
-      ? existing
-      : await saveContentPool(await buildContentPoolFromBundle(currentBundle, currentBundle.task.publishPlan));
+    latestExisting && latestExisting.sourcePublishPlanUpdatedAt === currentBundle.task.publishPlan.updatedAt
+      ? summarizeContentPool(latestExisting)
+      : null;
   const history = (await listContentPools())
-    .filter((record) => record.taskId !== current.taskId)
+    .filter((record) => record.taskId !== current?.taskId)
     .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
   return { current, history };
+}
+
+export async function startContentGenerationBatch(taskId: string) {
+  const bundle = await getTaskBundle(taskId);
+  if (!bundle?.task.publishPlan) {
+    throw new Error("请先保存发布计划。");
+  }
+
+  if (activeGenerationTasks.has(taskId)) {
+    const existing = await getContentPool(taskId);
+    if (existing) {
+      return summarizeContentPool(existing);
+    }
+    throw new Error("当前任务正在生成，请稍后刷新。");
+  }
+
+  const startedAt = new Date().toISOString();
+  const initialRecord = await saveContentPool(await buildPendingContentPoolRecord(bundle, bundle.task.publishPlan));
+  await updateTaskStatus(taskId, "generation_queued", {
+    generationStartedAt: startedAt,
+    generationFinishedAt: undefined,
+    generationProgress: 0,
+    generatedArticleCount: 0,
+    failedArticleCount: 0,
+  });
+  activeGenerationTasks.add(taskId);
+  try {
+    return await runContentGenerationBatch(bundle, initialRecord, startedAt);
+  } finally {
+    activeGenerationTasks.delete(taskId);
+  }
+}
+
+export async function enqueueContentGenerationBatch(taskId: string) {
+  const bundle = await getTaskBundle(taskId);
+  if (!bundle?.task.publishPlan) {
+    throw new Error("请先保存发布计划。");
+  }
+
+  if (activeGenerationTasks.has(taskId)) {
+    const existing = await getContentPool(taskId);
+    return { current: existing ? summarizeContentPool(existing) : null, alreadyRunning: true };
+  }
+
+  const startedAt = new Date().toISOString();
+  const initialRecord = await saveContentPool(await buildPendingContentPoolRecord(bundle, bundle.task.publishPlan));
+  await updateTaskStatus(taskId, "generation_queued", {
+    generationStartedAt: startedAt,
+    generationFinishedAt: undefined,
+    generationProgress: 0,
+    generatedArticleCount: 0,
+    failedArticleCount: 0,
+  });
+
+  launchContentGenerationBatch(bundle, initialRecord, startedAt);
+
+  return { current: summarizeContentPool(initialRecord), alreadyRunning: false };
+}
+
+async function enqueueResumedContentGenerationBatch(taskId: string, bundle?: TaskBundle | null, record?: ContentPoolRecord | null) {
+  const resolvedBundle = bundle ?? (await getTaskBundle(taskId));
+  const resolvedRecord = record ?? (await getContentPool(taskId));
+  if (!resolvedBundle?.task.publishPlan || !resolvedBundle.theme || !resolvedRecord) {
+    return { current: resolvedRecord ? summarizeContentPool(resolvedRecord) : null, alreadyRunning: false };
+  }
+  if (activeGenerationTasks.has(taskId)) {
+    return { current: summarizeContentPool(resolvedRecord), alreadyRunning: true };
+  }
+  const startedAt = resolvedBundle.task.generationStartedAt || resolvedRecord.generatedAt || new Date().toISOString();
+  launchContentGenerationBatch(resolvedBundle, resolvedRecord, startedAt);
+  return { current: summarizeContentPool(resolvedRecord), alreadyRunning: false };
 }
 
 export async function regenerateCurrentContentPool() {
@@ -539,10 +881,23 @@ export async function regenerateCurrentContentPool() {
   if (!currentBundle?.task.publishPlan) {
     throw new Error("请先保存发布任务。");
   }
-  const record = await buildContentPoolFromBundle(currentBundle, currentBundle.task.publishPlan);
-  await saveContentPool(record);
-  await updateTaskStatus(currentBundle.task.id, "content_generated");
-  return record;
+  return enqueueContentGenerationBatch(currentBundle.task.id);
+}
+
+export async function getContentGenerationStatus(taskId?: string) {
+  if (taskId) {
+    const [record, bundle] = await Promise.all([getContentPool(taskId), getTaskBundle(taskId)]);
+    await resumeContentPoolQueuesIfNeeded(taskId, bundle, record);
+    const latestRecord = await getContentPool(taskId);
+    const latestBundle = await getTaskBundle(taskId);
+    return {
+      current: latestRecord ? summarizeContentPool(latestRecord) : null,
+      task: latestBundle?.task ?? null,
+      history: [],
+    };
+  }
+  const data = await getCurrentContentPool();
+  return { ...data, task: data.current ? (await getTaskBundle(data.current.taskId))?.task ?? null : null };
 }
 
 function mapItems(record: ContentPoolRecord, mapper: (item: ContentPoolItem) => ContentPoolItem) {
@@ -556,56 +911,88 @@ function mapItems(record: ContentPoolRecord, mapper: (item: ContentPoolItem) => 
 export async function rewriteContentPoolItem(taskId: string, itemId: string) {
   const record = await getContentPool(taskId);
   if (!record) throw new Error("内容池不存在。");
-  const timestamp = new Date().toISOString();
-  const next = mapItems(record, (item) => {
-    if (item.id !== itemId) return item;
-    const imagePrompt = `${item.imagePrompt}，改写后避免夸张承诺和重复构图`;
-    const pipeline: ContentPoolPipelineState = {
-      ...item.pipeline,
-      negativeCheck: { status: "passed", hits: [], checkedAt: timestamp },
-      riskReview: { status: "passed", level: "low", message: "已自动改写并通过复检。", reviewedAt: timestamp },
-      sampleDraft: { status: "passed", passed: true, checkedAt: timestamp },
-      dispersion: {
-        status: "passed",
-        changedDimensions: dispersionDimensions,
-        message: "已改写标题、开头、段落顺序、判断表达、行动建议和图片提示。",
-      },
-      imageGeneration: { ...item.pipeline.imageGeneration, prompt: imagePrompt },
-    };
-    return {
-      ...item,
-      title: item.title.replace(/^【已改写】/u, ""),
-      body: `${item.body}\n\n已完成风险改写：删除不可承诺表达，并补充可核验边界。`,
-      imagePrompt,
-      pipeline,
-      riskLevel: "low",
-      status: "pending_publish",
-      publishable: true,
-      updatedAt: timestamp,
-    };
+  const bundle = await getTaskBundle(taskId);
+  if (!bundle?.task.publishPlan || !bundle.theme) {
+    throw new Error("任务主题或发布计划不存在。");
+  }
+  const currentItem = record.items.find((item) => item.id === itemId);
+  if (!currentItem) {
+    throw new Error("内容项不存在。");
+  }
+  const comparableItems = record.items
+    .filter((item) => item.id !== itemId && item.body && (item.publishPlatform === currentItem.publishPlatform || item.accountId === currentItem.accountId))
+    .map((item) => ({
+      title: item.title,
+      summary: item.summary,
+      body: item.body,
+    }));
+  if (currentItem.body) {
+    comparableItems.push({
+      title: currentItem.title,
+      summary: currentItem.summary,
+      body: currentItem.body,
+    });
+  }
+
+  const generatingRecord = markContentPoolItemGenerating(record, itemId);
+  await saveContentPool(generatingRecord);
+  const result = await generateArticleForContentPool({
+    taskId,
+    contentItemId: currentItem.id,
+    sequence: currentItem.sequence,
+    product: bundle.product,
+    theme: bundle.theme,
+    searchProvider: currentItem.aiPlatform,
+    platform: currentItem.publishPlatform,
+    accountId: currentItem.accountId,
+    accountName: currentItem.accountName,
+    keywordId: currentItem.keywordId,
+    keywordSequence: currentItem.keywordSequence,
+    keywordText: currentItem.keywordText,
+    accountKeywordOffset: currentItem.accountKeywordOffset,
+    plannedPublishTime: currentItem.plannedPublishTime,
+    previousComparableArticles: comparableItems,
   });
-  return saveContentPool(next);
+  const nextItem: ContentPoolItem = {
+    ...result.item,
+    generationAttemptCount: (currentItem.generationAttemptCount ?? 1) + 1,
+    rewriteAttemptCount: (currentItem.rewriteAttemptCount ?? 0) + 1,
+    dedupeAttemptCount: Math.max(result.item.dedupeAttemptCount ?? 1, currentItem.dedupeAttemptCount ?? 0),
+    reviewAttemptCount: (currentItem.reviewAttemptCount ?? 0) + 1,
+    stageLog: [
+      ...(currentItem.stageLog ?? []),
+      { stage: "draft_generating", message: "已重新进入文章黑盒处理链路。", at: new Date().toISOString() },
+      ...(result.item.stageLog ?? []),
+    ],
+  };
+  return saveContentPool(replaceContentPoolItem(generatingRecord, itemId, nextItem));
 }
 
 export async function confirmMediumRiskContentPoolItem(taskId: string, itemId: string) {
   const record = await getContentPool(taskId);
   if (!record) throw new Error("内容池不存在。");
+  const currentItem = record.items.find((item) => item.id === itemId);
+  if (!currentItem) {
+    throw new Error("内容项不存在。");
+  }
+  if (currentItem.pipeline.negativeCheck.hits.length > 0 || currentItem.riskLevel === "high") {
+    return rewriteContentPoolItem(taskId, itemId);
+  }
+
   const timestamp = new Date().toISOString();
   const next = mapItems(record, (item) => {
     if (item.id !== itemId) return item;
-    if (item.pipeline.negativeCheck.hits.length > 0 || item.riskLevel === "high") {
-      return item;
-    }
-    const pipeline: ContentPoolPipelineState = {
-      ...item.pipeline,
-      riskReview: { status: "passed", level: "low", message: "已确认风险边界，可进入发布准备。", reviewedAt: timestamp },
-    };
     return {
       ...item,
-      pipeline,
+      pipeline: {
+        ...item.pipeline,
+        riskReview: { status: "passed", level: "low", message: "系统已完成风险边界确认，可进入发布准备。", reviewedAt: timestamp },
+      },
       riskLevel: "low",
       status: "pending_publish",
       publishable: true,
+      reviewAttemptCount: (item.reviewAttemptCount ?? 0) + 1,
+      stageLog: [...(item.stageLog ?? []), { stage: "quality_passed", message: "系统已完成风险边界确认。", at: timestamp }],
       updatedAt: timestamp,
     };
   });
@@ -615,24 +1002,86 @@ export async function confirmMediumRiskContentPoolItem(taskId: string, itemId: s
 export async function disperseContentPoolItem(taskId: string, itemId: string) {
   const record = await getContentPool(taskId);
   if (!record) throw new Error("内容池不存在。");
-  const timestamp = new Date().toISOString();
-  const next = mapItems(record, (item) => {
-    if (item.id !== itemId) return item;
-    const pipeline: ContentPoolPipelineState = {
-      ...item.pipeline,
-      dispersion: {
-        status: "passed",
-        changedDimensions: dispersionDimensions,
-        message: "已重新处理 6 个差异点，同批内容重复度已降低。",
-      },
-    };
-    return {
-      ...item,
-      pipeline,
-      title: `${item.title}（差异版）`,
-      imagePrompt: `${item.imagePrompt}，更换角度和主体构图`,
-      updatedAt: timestamp,
-    };
+  return rewriteContentPoolItem(taskId, itemId);
+}
+
+async function runRetryFailedContentPoolItems(taskId: string) {
+  const record = await getContentPool(taskId);
+  if (!record) {
+    throw new Error("内容池不存在。");
+  }
+
+  let currentRecord = await saveRetryQueueRecord(markRetryQueueState(record, "running", new Date().toISOString()));
+
+  const retryTargets = currentRecord.items
+    .filter((item) => item.status === "generating" || item.status === "failed" || item.riskLevel === "high")
+    .sort((left, right) => left.sequence - right.sequence);
+
+  for (const item of retryTargets) {
+    await rewriteContentPoolItem(taskId, item.id);
+    currentRecord = (await getContentPool(taskId)) ?? currentRecord;
+  }
+
+  const finishedRecord = (await getContentPool(taskId)) ?? currentRecord;
+  return saveRetryQueueRecord(markRetryQueueState(finishedRecord, "idle", new Date().toISOString()));
+}
+
+export async function enqueueRetryFailedContentPoolItems(taskId: string) {
+  const record = await getContentPool(taskId);
+  if (!record) {
+    throw new Error("内容池不存在。");
+  }
+
+  if (activeRetryTasks.has(taskId)) {
+    return { current: summarizeContentPool(record), alreadyRunning: true };
+  }
+
+  const queuedRecord = await saveRetryQueueRecord(markRetryQueueState(record, "queued", new Date().toISOString()));
+  activeRetryTasks.add(taskId);
+  void runRetryFailedContentPoolItems(taskId).finally(() => {
+    activeRetryTasks.delete(taskId);
   });
-  return saveContentPool(next);
+
+  return { current: summarizeContentPool(queuedRecord), alreadyRunning: false };
+}
+
+async function resumeContentPoolQueuesIfNeeded(taskId: string, bundle?: TaskBundle | null, record?: ContentPoolRecord | null) {
+  const resolvedBundle = bundle ?? (await getTaskBundle(taskId));
+  const resolvedRecord = record ?? (await getContentPool(taskId));
+  if (!resolvedBundle?.task.publishPlan || !resolvedRecord) {
+    return;
+  }
+
+  const needsGenerationResume =
+    generationResumeStatuses.has(resolvedBundle.task.status) &&
+    hasPendingGenerationItems(resolvedRecord);
+
+  if (needsGenerationResume) {
+    await enqueueResumedContentGenerationBatch(taskId, resolvedBundle, resolvedRecord);
+    return;
+  }
+
+  if (generationResumeStatuses.has(resolvedBundle.task.status) && !hasPendingGenerationItems(resolvedRecord)) {
+    await saveAndSyncGenerationRecord(
+      taskId,
+      "generation_completed",
+      {
+        ...resolvedRecord,
+        updatedAt: new Date().toISOString(),
+      },
+      resolvedBundle.task.generationStartedAt || resolvedRecord.generatedAt,
+      resolvedBundle.task.generationFinishedAt || new Date().toISOString(),
+    );
+    return;
+  }
+
+  const retryQueueRunning = resolvedRecord.retryQueueStatus === "queued" || resolvedRecord.retryQueueStatus === "running";
+  if (retryQueueRunning && hasRetryQueueItems(resolvedRecord)) {
+    await enqueueRetryFailedContentPoolItems(taskId);
+    return;
+  }
+
+  if (retryQueueRunning && !hasRetryQueueItems(resolvedRecord)) {
+    await saveRetryQueueRecord(markRetryQueueState(resolvedRecord, "idle", new Date().toISOString()));
+  }
 }

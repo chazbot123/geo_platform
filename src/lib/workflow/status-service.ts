@@ -19,7 +19,7 @@ export interface WorkflowStatus {
   updatedAt: string;
 }
 
-const contentPoolReadyStatuses = new Set<ContentPoolItemStatus>(["sample", "pending_publish", "publishing", "manual_pending", "published"]);
+const contentPoolReadyStatuses = new Set<ContentPoolItemStatus>(["sample", "ready", "pending_publish", "publishing", "manual_pending", "published"]);
 
 function stepStatus(key: WorkflowStepKey, completed: boolean, reason: string, completedAt?: string): WorkflowStepStatus {
   return {
@@ -81,7 +81,7 @@ export async function getWorkflowStatus(): Promise<WorkflowStatus> {
       contentPool: stepStatus(
         "contentPool",
         contentPoolComplete,
-        contentPoolComplete ? "当前任务已有可进入内容池流程的持久化内容。" : "当前任务还没有持久化内容池样文或待发布内容。",
+        contentPoolComplete ? "当前任务已有生成结果。" : "当前任务还没有生成结果。",
         contentPoolItem?.updatedAt ?? contentPool?.updatedAt,
       ),
       publishExecution: stepStatus(

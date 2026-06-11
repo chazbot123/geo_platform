@@ -48,3 +48,7 @@ export function getProviderPublishBundle(searchProvider: SearchProvider | undefi
 export function getPlatformsBySearchProvider(searchProvider: SearchProvider | undefined): SocialPlatform[] {
   return getProviderPublishBundle(searchProvider)?.platforms ?? fallbackPlatformOrder;
 }
+
+export function getAllPublishPlatforms(): SocialPlatform[] {
+  return fallbackPlatformOrder.slice();
+}

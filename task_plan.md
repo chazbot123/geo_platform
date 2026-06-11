@@ -1,5 +1,27 @@
 # GEO 前端重构讨论计划
 
+## 2026-06-10 新增任务
+
+- 产出一份“内容池黑盒生成”执行方案 MD
+- 产出一份“多任务分发”执行 MD
+- 方案必须覆盖：
+  - 创建任务保存后增加“开始生成”按钮
+  - 点击开始生成后按总篇数持续生成文章
+  - 内容池列表只展示文章结果与基础信息
+  - 正文进入详情查看
+  - 样文/改写/复检/降重等中间工序对用户黑盒化
+  - 前端按 `frontend-design` 方向重做，后端同步补齐真实生成链路
+
+### 当前阶段
+
+- 状态：`in_progress`
+- 当前产物：
+  - `findings.md`
+  - `progress.md`
+  - `docs/superpowers/plans/2026-06-10-content-pool-blackbox-execution.md`
+  - `docs/superpowers/plans/2026-06-10-content-pool-blackbox-work-dispatch.md`
+  - 后续实现已开始落地到任务页、内容池页、内容详情页和内容生成服务
+
 日期：2026-06-06
 
 ## 目标

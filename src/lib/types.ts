@@ -3,6 +3,9 @@ export type TaskStatus =
   | "keyword_generated"
   | "keyword_selected"
   | "task_planned"
+  | "generation_queued"
+  | "generation_running"
+  | "generation_completed"
   | "content_generated"
   | "image_generated"
   | "publishing"
@@ -143,6 +146,11 @@ export interface TaskRecord {
   errorCode?: string;
   errorMessage?: string;
   retryable?: boolean;
+  generationStartedAt?: string;
+  generationFinishedAt?: string;
+  generationProgress?: number;
+  generatedArticleCount?: number;
+  failedArticleCount?: number;
 }
 
 export interface ProductProfile {
@@ -670,6 +678,8 @@ export interface PublishTaskPlan {
 export type ContentPoolRiskLevel = "low" | "medium" | "high";
 export type ContentPoolItemStatus =
   | "pending_generation"
+  | "generating"
+  | "ready"
   | "sample"
   | "pending_publish"
   | "publishing"
@@ -742,6 +752,31 @@ export interface ContentPoolItem {
   status: ContentPoolItemStatus;
   pipeline: ContentPoolPipelineState;
   publishable: boolean;
+  displayStatus?: "pending" | "generating" | "ready" | "pending_publish" | "publishing" | "published" | "failed";
+  internalStage?:
+    | "brief_ready"
+    | "draft_generating"
+    | "draft_ready"
+    | "style_rewriting"
+    | "style_ready"
+    | "dedupe_rewriting"
+    | "dedupe_ready"
+    | "risk_rewriting"
+    | "risk_ready"
+    | "quality_reviewing"
+    | "quality_passed"
+    | "finalizing"
+    | "ready"
+    | "failed";
+  stageMessage?: string;
+  stageLog?: Array<{ stage: string; message: string; at: string }>;
+  generationAttemptCount?: number;
+  rewriteAttemptCount?: number;
+  dedupeAttemptCount?: number;
+  reviewAttemptCount?: number;
+  similarityScore?: number;
+  riskCodes?: string[];
+  failedReason?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -751,6 +786,14 @@ export interface ContentPoolRecord {
   sourcePublishPlanUpdatedAt: string;
   currentTaskId: string;
   items: ContentPoolItem[];
+  totalArticleCount?: number;
+  generatedArticleCount?: number;
+  generatingArticleCount?: number;
+  failedArticleCount?: number;
+  pendingPublishArticleCount?: number;
+  retryQueueStatus?: "idle" | "queued" | "running";
+  retryRequestedAt?: string;
+  retryFinishedAt?: string;
   generatedAt: string;
   updatedAt: string;
 }

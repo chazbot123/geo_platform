@@ -3,7 +3,9 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { CalendarDays, CheckCircle2, LoaderCircle, LogIn, RefreshCw, Save, Settings2, ShieldCheck, Trash2 } from "lucide-react";
+import { CalendarDays, CheckCircle2, LoaderCircle, LogIn, PlayCircle, RefreshCw, Save, Settings2, ShieldCheck, Trash2 } from "lucide-react";
+import { dispatchWorkflowStatusRefresh } from "@/components/layout/app-shell";
+import { requireLicensedAction } from "@/lib/license/guard";
 import { formatAccountDisplayLabel } from "@/lib/publish/account-label";
 import { openPlatformLoginWindow, validatePlatformSessionWindow } from "@/lib/publish/electron-login-client";
 import { getPlatformsBySearchProvider, providerPublishMatrix } from "@/lib/publish/provider-platform-matrix";
@@ -150,6 +152,7 @@ export function TaskPlanningWorkbench() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [startingGeneration, setStartingGeneration] = useState(false);
   const [detecting, setDetecting] = useState(false);
   const [loginKey, setLoginKey] = useState("");
   const [removingKey, setRemovingKey] = useState("");
@@ -186,7 +189,7 @@ export function TaskPlanningWorkbench() {
     () => accounts.filter((account) => account.platform === selectedPlatform),
     [accounts, selectedPlatform],
   );
-  const normalizedDays = Math.max(1, Number.isFinite(days) ? Math.floor(days) : 1);
+  const normalizedDays = Math.max(5, Number.isFinite(days) ? Math.floor(days) : 5);
   const normalizedArticlesPerAccountPerDay = Math.max(
     1,
     Number.isFinite(articlesPerAccountPerDay) ? Math.floor(articlesPerAccountPerDay) : 1,
@@ -202,6 +205,7 @@ export function TaskPlanningWorkbench() {
       totalArticles > 0 &&
       isTimeWindowValid,
   );
+  const savedPlanReady = Boolean(prerequisites?.savedPlan && (prerequisites.savedPlan.totalArticleCount ?? 0) > 0);
   const enterpriseReady = Boolean(prerequisites?.enterpriseReady);
   const keywordReady = Boolean(prerequisites?.keywordReady);
 
@@ -401,13 +405,42 @@ export function TaskPlanningWorkbench() {
       const data = (await response.json()) as { publishPlan?: PublishTaskPlan; error?: string };
       if (!response.ok || !data.publishPlan) throw new Error(data.error || "保存任务规划失败。");
       setPrerequisites((current) => (current ? { ...current, savedPlan: data.publishPlan } : current));
-      window.dispatchEvent(new Event("geo-workflow-status-refresh"));
-      setNotice("任务已保存，正在进入内容池。");
-      router.push("/content-pool");
+      dispatchWorkflowStatusRefresh();
+      setNotice("计划已保存，可以开始生成。");
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "保存任务规划失败。");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function startGeneration() {
+    const taskId = prerequisites?.savedPlan?.taskId;
+    if (!taskId) return;
+    const licenseGuard = await requireLicensedAction("generate_content");
+    if (!licenseGuard.allowed) {
+      setError(licenseGuard.message ?? "当前设备未授权，请先激活授权码。");
+      return;
+    }
+
+    setStartingGeneration(true);
+    setError("");
+    setNotice("");
+    try {
+      const response = await fetch("/api/content/generation/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ taskId }),
+      });
+      const data = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(data.error || "启动生成失败。");
+      dispatchWorkflowStatusRefresh();
+      setNotice("已开始生成，正在进入生成结果中心。");
+      router.push(`/content-pool?taskId=${encodeURIComponent(taskId)}`);
+    } catch (currentError) {
+      setError(currentError instanceof Error ? currentError.message : "启动生成失败。");
+    } finally {
+      setStartingGeneration(false);
     }
   }
 
@@ -663,7 +696,7 @@ export function TaskPlanningWorkbench() {
               <span className="text-xs text-muted">发布天数</span>
               <input
                 className="mt-2 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent"
-                min={1}
+                min={5}
                 type="number"
                 value={days}
                 onChange={(event) => setDays(Number(event.target.value))}
@@ -719,27 +752,30 @@ export function TaskPlanningWorkbench() {
             </div>
           </div>
           <p className="mt-4 text-xs leading-5 text-muted">公式：已登录可发布账号总数 x 天数 x 每账号每天发布篇数。</p>
-          <p className="mt-2 text-xs leading-5 text-muted">{platformSummary(prerequisites?.savedPlan)}</p>
+          <p className="mt-2 text-xs leading-5 text-muted">
+            {savedPlanReady ? `计划已保存：${platformSummary(prerequisites?.savedPlan)}` : platformSummary(prerequisites?.savedPlan)}
+          </p>
           {error && <p className="mt-4 text-sm text-red-500">{error}</p>}
           {notice && <p className="mt-4 text-sm text-accent">{notice}</p>}
           <div className="mt-5 flex flex-col gap-2">
             <button
               type="button"
               className="inline-flex items-center justify-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={!canSave || saving}
+              disabled={savedPlanReady ? startingGeneration : !canSave || saving}
+              onClick={() => (savedPlanReady ? void startGeneration() : void savePlan())}
+            >
+              {savedPlanReady ? <PlayCircle className="h-4 w-4" /> : <Save className="h-4 w-4" />}
+              {savedPlanReady ? (startingGeneration ? "启动中" : "开始生成") : saving ? "保存中" : "保存计划"}
+            </button>
+            <button
+              type="button"
+              className="inline-flex items-center justify-center gap-2 rounded-md border border-line px-4 py-2 text-sm font-medium text-ink transition hover:border-accent disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={!canSave || saving || startingGeneration}
               onClick={() => void savePlan()}
             >
               <Save className="h-4 w-4" />
-              {saving ? "保存中" : "保存任务"}
+              {prerequisites?.savedPlan ? "更新计划" : "仅保存计划"}
             </button>
-            <Link
-              className={`inline-flex justify-center rounded-md border border-line px-4 py-2 text-sm font-medium ${
-                prerequisites?.savedPlan ? "text-ink hover:border-accent" : "pointer-events-none text-muted opacity-60"
-              }`}
-              href="/content-pool"
-            >
-              进入内容池
-            </Link>
           </div>
         </aside>
       </section>

@@ -81,11 +81,11 @@ export function generatedImageTaskDir(taskId: string) {
   return path.join(dataDirectories.generatedImages, taskId);
 }
 
-export async function materializeImageAssetToLocal(taskId: string, asset: ImageAsset): Promise<ImageAsset> {
-  const taskDir = generatedImageTaskDir(taskId);
+async function materializeImageAssetToLocalInScope(scopeId: string, asset: ImageAsset): Promise<ImageAsset> {
+  const taskDir = generatedImageTaskDir(scopeId);
   await clearDirectory(taskDir);
 
-  const items = await materializeArticleImageItems(taskDir, taskId, asset.images ?? []);
+  const items = await materializeArticleImageItems(taskDir, scopeId, asset.images ?? []);
   const coverSource = items[0];
 
   return {
@@ -94,4 +94,12 @@ export async function materializeImageAssetToLocal(taskId: string, asset: ImageA
     localCoverPath: coverSource?.localPath,
     images: items,
   };
+}
+
+export async function materializeImageAssetToLocal(taskId: string, asset: ImageAsset): Promise<ImageAsset> {
+  return materializeImageAssetToLocalInScope(taskId, asset);
+}
+
+export async function materializeScopedImageAssetToLocal(scopeId: string, asset: ImageAsset): Promise<ImageAsset> {
+  return materializeImageAssetToLocalInScope(scopeId, asset);
 }

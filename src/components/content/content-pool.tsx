@@ -2,17 +2,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { AlertTriangle, CheckCircle2, History, ImageIcon, RefreshCw, Repeat2, ShieldCheck, Wand2 } from "lucide-react";
-import { dispatchWorkflowStatusRefresh } from "@/components/layout/app-shell";
-import { requireLicensedAction } from "@/lib/license/guard";
-import type {
-  ContentPoolItem,
-  ContentPoolItemStatus,
-  ContentPoolRecord,
-  ContentPoolRiskLevel,
-  SearchProvider,
-  SocialPlatform,
-} from "@/lib/types";
+import { useSearchParams } from "next/navigation";
+import { Clock3, History, RefreshCw } from "lucide-react";
+import type { ContentPoolItem, ContentPoolItemStatus, ContentPoolRecord, SearchProvider, SocialPlatform, TaskRecord } from "@/lib/types";
 
 const platformLabels: Record<SocialPlatform, string> = {
   toutiao: "今日头条",
@@ -35,29 +27,28 @@ const providerLabels: Record<SearchProvider, string> = {
 
 const statusLabels: Record<ContentPoolItemStatus, string> = {
   pending_generation: "待生成",
-  sample: "样文",
+  generating: "生成中",
+  ready: "已完成",
+  sample: "已完成",
   pending_publish: "待发布",
   publishing: "发布中",
   published: "已发布",
   failed: "失败",
-  manual_pending: "手动待处理",
+  manual_pending: "待处理",
 };
 
-const riskLabels: Record<ContentPoolRiskLevel, string> = {
-  low: "可发布",
-  medium: "需确认",
-  high: "需改写",
-};
-
-interface ContentPoolResponse {
+interface ContentGenerationStatusResponse {
   current: ContentPoolRecord | null;
   history: ContentPoolRecord[];
+  task?: TaskRecord | null;
   error?: string;
 }
 
 type ViewMode = "current" | "history";
+type StatusFilter = "all" | ContentPoolItemStatus;
 
-function formatDateTime(value: string) {
+function formatDateTime(value?: string) {
+  if (!value) return "未开始";
   return new Intl.DateTimeFormat("zh-CN", {
     month: "2-digit",
     day: "2-digit",
@@ -70,144 +61,58 @@ function countBy(items: ContentPoolItem[], predicate: (item: ContentPoolItem) =>
   return items.reduce((total, item) => total + (predicate(item) ? 1 : 0), 0);
 }
 
-function riskClass(level: ContentPoolRiskLevel) {
-  if (level === "low") return "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
-  if (level === "medium") return "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300";
-  return "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300";
+function statusClassName(status: ContentPoolItemStatus) {
+  if (status === "failed") return "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300";
+  if (status === "publishing" || status === "generating") return "border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300";
+  if (status === "published" || status === "pending_publish" || status === "ready" || status === "sample") {
+    return "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+  }
+  return "border-line bg-surface text-muted";
 }
 
-function PipelineLine({ item }: { item: ContentPoolItem }) {
-  const checks = [
-    { label: "检查风险", done: item.pipeline.riskReview.status === "passed", blocked: item.pipeline.riskReview.status === "blocked" },
-    { label: "样文质检", done: item.pipeline.sampleDraft.passed, blocked: item.pipeline.sampleDraft.status === "blocked" },
-    { label: "平台适配", done: item.pipeline.styleAdaptation.status === "passed", blocked: false },
-    { label: "降低重复", done: item.pipeline.dispersion.status === "passed", blocked: false },
-    { label: "图片提示", done: item.pipeline.imageGeneration.status !== "blocked", blocked: false },
-  ];
-  return (
-    <div className="mt-4 grid gap-2 sm:grid-cols-5">
-      {checks.map((check) => (
-        <div key={check.label} className="flex items-center gap-2 rounded-md border border-line px-2 py-1.5 text-xs text-muted">
-          {check.blocked ? (
-            <AlertTriangle className="h-3.5 w-3.5 text-red-500" />
-          ) : check.done ? (
-            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
-          ) : (
-            <RefreshCw className="h-3.5 w-3.5 text-muted" />
-          )}
-          <span className="truncate">{check.label}</span>
-        </div>
-      ))}
-    </div>
-  );
+function progressPercent(record: ContentPoolRecord | null) {
+  if (!record?.items.length) return 0;
+  const finished = countBy(record.items, (item) => item.status === "pending_publish" || item.status === "ready" || item.status === "sample" || item.status === "published" || item.status === "failed");
+  return Math.round((finished / record.items.length) * 100);
 }
 
-function ItemCard({
-  item,
-  busy,
-  onAction,
-}: {
-  item: ContentPoolItem;
-  busy: boolean;
-  onAction: (itemId: string, action: "rewrite" | "confirm_medium" | "disperse") => void;
-}) {
-  const negativeHits = item.pipeline.negativeCheck.hits;
-  const canConfirm = item.riskLevel === "medium" && negativeHits.length === 0;
-  const mustRewrite = item.riskLevel === "high" || negativeHits.length > 0;
-
+function ArticleRow({ item, taskId }: { item: ContentPoolItem; taskId: string }) {
   return (
-    <article className="subtle-card">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="status-pill">#{item.sequence}</span>
-            <span className="status-pill">{statusLabels[item.status]}</span>
-            <span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${riskClass(item.riskLevel)}`}>
-              {riskLabels[item.riskLevel]}
-            </span>
-            {item.publishable && <span className="status-pill">可进入发布</span>}
-          </div>
-          <h3 className="mt-3 text-base font-semibold leading-6 text-ink">{item.title}</h3>
-          <p className="mt-2 text-sm leading-6 text-muted">{item.summary}</p>
-        </div>
-        <div className="grid shrink-0 grid-cols-2 gap-2 text-xs text-muted lg:w-64">
-          <span>{providerLabels[item.aiPlatform]}</span>
-          <span>{platformLabels[item.publishPlatform]}</span>
-          <span className="truncate">{item.accountName || item.accountId}</span>
-          <span>{formatDateTime(item.plannedPublishTime)}</span>
-        </div>
-      </div>
-
-      <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_280px]">
-        <div className="rounded-md border border-line bg-surface px-3 py-3">
-          <p className="text-xs font-medium text-muted">客户问题 K{item.keywordSequence}，账号错位 {item.accountKeywordOffset + 1}/5</p>
-          <p className="mt-2 text-sm leading-6 text-ink">{item.keywordText}</p>
-          <p className="mt-3 line-clamp-4 whitespace-pre-line text-xs leading-5 text-muted">{item.body}</p>
-        </div>
-        <div className="rounded-md border border-line bg-surface px-3 py-3">
-          <div className="flex items-center gap-2 text-xs font-medium text-muted">
-            <ImageIcon className="h-3.5 w-3.5" />
-            图片提示
-          </div>
-          <p className="mt-2 text-xs leading-5 text-muted">{item.imagePrompt}</p>
-          <p className="mt-2 text-xs text-muted">图片：{item.imageList.length} 张</p>
-        </div>
-      </div>
-
-      <PipelineLine item={item} />
-
-      {(negativeHits.length > 0 || item.pipeline.riskReview.message) && (
-        <p className="mt-3 rounded-md border border-line bg-surface px-3 py-2 text-xs leading-5 text-muted">
-          {negativeHits.length > 0 ? `命中：${negativeHits.join("、")}。必须改写并复检后才能发布。` : item.pipeline.riskReview.message}
-        </p>
-      )}
-
-      <div className="mt-4 flex flex-wrap gap-2">
-        {mustRewrite && (
-          <button
-            type="button"
-            className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-medium text-white disabled:opacity-60"
-            disabled={busy}
-            onClick={() => onAction(item.id, "rewrite")}
-          >
-            <Wand2 className="h-3.5 w-3.5" />
-            自动改写
-          </button>
-        )}
-        {canConfirm && (
-          <button
-            type="button"
-            className="inline-flex items-center gap-2 rounded-md border border-line px-3 py-2 text-xs font-medium text-ink hover:border-accent disabled:opacity-60"
-            disabled={busy}
-            onClick={() => onAction(item.id, "confirm_medium")}
-          >
-            <ShieldCheck className="h-3.5 w-3.5" />
-            确认可发布
-          </button>
-        )}
-        <button
-          type="button"
-          className="inline-flex items-center gap-2 rounded-md border border-line px-3 py-2 text-xs font-medium text-ink hover:border-accent disabled:opacity-60"
-          disabled={busy}
-          onClick={() => onAction(item.id, "disperse")}
-        >
-          <Repeat2 className="h-3.5 w-3.5" />
-          重新降重
-        </button>
-      </div>
-    </article>
+    <Link
+      className="grid gap-3 border-b border-line px-4 py-3 text-sm transition hover:bg-panelSoft lg:grid-cols-[56px_minmax(220px,1.4fr)_120px_120px_150px_minmax(160px,1fr)_120px_130px]"
+      href={`/content-pool/${encodeURIComponent(item.id)}?taskId=${encodeURIComponent(taskId)}`}
+    >
+      <span className="text-muted">#{item.sequence}</span>
+      <span className="min-w-0">
+        <span className="block truncate font-medium text-ink">{item.title || item.stageMessage || "等待生成结果"}</span>
+        <span className="mt-1 block truncate text-xs text-muted">{item.summary || item.stageMessage || "系统会在完成后写入最终成稿。"}</span>
+      </span>
+      <span className="text-muted">{providerLabels[item.aiPlatform]}</span>
+      <span className="text-muted">{platformLabels[item.publishPlatform]}</span>
+      <span className="truncate text-muted">{item.accountName || item.accountId}</span>
+      <span className="truncate text-muted">{item.keywordText}</span>
+      <span>
+        <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-medium ${statusClassName(item.status)}`}>
+          {statusLabels[item.status]}
+        </span>
+      </span>
+      <span className="text-muted">{formatDateTime(item.updatedAt)}</span>
+    </Link>
   );
 }
 
 export function ContentPoolWorkbench() {
+  const searchParams = useSearchParams();
+  const requestedTaskId = searchParams.get("taskId") || "";
   const [current, setCurrent] = useState<ContentPoolRecord | null>(null);
   const [history, setHistory] = useState<ContentPoolRecord[]>([]);
+  const [task, setTask] = useState<TaskRecord | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("current");
   const [selectedHistoryTaskId, setSelectedHistoryTaskId] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
+  const [retryingFailed, setRetryingFailed] = useState(false);
 
   const visibleRecord = useMemo(() => {
     if (viewMode === "current") return current;
@@ -215,103 +120,97 @@ export function ContentPoolWorkbench() {
   }, [current, history, selectedHistoryTaskId, viewMode]);
 
   const items = visibleRecord?.items ?? [];
+  const retryableFailedItems = items.filter((item) => item.status === "failed" || item.riskLevel === "high");
+  const filteredItems = statusFilter === "all" ? items : items.filter((item) => item.status === statusFilter);
   const stats = {
-    total: items.length,
-    publishable: countBy(items, (item) => item.publishable),
-    needsAction: countBy(items, (item) => item.riskLevel !== "low" || item.pipeline.negativeCheck.hits.length > 0),
-    imagesPending: countBy(items, (item) => item.pipeline.imageGeneration.status === "pending"),
+    total: visibleRecord?.totalArticleCount ?? items.length,
+    generated: visibleRecord?.generatedArticleCount ?? countBy(items, (item) => item.status === "pending_publish" || item.status === "ready" || item.status === "sample" || item.status === "published"),
+    generating: visibleRecord?.generatingArticleCount ?? countBy(items, (item) => item.status === "generating"),
+    failed: visibleRecord?.failedArticleCount ?? countBy(items, (item) => item.status === "failed"),
+    pendingPublish: visibleRecord?.pendingPublishArticleCount ?? countBy(items, (item) => item.status === "pending_publish"),
   };
 
-  async function loadPool() {
-    setLoading(true);
+  async function loadStatus(options?: { silent?: boolean }) {
+    if (!options?.silent) {
+      setLoading(true);
+    }
     setError("");
     try {
-      const response = await fetch("/api/content/pool", { cache: "no-store" });
-      const data = (await response.json()) as ContentPoolResponse;
-      if (!response.ok) throw new Error(data.error || "读取内容池失败。");
+      const query = requestedTaskId ? `?taskId=${encodeURIComponent(requestedTaskId)}` : "";
+      const response = await fetch(`/api/content/generation/status${query}`, { cache: "no-store" });
+      const data = (await response.json()) as ContentGenerationStatusResponse;
+      if (!response.ok) throw new Error(data.error || "读取生成结果失败。");
       setCurrent(data.current);
-      setHistory(data.history);
-      setSelectedHistoryTaskId(data.history[0]?.taskId ?? "");
+      setHistory(data.history ?? []);
+      setTask(data.task ?? null);
+      setSelectedHistoryTaskId((currentTaskId) => currentTaskId || data.history?.[0]?.taskId || "");
     } catch (currentError) {
-      setError(currentError instanceof Error ? currentError.message : "读取内容池失败。");
+      setError(currentError instanceof Error ? currentError.message : "读取生成结果失败。");
     } finally {
-      setLoading(false);
-    }
-  }
-
-  async function regeneratePool() {
-    const licenseGuard = await requireLicensedAction("generate_content");
-    if (!licenseGuard.allowed) {
-      setError(licenseGuard.message ?? "当前设备未授权，请先激活授权码。");
-      return;
-    }
-
-    setBusy(true);
-    setError("");
-    setNotice("");
-    try {
-      const response = await fetch("/api/content/pool", { method: "POST" });
-      const data = (await response.json()) as { current?: ContentPoolRecord; error?: string };
-      if (!response.ok || !data.current) throw new Error(data.error || "生成内容池失败。");
-      setCurrent(data.current);
-      setViewMode("current");
-      setNotice("内容池已按当前任务重新生成。");
-      dispatchWorkflowStatusRefresh();
-    } catch (currentError) {
-      setError(currentError instanceof Error ? currentError.message : "生成内容池失败。");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function runItemAction(itemId: string, action: "rewrite" | "confirm_medium" | "disperse") {
-    if (!visibleRecord) return;
-    const licenseGuard = await requireLicensedAction("mutate_content_pool");
-    if (!licenseGuard.allowed) {
-      setError(licenseGuard.message ?? "当前设备未授权，请先激活授权码。");
-      return;
-    }
-
-    setBusy(true);
-    setError("");
-    setNotice("");
-    try {
-      const response = await fetch("/api/content/pool/item", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ taskId: visibleRecord.taskId, itemId, action }),
-      });
-      const data = (await response.json()) as { current?: ContentPoolRecord; error?: string };
-      if (!response.ok || !data.current) throw new Error(data.error || "内容处理失败。");
-      if (current?.taskId === data.current.taskId) {
-        setCurrent(data.current);
-      } else {
-        setHistory((records) => records.map((record) => (record.taskId === data.current?.taskId ? data.current : record)));
+      if (!options?.silent) {
+        setLoading(false);
       }
-      setNotice(action === "rewrite" ? "已完成改写和复检。" : action === "disperse" ? "已重新处理差异点。" : "已确认进入发布准备。");
-      dispatchWorkflowStatusRefresh();
-    } catch (currentError) {
-      setError(currentError instanceof Error ? currentError.message : "内容处理失败。");
-    } finally {
-      setBusy(false);
     }
   }
 
   useEffect(() => {
-    void loadPool();
-  }, []);
+    void loadStatus();
+  }, [requestedTaskId]);
+
+  const shouldAutoRefresh =
+    viewMode === "current" &&
+    (task?.status === "generation_queued" ||
+      task?.status === "generation_running" ||
+      current?.items.some((item) => item.status === "pending_generation" || item.status === "generating"));
+
+  useEffect(() => {
+    if (!shouldAutoRefresh) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void loadStatus({ silent: true });
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [shouldAutoRefresh, requestedTaskId, viewMode]);
+
+  async function retryFailedItems() {
+    if (!visibleRecord || !retryableFailedItems.length) {
+      return;
+    }
+
+    setRetryingFailed(true);
+    setError("");
+    try {
+      const response = await fetch("/api/content/pool/retry-failed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          taskId: visibleRecord.taskId,
+        }),
+      });
+      const data = (await response.json()) as { error?: string };
+      if (!response.ok) {
+        throw new Error(data.error || "批量重试失败项时出错。");
+      }
+      await loadStatus({ silent: true });
+    } catch (currentError) {
+      setError(currentError instanceof Error ? currentError.message : "批量重试失败项时出错。");
+    } finally {
+      setRetryingFailed(false);
+    }
+  }
 
   if (loading) {
-    return <section className="section-card text-sm text-muted">正在读取内容池。</section>;
+    return <section className="section-card text-sm text-muted">正在读取生成结果。</section>;
   }
 
   if (!current && !history.length) {
     return (
       <section className="section-card">
-        <h2 className="page-section-title">还没有可用任务</h2>
-        <p className="page-section-desc">先保存创建任务中的发布计划，再进入内容池生成文章。</p>
+        <h2 className="page-section-title">还没有生成结果</h2>
+        <p className="page-section-desc">保存计划后回到创建任务页点击“开始生成”，系统会把最终文章写入这里。</p>
         <Link className="mt-5 inline-flex rounded-md bg-accent px-4 py-2 text-sm font-medium text-white" href="/tasks/create">
-          去创建任务
+          返回创建任务
         </Link>
         {error && <p className="mt-4 text-sm text-red-500">{error}</p>}
       </section>
@@ -324,8 +223,9 @@ export function ContentPoolWorkbench() {
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
             <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted">第 4 步</p>
-            <h2 className="page-section-title mt-2">当前任务内容</h2>
-            <p className="page-section-desc">默认只看当前任务。历史内容从右侧入口切换，避免和本次生产混在一起。</p>
+            <h2 className="page-section-title mt-2">生成结果中心</h2>
+            <p className="page-section-desc">查看当前任务的文章生成进度和最终结果，正文与图片进入详情页查看。</p>
+            {shouldAutoRefresh ? <p className="mt-2 text-xs text-blue-600">后台正在持续生成，列表会自动刷新。</p> : null}
           </div>
           <div className="flex flex-wrap gap-2">
             <button
@@ -333,7 +233,7 @@ export function ContentPoolWorkbench() {
               className={`rounded-md px-3 py-2 text-sm font-medium ${viewMode === "current" ? "bg-accent text-white" : "border border-line text-ink"}`}
               onClick={() => setViewMode("current")}
             >
-              当前任务
+              本次任务
             </button>
             <button
               type="button"
@@ -341,17 +241,27 @@ export function ContentPoolWorkbench() {
               onClick={() => setViewMode("history")}
             >
               <History className="h-4 w-4" />
-              历史
+              历史任务
             </button>
             <button
               type="button"
-              className="inline-flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm font-medium text-ink hover:border-accent disabled:opacity-60"
-              disabled={busy}
-              onClick={() => void regeneratePool()}
+              className="inline-flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm font-medium text-ink hover:border-accent"
+              onClick={() => void loadStatus()}
             >
-              <RefreshCw className={`h-4 w-4 ${busy ? "animate-spin" : ""}`} />
-              重新生成
+              <RefreshCw className="h-4 w-4" />
+              刷新
             </button>
+            {viewMode === "current" && retryableFailedItems.length > 0 ? (
+              <button
+                type="button"
+                className="inline-flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm font-medium text-ink hover:border-accent disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={retryingFailed || shouldAutoRefresh}
+                onClick={() => void retryFailedItems()}
+              >
+                <RefreshCw className={`h-4 w-4 ${retryingFailed ? "animate-spin" : ""}`} />
+                {retryingFailed ? "正在重试失败项" : `批量重试失败项 (${retryableFailedItems.length})`}
+              </button>
+            ) : null}
           </div>
         </div>
 
@@ -372,32 +282,75 @@ export function ContentPoolWorkbench() {
           </label>
         )}
 
-        <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
           <div className="subtle-card">
-            <p className="text-xs text-muted">总文章</p>
+            <p className="text-xs text-muted">总篇数</p>
             <p className="mt-2 text-2xl font-semibold text-ink">{stats.total}</p>
           </div>
           <div className="subtle-card">
-            <p className="text-xs text-muted">可发布</p>
-            <p className="mt-2 text-2xl font-semibold text-emerald-600">{stats.publishable}</p>
+            <p className="text-xs text-muted">已生成</p>
+            <p className="mt-2 text-2xl font-semibold text-emerald-600">{stats.generated}</p>
           </div>
           <div className="subtle-card">
-            <p className="text-xs text-muted">需处理</p>
-            <p className="mt-2 text-2xl font-semibold text-amber-600">{stats.needsAction}</p>
+            <p className="text-xs text-muted">生成中</p>
+            <p className="mt-2 text-2xl font-semibold text-blue-600">{stats.generating}</p>
           </div>
           <div className="subtle-card">
-            <p className="text-xs text-muted">待生成图片</p>
-            <p className="mt-2 text-2xl font-semibold text-ink">{stats.imagesPending}</p>
+            <p className="text-xs text-muted">失败</p>
+            <p className="mt-2 text-2xl font-semibold text-red-600">{stats.failed}</p>
+          </div>
+          <div className="subtle-card">
+            <p className="text-xs text-muted">待发布</p>
+            <p className="mt-2 text-2xl font-semibold text-ink">{stats.pendingPublish}</p>
           </div>
         </div>
+
+        <div className="mt-5">
+          <div className="h-2 overflow-hidden rounded-full bg-surface">
+            <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${progressPercent(visibleRecord)}%` }} />
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-muted">
+            <span className="inline-flex items-center gap-1">
+              <Clock3 className="h-3.5 w-3.5" />
+              {task?.generationStartedAt ? `开始：${formatDateTime(task.generationStartedAt)}` : `更新：${formatDateTime(visibleRecord?.updatedAt)}`}
+            </span>
+            <span>进度 {progressPercent(visibleRecord)}%</span>
+          </div>
+        </div>
+
+        <div className="mt-5 flex flex-wrap gap-2">
+          {(["all", "pending_publish", "generating", "failed", "published"] as StatusFilter[]).map((status) => (
+            <button
+              key={status}
+              type="button"
+              className={`rounded-md border px-3 py-2 text-xs font-medium transition ${
+                statusFilter === status ? "border-accent bg-accent/10 text-ink" : "border-line text-muted hover:border-accent"
+              }`}
+              onClick={() => setStatusFilter(status)}
+            >
+              {status === "all" ? "全部" : statusLabels[status]}
+            </button>
+          ))}
+        </div>
         {error && <p className="mt-4 text-sm text-red-500">{error}</p>}
-        {notice && <p className="mt-4 text-sm text-accent">{notice}</p>}
       </section>
 
-      <section className="space-y-3">
-        {items.map((item) => (
-          <ItemCard key={item.id} item={item} busy={busy} onAction={runItemAction} />
-        ))}
+      <section className="overflow-hidden rounded-md border border-line bg-panel">
+        <div className="hidden border-b border-line bg-surface px-4 py-2 text-xs font-medium text-muted lg:grid lg:grid-cols-[56px_minmax(220px,1.4fr)_120px_120px_150px_minmax(160px,1fr)_120px_130px]">
+          <span>序号</span>
+          <span>标题</span>
+          <span>AI 平台</span>
+          <span>发布平台</span>
+          <span>账号</span>
+          <span>关键词</span>
+          <span>状态</span>
+          <span>更新时间</span>
+        </div>
+        {filteredItems.length ? (
+          filteredItems.map((item) => <ArticleRow key={item.id} item={item} taskId={visibleRecord?.taskId ?? item.taskId} />)
+        ) : (
+          <div className="px-4 py-8 text-center text-sm text-muted">当前筛选下没有文章。</div>
+        )}
       </section>
 
       <div className="flex justify-end">

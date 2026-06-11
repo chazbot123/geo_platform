@@ -335,6 +335,7 @@ export async function recordPublishingJobResult(input: {
   publishUrl?: string;
   draftUrl?: string;
   verificationUrl?: string;
+  sessionToken?: string;
   notes?: string;
   status: Extract<PublishingJobStatus, "published" | "failed" | "manual_pending" | "running" | "queued" | "submitted" | "verifying" | "pending_review" | "verification_failed">;
   externalStatus?: string;
@@ -351,6 +352,7 @@ export async function recordPublishingJobResult(input: {
     publishUrl: input.publishUrl,
     draftUrl: input.draftUrl,
     verificationUrl: input.verificationUrl,
+    sessionToken: input.sessionToken,
     notes: input.notes,
     status: input.status,
     externalStatus: input.externalStatus,

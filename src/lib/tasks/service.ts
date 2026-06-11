@@ -32,8 +32,9 @@ import type {
 } from "@/lib/types";
 import type { EnterpriseProfile } from "@/lib/enterprise/types";
 
-export const MIN_PUBLISH_DAYS = 1;
+export const MIN_PUBLISH_DAYS = 5;
 export const DEFAULT_ARTICLES_PER_ACCOUNT_PER_DAY = 2;
+export const ARTICLES_PER_ACCOUNT_PER_DAY = DEFAULT_ARTICLES_PER_ACCOUNT_PER_DAY;
 export const DEFAULT_TIME_WINDOW = { start: "09:00", end: "18:00" } as const;
 export const MIN_SAME_ACCOUNT_INTERVAL_HOURS = 3;
 

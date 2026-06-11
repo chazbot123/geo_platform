@@ -1,0 +1,45 @@
+# Progress
+
+## 2026-06-10
+
+- 触发技能：`planning-with-files`
+- 触发技能：`frontend-design`
+- 读取现有规划：`task_plan.md`
+- 发现缺失：`findings.md`、`progress.md` 不存在，已补建
+- 并行梳理：
+  - 创建任务 -> 内容池前端链路
+  - 内容池/文章生成/发布执行后端链路
+- 当前结论：
+  - 现有流程仍把内容池暴露成“样文/改写/复检”型工作台，不符合“黑盒生成、结果导向”要求
+  - 创建任务保存后虽然会跳内容池，但没有“开始生成”动作模型
+  - 内容池批量文章仍主要依赖模板拼文，不是稳定的真实批量生成链路
+  - 需要同时产出执行方案和多任务分发方案，且前端改造必须按 `frontend-design` 约束执行
+- 新增明确约束：
+  - 模板拼文不能接受，必须彻底从主链路移除
+  - 不能用占位正文或伪生成结果进入内容池
+  - 每篇文章都必须经过真实 AI 生成、AI 改写、AI 降重、AI 风险修正、AI/规则复检
+- 已产出正式文档：
+  - `docs/superpowers/plans/2026-06-10-content-pool-blackbox-execution.md`
+  - `docs/superpowers/plans/2026-06-10-content-pool-blackbox-work-dispatch.md`
+- 已继续落地代码：
+  - `src/lib/content/service.ts` 改成先写入待生成队列，再逐篇落盘和更新任务进度
+  - `src/app/api/content/generation/start/route.ts` 改成后台排队启动，不再阻塞到整批完成
+  - `src/lib/tasks/service.ts` 和 `src/components/tasks/task-planning-workbench.tsx` 对齐“最少 5 天”规则
+  - `src/components/content/content-pool.tsx` 增加生成中的自动刷新
+  - `src/components/content/content-item-detail.tsx` 增加黑盒处理动作和阶段记录
+  - `src/app/tasks/page.tsx` 新增任务中心页
+  - `src/app/tasks/[taskId]/page.tsx` 新增任务详情页
+  - `src/components/tasks/task-center.tsx` 和 `src/components/tasks/task-detail-overview.tsx` 承接任务级展示
+  - `src/app/tasks/create/page.tsx` 增加跳转任务中心入口
+  - `src/components/content/content-pool.tsx` 增加失败项批量重试入口
+  - `src/lib/content/article-generation-service.ts` 已把图片生成接进文章黑盒主流水线
+  - `src/lib/images/local-image-store.ts` 支持按文章内容项独立落盘图片
+  - `src/app/api/content/pool/retry-failed/route.ts` 新增失败项批量重试后端队列接口
+  - `src/components/content/content-pool.tsx` 改为调用后端批量重试队列，不再前端逐篇串行触发
+  - `src/components/content/content-item-detail.tsx` 补充图片预览
+  - `src/lib/types.ts` 和 `src/lib/content/service.ts` 增加内容池队列持久化状态
+  - `src/lib/content/service.ts` 已支持服务重启后按持久化状态自动恢复生成队列和重试队列
+  - `src/app/api/content/generation/status/route.ts` 与 `src/app/api/content/pool/route.ts` 读取状态时会触发自动续跑
+- 本轮验证：
+  - `GetDiagnostics` 已检查本轮修改文件，无新增诊断错误
+  - `npm run check` 通过
