@@ -1,0 +1,17 @@
+[Unit]
+Description=GEO Admin API
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/server/admin-api
+EnvironmentFile=/deploy/admin-api.env
+ExecStart=/usr/bin/env node src/server.js
+Restart=always
+RestartSec=5
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target

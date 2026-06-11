@@ -1,5 +1,39 @@
 # Progress
 
+## 2026-06-11
+
+- 继续使用：`planning-with-files`
+- 新任务：输出后台部署文档并生成服务器上传包
+- 已确认后台结构：
+  - `server/admin-api`
+  - `server/admin-web/src`
+  - `deploy`
+- 已确认环境文件现状：
+  - 无 `server/admin-api/.env`
+  - 仅有 `deploy/.env.example`
+- 当前进行中：
+  - 读取现有部署配置
+  - 设计上传包目录
+  - 准备新增部署文档和打包脚本
+- 已新增部署文件：
+  - `docs/geoadmin-server-deployment-20260611.md`
+  - `deploy/admin-api.env.example`
+  - `deploy/geo-admin-api.service.example`
+  - `scripts/build-admin-server-package.ps1`
+- 已执行打包脚本：
+  - `powershell -ExecutionPolicy Bypass -File .\\scripts\\build-admin-server-package.ps1`
+- 已生成上传目录包：
+  - `release-dir/geoadmin-server-package`
+- 已验证目录包根级结构：
+  - `deploy/`
+  - `docs/`
+  - `server/`
+- 已更新部署文档：
+  - 改为根目录 `/` 部署说明
+  - 增加可直接执行的 `.env` 写入命令
+  - 启动方式从 `systemd` 改为 `pm2`
+  - 补充完整 `nginx` 配置块
+
 ## 2026-06-10
 
 - 触发技能：`planning-with-files`

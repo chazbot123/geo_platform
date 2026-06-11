@@ -1,5 +1,37 @@
 # Findings
 
+## 2026-06-11 后台部署与打包
+
+### 现有目录
+
+- 后台前端静态文件在 `server/admin-web/src`
+- 后台后端服务在 `server/admin-api`
+- 部署辅助文件在 `deploy`
+- 仓库根目录存在 `package-lock.json`
+
+### 环境文件现状
+
+- 仓库内没有现成的后端 `.env`
+- 只有 `deploy/.env.example`
+- 现有部署说明要求：
+  - `deploy/.env` 供 compose 基础设施使用
+  - `admin-api` 通过宿主机环境变量启动
+
+### 当前任务约束
+
+- 用户要求域名固定为 `geoadmin.jizhidaoai.com`
+- 用户要求部署文件“放在根目录”
+- 用户要求同时给出文档和可上传的打包产物
+
+### 已确认部署细节
+
+- `server/admin-api/package.json` 只有 `start` 脚本，服务入口为 `node src/server.js`
+- `server/admin-web` 无构建依赖，后台页可直接托管 `server/admin-web/src`
+- `deploy/docker-compose.yml` 当前只负责 `postgres`
+- `deploy/nginx/nginx.tls.example.conf` 已直接使用 `geoadmin.jizhidaoai.com`
+- TLS 示例中的后台静态目录别名是 `/opt/geo/server/admin-web/src/`
+- TLS 示例中的 API 反代目标是 `127.0.0.1:8080`
+
 ## 2026-06-10 内容池黑盒化规划
 
 ### 前端现状

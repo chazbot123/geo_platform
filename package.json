@@ -41,6 +41,7 @@
     "appId": "com.geo.desktop",
     "productName": "GEO桌面版",
     "files": [
+      ".env.production",
       ".next/**/*",
       "public/**/*",
       "electron/**/*",
