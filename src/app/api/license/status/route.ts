@@ -1,10 +1,7 @@
 import { NextResponse } from "next/server";
+import { resolveLicenseEndpoint } from "@/lib/license/server-endpoints";
 
 export const runtime = "nodejs";
-
-function configuredEndpoint() {
-  return process.env.GEO_LICENSE_STATUS_ENDPOINT?.trim() || "";
-}
 
 export async function GET(request: Request) {
   const requestUrl = new URL(request.url);
@@ -13,7 +10,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "缺少设备指纹" }, { status: 400 });
   }
 
-  const endpoint = configuredEndpoint();
+  const endpoint = resolveLicenseEndpoint("status");
   if (!endpoint) {
     return NextResponse.json({ error: "授权状态端点未配置" }, { status: 503 });
   }

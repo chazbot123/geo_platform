@@ -1,11 +1,8 @@
 import { NextResponse } from "next/server";
 import type { LicenseActivationPayload } from "@/lib/license/client";
+import { resolveLicenseEndpoint } from "@/lib/license/server-endpoints";
 
 export const runtime = "nodejs";
-
-function configuredEndpoint() {
-  return process.env.GEO_LICENSE_ACTIVATION_ENDPOINT?.trim() || "";
-}
 
 function isActivationPayload(payload: Partial<LicenseActivationPayload>): payload is LicenseActivationPayload {
   return (
@@ -26,7 +23,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "授权激活参数不完整" }, { status: 400 });
     }
 
-    const endpoint = configuredEndpoint();
+    const endpoint = resolveLicenseEndpoint("activate");
     if (!endpoint) {
       return NextResponse.json({ error: "授权服务端点未配置" }, { status: 503 });
     }

@@ -87,6 +87,32 @@ function maskHash(hash) {
   return `${hash.slice(0, 8)}...${hash.slice(-8)}`;
 }
 
+async function copyText(text) {
+  if (!text) {
+    throw new Error("授权码为空，无法复制");
+  }
+
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const input = document.createElement("textarea");
+  input.value = text;
+  input.setAttribute("readonly", "true");
+  input.style.position = "absolute";
+  input.style.left = "-9999px";
+  document.body.appendChild(input);
+  input.select();
+
+  const copied = document.execCommand("copy");
+  document.body.removeChild(input);
+
+  if (!copied) {
+    throw new Error("当前浏览器不支持复制");
+  }
+}
+
 function feedbackQuery() {
   const params = new URLSearchParams();
   for (const [id, key] of [
@@ -207,6 +233,7 @@ function renderLicenses(licenses) {
         <span><strong>设备数</strong> ${item.maxDevices} 台 · <strong>到期</strong> ${formatDate(item.expiresAt)}</span>
       </div>
       <div class="item-actions">
+        <button class="secondary" data-copy-license="${escapeHtml(item.code || "")}" ${item.code ? "" : "disabled"}>复制</button>
         <button class="secondary" data-reset-license="${item.id}">重置绑定</button>
         <button class="secondary danger" data-disable-license="${item.id}" ${item.status === "disabled" ? "disabled" : ""}>禁用</button>
       </div>
@@ -230,6 +257,17 @@ function renderLicenses(licenses) {
       });
       showToast("授权已禁用", "success");
       await loadAuthorization();
+    });
+  });
+
+  list.querySelectorAll("[data-copy-license]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        await copyText(button.dataset.copyLicense || "");
+        showToast("授权码已复制", "success");
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : "复制失败", "error");
+      }
     });
   });
 }
