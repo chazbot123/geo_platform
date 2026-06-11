@@ -1,3 +1,8 @@
+import path from "node:path";
+import { getEnterpriseProfile } from "@/lib/enterprise/service";
+import { dataRoot } from "@/lib/paths";
+import { detectPublishablePlatformAccounts } from "@/lib/publish/accounts-service";
+import { getAllPublishPlatforms, getPlatformsBySearchProvider } from "@/lib/publish/provider-platform-matrix";
 import {
   createRecordId,
   ensureStorageReady,
@@ -8,10 +13,11 @@ import {
   getTask,
   getTheme,
   listTasks,
+  saveProduct,
   saveTask,
+  saveTheme,
 } from "@/lib/storage/data-store";
-import { detectPublishablePlatformAccounts } from "@/lib/publish/accounts-service";
-import { getPlatformsBySearchProvider } from "@/lib/publish/provider-platform-matrix";
+import { readJsonFile } from "@/lib/storage/json-store";
 import type {
   PlatformAccountDetectionItem,
   ProductProfile,
@@ -24,14 +30,152 @@ import type {
   TaskStatus,
   ThemeSet,
 } from "@/lib/types";
+import type { EnterpriseProfile } from "@/lib/enterprise/types";
 
-export const MIN_PUBLISH_DAYS = 5;
-export const ARTICLES_PER_ACCOUNT_PER_DAY = 2 as const;
+export const MIN_PUBLISH_DAYS = 1;
+export const DEFAULT_ARTICLES_PER_ACCOUNT_PER_DAY = 2;
 export const DEFAULT_TIME_WINDOW = { start: "09:00", end: "18:00" } as const;
 export const MIN_SAME_ACCOUNT_INTERVAL_HOURS = 3;
 
 function now() {
   return new Date().toISOString();
+}
+
+interface WorkbenchKeywordQuestion {
+  id: string;
+  question: string;
+}
+
+interface WorkbenchKeywordSet {
+  id: string;
+  enterpriseId: string;
+  enterpriseName: string;
+  brandShortName: string;
+  productService: string;
+  region: string;
+  candidates?: Record<string, WorkbenchKeywordQuestion[]>;
+  selectedQuestions?: WorkbenchKeywordQuestion[];
+  generatedAt?: string;
+  savedAt?: string;
+  updatedAt?: string;
+}
+
+const WORKBENCH_TASK_ID = "customer-workbench-task";
+const WORKBENCH_PRODUCT_ID = "customer-workbench-product";
+const WORKBENCH_KEYWORD_PATH = path.join(dataRoot, "customer-keywords", "current.json");
+
+async function getWorkbenchKeywordSet() {
+  return readJsonFile<WorkbenchKeywordSet | null>(WORKBENCH_KEYWORD_PATH, null);
+}
+
+function uniqueText(values: Array<string | undefined>) {
+  return Array.from(new Set(values.map((item) => item?.trim()).filter(Boolean) as string[]));
+}
+
+function getWorkbenchCandidateQuestions(keywordSet: WorkbenchKeywordSet | null) {
+  if (!keywordSet?.candidates || typeof keywordSet.candidates !== "object") {
+    return [];
+  }
+  return uniqueText(Object.values(keywordSet.candidates).flat().map((item) => item?.question));
+}
+
+function getWorkbenchSelectedQuestions(keywordSet: WorkbenchKeywordSet | null) {
+  return uniqueText(keywordSet?.selectedQuestions?.map((item) => item.question) ?? []);
+}
+
+function buildWorkbenchProduct(productId: string, taskId: string, enterpriseProfile: EnterpriseProfile): ProductProfile {
+  return {
+    id: productId,
+    taskId,
+    productName: enterpriseProfile.productService || enterpriseProfile.brandShortName || enterpriseProfile.companyName,
+    category: enterpriseProfile.brandShortName || enterpriseProfile.productService || enterpriseProfile.companyName,
+    sellingPoints:
+      enterpriseProfile.productFeatures ||
+      enterpriseProfile.trustProof ||
+      enterpriseProfile.painPoints ||
+      enterpriseProfile.productService ||
+      enterpriseProfile.brandShortName,
+    targetAudience: enterpriseProfile.audience || enterpriseProfile.companyName,
+    scenarios: enterpriseProfile.region || enterpriseProfile.painPoints || enterpriseProfile.customerCases || enterpriseProfile.productService,
+    brandTone: enterpriseProfile.brandStory || enterpriseProfile.brandShortName || enterpriseProfile.companyName,
+    complianceNotes: enterpriseProfile.trustProof || undefined,
+  };
+}
+
+function buildWorkbenchTheme(
+  taskId: string,
+  enterpriseProfile: EnterpriseProfile,
+  keywordSet: WorkbenchKeywordSet | null,
+  searchProvider: SearchProvider,
+): ThemeSet {
+  const selectedQuestions = getWorkbenchSelectedQuestions(keywordSet);
+  const candidateQuestions = getWorkbenchCandidateQuestions(keywordSet);
+  const fallbackQuestions = selectedQuestions.length ? selectedQuestions : candidateQuestions;
+  const selectedKeywordTheme = selectedQuestions.length ? selectedQuestions.join("、") : undefined;
+
+  return {
+    taskId,
+    searchProvider,
+    audienceChannels: ["social", "streaming"],
+    mainKeyword: enterpriseProfile.productService || enterpriseProfile.brandShortName || enterpriseProfile.companyName,
+    backupKeywords: [],
+    relatedKeywords: [],
+    trendKeywords: [],
+    recommendedKeywords: fallbackQuestions.slice(0, 10),
+    candidateKeywords: fallbackQuestions.slice(0, 10),
+    scoreSummary: `${enterpriseProfile.brandShortName || enterpriseProfile.companyName}任务规划兼容主题。`,
+    rankingSummary:
+      selectedQuestions.length === 5
+        ? "当前任务规划已从客户关键词工作台同步 5 个核心问题。"
+        : "当前任务规划等待客户关键词工作台保存 5 个核心问题。",
+    selectedKeyword: selectedKeywordTheme,
+    selectedKeywords: selectedQuestions,
+    selectedKeywordTheme,
+    updatedAt: keywordSet?.updatedAt || enterpriseProfile.lastSavedAt || now(),
+  };
+}
+
+async function syncWorkbenchPlanningTask() {
+  const [enterpriseProfile, keywordSet, existingTask, existingTheme] = await Promise.all([
+    getEnterpriseProfile(),
+    getWorkbenchKeywordSet(),
+    getTask(WORKBENCH_TASK_ID),
+    getTheme(WORKBENCH_TASK_ID),
+  ]);
+
+  if (!enterpriseProfile) {
+    return null;
+  }
+
+  const timestamp = now();
+  const productId = existingTask?.productId || WORKBENCH_PRODUCT_ID;
+  const searchProvider = existingTask?.searchProvider || existingTheme?.searchProvider || "doubao";
+  const product = buildWorkbenchProduct(productId, WORKBENCH_TASK_ID, enterpriseProfile);
+  const theme = buildWorkbenchTheme(WORKBENCH_TASK_ID, enterpriseProfile, keywordSet, searchProvider);
+  const selectedQuestions = getSelectedQuestions(theme);
+
+  const task: TaskRecord = {
+    id: WORKBENCH_TASK_ID,
+    productId,
+    status:
+      existingTask?.publishPlan
+        ? existingTask.status
+        : selectedQuestions.length === 5
+          ? existingTask?.status && existingTask.status !== "created"
+            ? existingTask.status
+            : "keyword_selected"
+          : "created",
+    searchProvider,
+    publishPlan: existingTask?.publishPlan,
+    createdAt: existingTask?.createdAt || keywordSet?.generatedAt || enterpriseProfile.lastSavedAt || timestamp,
+    updatedAt: timestamp,
+    selectedKeyword: selectedQuestions.length ? selectedQuestions.join("、") : undefined,
+  };
+
+  await saveProduct(product);
+  await saveTheme(theme);
+  await saveTask(task);
+  return { task, product, theme };
 }
 
 function hasEnterpriseProfile(product: ProductProfile) {
@@ -68,7 +212,6 @@ export async function createTask(input: TaskCreateInput) {
     updatedAt: now(),
   };
 
-  const { saveProduct } = await import("@/lib/storage/data-store");
   await saveProduct(product);
   await saveTask(task);
 
@@ -140,6 +283,8 @@ export async function markTaskFailed(taskId: string, failedStage: string, errorM
 }
 
 export async function getTaskPlanningPrerequisites() {
+  await ensureStorageReady();
+  await syncWorkbenchPlanningTask();
   const bundles = await listTaskBundles();
   const enterpriseBundle = bundles.find((bundle) => hasEnterpriseProfile(bundle.product)) ?? null;
   const keywordBundle =
@@ -162,11 +307,35 @@ function normalizeDays(days: number) {
   return Math.max(MIN_PUBLISH_DAYS, Math.floor(Number.isFinite(days) ? days : MIN_PUBLISH_DAYS));
 }
 
+function normalizeArticlesPerAccountPerDay(value: number) {
+  return Math.max(1, Math.floor(Number.isFinite(value) ? value : DEFAULT_ARTICLES_PER_ACCOUNT_PER_DAY));
+}
+
+function isValidTimeValue(value: string) {
+  return /^\d{2}:\d{2}$/.test(value);
+}
+
+function normalizeTimeWindow(input?: { start?: string; end?: string }) {
+  const start = input?.start?.trim();
+  const end = input?.end?.trim();
+  if (!start || !end) {
+    return DEFAULT_TIME_WINDOW;
+  }
+  if (!isValidTimeValue(start) || !isValidTimeValue(end)) {
+    throw new Error("发布时间格式不正确，请使用 HH:mm。");
+  }
+  if (start >= end) {
+    throw new Error("发布时间结束时间必须晚于开始时间。");
+  }
+  return { start, end };
+}
+
 function buildPlatformPlan(input: {
   platform: SocialPlatform;
   enabled: boolean;
   detection?: PlatformAccountDetectionItem;
   days: number;
+  articlesPerAccountPerDay: number;
 }) {
   const accountCount = input.detection?.accountCount ?? 0;
   const accountIds = input.detection?.accounts.map((account) => account.id) ?? [];
@@ -176,7 +345,7 @@ function buildPlatformPlan(input: {
     enabled,
     accountCount: enabled ? accountCount : 0,
     accountIds: enabled ? accountIds : [],
-    articleCount: enabled ? accountCount * input.days * ARTICLES_PER_ACCOUNT_PER_DAY : 0,
+    articleCount: enabled ? accountCount * input.days * input.articlesPerAccountPerDay : 0,
     detectionAt: input.detection?.detectedAt,
   };
 }
@@ -184,10 +353,13 @@ function buildPlatformPlan(input: {
 export function calculatePublishTaskTotal(
   platformPlans: Array<Pick<PublishTaskPlan["enabledPlatforms"][number], "enabled" | "accountCount">>,
   days: number,
+  articlesPerAccountPerDay = DEFAULT_ARTICLES_PER_ACCOUNT_PER_DAY,
 ) {
   const normalizedDays = normalizeDays(days);
+  const normalizedArticlesPerAccountPerDay = normalizeArticlesPerAccountPerDay(articlesPerAccountPerDay);
   return platformPlans.reduce(
-    (total, platform) => total + (platform.enabled ? platform.accountCount * normalizedDays * ARTICLES_PER_ACCOUNT_PER_DAY : 0),
+    (total, platform) =>
+      total + (platform.enabled ? platform.accountCount * normalizedDays * normalizedArticlesPerAccountPerDay : 0),
     0,
   );
 }
@@ -197,6 +369,11 @@ export async function savePublishTaskPlan(input: {
   searchProvider: SearchProvider;
   enabledPlatforms: SocialPlatform[];
   days: number;
+  articlesPerAccountPerDay: number;
+  timeWindow?: {
+    start: string;
+    end: string;
+  };
   forceRefreshAccounts?: boolean;
 }) {
   await ensureStorageReady();
@@ -214,16 +391,20 @@ export async function savePublishTaskPlan(input: {
   }
 
   const mappedPlatforms = getPlatformsBySearchProvider(input.searchProvider);
-  const enabledPlatformSet = new Set(input.enabledPlatforms.filter((platform) => mappedPlatforms.includes(platform)));
+  const allPlatforms = getAllPublishPlatforms();
+  const enabledPlatformSet = new Set(input.enabledPlatforms.filter((platform) => allPlatforms.includes(platform)));
   const days = normalizeDays(input.days);
-  const detection = await detectPublishablePlatformAccounts(mappedPlatforms, { forceRefresh: input.forceRefreshAccounts });
+  const articlesPerAccountPerDay = normalizeArticlesPerAccountPerDay(input.articlesPerAccountPerDay);
+  const timeWindow = normalizeTimeWindow(input.timeWindow);
+  const detection = await detectPublishablePlatformAccounts(allPlatforms, { forceRefresh: input.forceRefreshAccounts });
   const detectionByPlatform = new Map(detection.items.map((item) => [item.platform, item]));
-  const enabledPlatforms = mappedPlatforms.map((platform) =>
+  const enabledPlatforms = allPlatforms.map((platform) =>
     buildPlatformPlan({
       platform,
-      enabled: enabledPlatformSet.has(platform),
+      enabled: mappedPlatforms.includes(platform) ? enabledPlatformSet.has(platform) : (detectionByPlatform.get(platform)?.accountCount ?? 0) > 0,
       detection: detectionByPlatform.get(platform),
       days,
+      articlesPerAccountPerDay,
     }),
   );
   const totalArticleCount = enabledPlatforms.reduce((total, platform) => total + platform.articleCount, 0);
@@ -237,8 +418,8 @@ export async function savePublishTaskPlan(input: {
     searchProvider: input.searchProvider,
     enabledPlatforms,
     days,
-    articlesPerAccountPerDay: ARTICLES_PER_ACCOUNT_PER_DAY,
-    timeWindow: DEFAULT_TIME_WINDOW,
+    articlesPerAccountPerDay,
+    timeWindow,
     minSameAccountIntervalHours: MIN_SAME_ACCOUNT_INTERVAL_HOURS,
     totalAccountCount,
     totalArticleCount,

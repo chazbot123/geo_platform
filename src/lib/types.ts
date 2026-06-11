@@ -571,6 +571,10 @@ export interface PublishProgressSnapshot {
   lastUpdatedAt: string;
   failureStage?: string;
   errorMessage?: string;
+  currentUrl?: string;
+  pageTitle?: string;
+  pageState?: string;
+  pageSummary?: string;
   liveExecutionLog: string[];
   stageTimeline: PublishStageTimelineEntry[];
   imageUploadProgress?: {
@@ -651,10 +655,10 @@ export interface PublishTaskPlan {
   searchProvider: SearchProvider;
   enabledPlatforms: PublishTaskPlatformPlan[];
   days: number;
-  articlesPerAccountPerDay: 2;
+  articlesPerAccountPerDay: number;
   timeWindow: {
-    start: "09:00";
-    end: "18:00";
+    start: string;
+    end: string;
   };
   minSameAccountIntervalHours: 3;
   totalAccountCount: number;

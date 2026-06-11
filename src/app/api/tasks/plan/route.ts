@@ -18,6 +18,11 @@ export async function POST(request: Request) {
       searchProvider: SearchProvider;
       enabledPlatforms: SocialPlatform[];
       days: number;
+      articlesPerAccountPerDay: number;
+      timeWindow?: {
+        start: string;
+        end: string;
+      };
       forceRefreshAccounts?: boolean;
     };
     if (!body.taskId || !body.searchProvider) {

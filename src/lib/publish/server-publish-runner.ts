@@ -13,6 +13,9 @@ import type {
   PublishingJobStatus,
 } from "@/lib/types";
 
+const ELECTRON_PUBLISH_TIMEOUT_MS = 180000;
+const LOCAL_BRIDGE_TIMEOUT_BUFFER_MS = 15000;
+
 function accountDraftToPublishingDraft(draft: AccountPublishingDraft): PublishingDraft {
   return {
     id: draft.id,
@@ -31,6 +34,19 @@ function accountDraftToPublishingDraft(draft: AccountPublishingDraft): Publishin
   };
 }
 
+function isAbortLikeError(error: unknown) {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const message = error.message.toLowerCase();
+  return error.name === "AbortError" || message.includes("operation was aborted");
+}
+
+function formatBridgeTimeoutMessage(timeoutMs: number) {
+  const timeoutSeconds = Math.ceil(timeoutMs / 1000);
+  return `桌面发布执行超时（>${timeoutSeconds} 秒），请检查 Electron 发布窗口是否卡在登录、风控、图片上传或提交确认步骤。`;
+}
+
 async function requestLocalBridge<T>(pathname: string, body: unknown, timeoutMs: number): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -47,6 +63,11 @@ async function requestLocalBridge<T>(pathname: string, body: unknown, timeoutMs:
       throw new Error(payload.error || payload.reason || "local bridge request failed");
     }
     return payload;
+  } catch (error) {
+    if (isAbortLikeError(error)) {
+      throw new Error(formatBridgeTimeoutMessage(timeoutMs));
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
   }
@@ -139,15 +160,17 @@ export async function runQueuedPublishingJob(jobId: string) {
     });
   }
 
+  const sessionToken = job.sessionToken || `${job.id}-${Date.now()}`;
   await recordPublishingJobResult({
     jobId: job.id,
     status: "running",
+    sessionToken,
     notes: `Electron 自动发布已启动，正在执行 ${job.platform} 脚本。`,
     executionLog: [`启动 Electron ${job.platform} 发布会话`],
   });
 
-  const sessionToken = job.sessionToken || `${job.id}-${Date.now()}`;
   try {
+    const bridgeRequestTimeoutMs = ELECTRON_PUBLISH_TIMEOUT_MS + LOCAL_BRIDGE_TIMEOUT_BUFFER_MS;
     const result = await requestLocalBridge<{
       status: "published" | "submitted" | "verifying" | "pending_review" | "verification_failed" | "failed" | "unsupported";
       draftUrl?: string;
@@ -169,7 +192,7 @@ export async function runQueuedPublishingJob(jobId: string) {
         sessionPartition: account.sessionPartition,
         authPayload: account.authPayload,
         sessionToken,
-        timeoutMs: 180000,
+        timeoutMs: ELECTRON_PUBLISH_TIMEOUT_MS,
         payload: {
           draftTitle: job.draftTitle,
           draftBody: job.draftBody,
@@ -179,13 +202,14 @@ export async function runQueuedPublishingJob(jobId: string) {
           publishMode: resolvedImagePaths.length ? "with_images" : (job.publishMode ?? "text_only"),
         },
       },
-      185000,
+      bridgeRequestTimeoutMs,
     );
 
     const status: PublishingJobStatus = result.status === "unsupported" ? "failed" : result.status;
     return recordPublishingJobResult({
       jobId: job.id,
       status,
+      sessionToken,
       publishUrl: result.publishUrl,
       draftUrl: result.draftUrl,
       verificationUrl: result.verificationUrl,
@@ -202,7 +226,8 @@ export async function runQueuedPublishingJob(jobId: string) {
     return recordPublishingJobResult({
       jobId: job.id,
       status: "failed",
-      failureStage: "electron_bridge",
+      sessionToken,
+      failureStage: isAbortLikeError(error) ? "script_timeout" : "electron_bridge",
       errorMessage: error instanceof Error ? error.message : String(error),
     });
   }

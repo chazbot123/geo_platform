@@ -2,7 +2,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { CalendarDays, CheckCircle2, LoaderCircle, LogIn, RefreshCw, Save, Settings2, ShieldCheck, Trash2 } from "lucide-react";
+import { formatAccountDisplayLabel } from "@/lib/publish/account-label";
 import { openPlatformLoginWindow, validatePlatformSessionWindow } from "@/lib/publish/electron-login-client";
 import { getPlatformsBySearchProvider, providerPublishMatrix } from "@/lib/publish/provider-platform-matrix";
 import { getSearchProviderIcon, getSocialPlatformIcon } from "@/lib/platform-icons";
@@ -57,6 +59,14 @@ interface DetectionResponse {
 interface AccountsResponse {
   items: PlatformAccountRecord[];
   error?: string;
+}
+
+function formatTimeWindow(start: string, end: string) {
+  return `${start}-${end}`;
+}
+
+function isValidTimeValue(value: string) {
+  return /^\d{2}:\d{2}$/.test(value);
 }
 
 function formatTime(value?: string) {
@@ -119,7 +129,7 @@ function AccountAvatar({ account, platform }: { account: PlatformAccountRecord; 
       <img
         className="h-full w-full object-cover"
         src={account.avatarUrl || fallback}
-        alt={`${account.displayName || account.accountName} 头像`}
+        alt={`${formatAccountDisplayLabel(account, account.id) || account.id} 头像`}
         onError={(event) => {
           event.currentTarget.src = fallback;
         }}
@@ -137,6 +147,7 @@ function EmptyAvatar({ platform }: { platform: SocialPlatform }) {
 }
 
 export function TaskPlanningWorkbench() {
+  const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [detecting, setDetecting] = useState(false);
@@ -146,27 +157,51 @@ export function TaskPlanningWorkbench() {
   const [notice, setNotice] = useState("");
   const [prerequisites, setPrerequisites] = useState<PlanningPrerequisites | null>(null);
   const [searchProvider, setSearchProvider] = useState<SearchProvider>("doubao");
-  const [enabledPlatforms, setEnabledPlatforms] = useState<SocialPlatform[]>(getPlatformsBySearchProvider("doubao"));
+  const [enabledPlatforms, setEnabledPlatforms] = useState<SocialPlatform[]>([]);
   const [selectedPlatform, setSelectedPlatform] = useState<SocialPlatform>("toutiao");
   const [days, setDays] = useState(5);
+  const [articlesPerAccountPerDay, setArticlesPerAccountPerDay] = useState(2);
+  const [publishStartTime, setPublishStartTime] = useState("09:00");
+  const [publishEndTime, setPublishEndTime] = useState("18:00");
   const [detectionItems, setDetectionItems] = useState<PlatformAccountDetectionItem[]>([]);
   const [accounts, setAccounts] = useState<PlatformAccountRecord[]>([]);
 
   const mappedPlatforms = useMemo(() => getPlatformsBySearchProvider(searchProvider), [searchProvider]);
   const detectionByPlatform = useMemo(() => new Map(detectionItems.map((item) => [item.platform, item])), [detectionItems]);
   const enabledSet = useMemo(() => new Set(enabledPlatforms), [enabledPlatforms]);
+  const publishableAccounts = useMemo(
+    () =>
+      accounts.filter(
+        (account) =>
+          account.loginStatus === "authenticated" &&
+          (account.status === "valid" || account.status === "active") &&
+          (!account.riskState || account.riskState === "active") &&
+          account.provider === "electron" &&
+          account.authType !== "manual",
+      ),
+    [accounts],
+  );
   const selectedDetection = detectionByPlatform.get(selectedPlatform);
   const selectedAccounts = useMemo(
     () => accounts.filter((account) => account.platform === selectedPlatform),
     [accounts, selectedPlatform],
   );
-  const normalizedDays = Math.max(5, Number.isFinite(days) ? Math.floor(days) : 5);
-  const totalAccounts = mappedPlatforms.reduce((total, platform) => {
-    const detection = detectionByPlatform.get(platform);
-    return total + (enabledSet.has(platform) ? detection?.accountCount ?? 0 : 0);
-  }, 0);
-  const totalArticles = totalAccounts * normalizedDays * 2;
-  const canSave = Boolean(prerequisites?.enterpriseReady && prerequisites.keywordReady && prerequisites.taskId && totalArticles > 0);
+  const normalizedDays = Math.max(1, Number.isFinite(days) ? Math.floor(days) : 1);
+  const normalizedArticlesPerAccountPerDay = Math.max(
+    1,
+    Number.isFinite(articlesPerAccountPerDay) ? Math.floor(articlesPerAccountPerDay) : 1,
+  );
+  const isTimeWindowValid =
+    isValidTimeValue(publishStartTime) && isValidTimeValue(publishEndTime) && publishStartTime < publishEndTime;
+  const totalAccounts = publishableAccounts.length;
+  const totalArticles = totalAccounts * normalizedDays * normalizedArticlesPerAccountPerDay;
+  const canSave = Boolean(
+    prerequisites?.enterpriseReady &&
+      prerequisites.keywordReady &&
+      prerequisites.taskId &&
+      totalArticles > 0 &&
+      isTimeWindowValid,
+  );
   const enterpriseReady = Boolean(prerequisites?.enterpriseReady);
   const keywordReady = Boolean(prerequisites?.keywordReady);
 
@@ -188,6 +223,9 @@ export function TaskPlanningWorkbench() {
       if (data.savedPlan) {
         setSearchProvider(data.savedPlan.searchProvider);
         setDays(data.savedPlan.days);
+        setArticlesPerAccountPerDay(data.savedPlan.articlesPerAccountPerDay);
+        setPublishStartTime(data.savedPlan.timeWindow?.start ?? "09:00");
+        setPublishEndTime(data.savedPlan.timeWindow?.end ?? "18:00");
         const savedPlatforms = data.savedPlan.enabledPlatforms.filter((item) => item.enabled).map((item) => item.platform);
         setEnabledPlatforms(savedPlatforms);
         setSelectedPlatform(savedPlatforms[0] ?? getPlatformsBySearchProvider(data.savedPlan.searchProvider)[0]);
@@ -213,6 +251,14 @@ export function TaskPlanningWorkbench() {
       const data = (await response.json()) as DetectionResponse & { error?: string };
       if (!response.ok) throw new Error(data.error || "账号检测失败。");
       setDetectionItems(data.items);
+      const publishablePlatforms = mappedPlatforms.filter((platform) => {
+        const item = data.items.find((current) => current.platform === platform);
+        return (item?.accountCount ?? 0) > 0;
+      });
+      setEnabledPlatforms((current) => {
+        const next = current.filter((platform) => publishablePlatforms.includes(platform));
+        return current.length ? next : publishablePlatforms;
+      });
       await loadAccounts();
       setNotice(forceRefresh ? "账号检测已刷新。" : "已读取账号检测结果。");
     } catch (currentError) {
@@ -236,6 +282,7 @@ export function TaskPlanningWorkbench() {
     setLoginKey(accountId ?? platform);
     setError("");
     setNotice("");
+    let loginSucceeded = false;
     try {
       const response = await fetch("/api/publish/accounts/login", {
         method: "POST",
@@ -264,6 +311,7 @@ export function TaskPlanningWorkbench() {
       if (loginResult.status === "authenticated") {
         await patchAccountStatus(payload.account.id, buildLoginSuccessPatch(loginResult));
         setNotice(`${platformLabels[platform]}账号已登录，已自动同步账号信息。`);
+        loginSucceeded = true;
       } else {
         const validation = await validatePlatformSessionWindow({
           platform,
@@ -278,6 +326,7 @@ export function TaskPlanningWorkbench() {
             lastError: undefined,
           });
           setNotice(`${platformLabels[platform]}账号已登录并通过校验。`);
+          loginSucceeded = true;
         } else {
           const lastError = validationFailureText(validation.status, validation.reason);
           await patchAccountStatus(payload.account.id, {
@@ -290,6 +339,9 @@ export function TaskPlanningWorkbench() {
       }
 
       await detectAccounts(true);
+      if (loginSucceeded) {
+        setEnabledPlatforms((current) => (current.includes(platform) ? current : [...current, platform]));
+      }
       window.dispatchEvent(new Event("geo-workflow-status-refresh"));
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "发起平台登录失败。");
@@ -300,7 +352,7 @@ export function TaskPlanningWorkbench() {
   }
 
   async function removeAccount(account: PlatformAccountRecord) {
-    const accountLabel = account.displayName || account.accountName || account.id;
+    const accountLabel = formatAccountDisplayLabel(account, account.id) || account.id;
     const confirmed = window.confirm(`确定将 ${platformLabels[account.platform]} 账号「${accountLabel}」下号并移除吗？移除后会从已保存任务和草稿绑定中摘除，不再计入任务。`);
     if (!confirmed) return;
 
@@ -338,13 +390,20 @@ export function TaskPlanningWorkbench() {
           searchProvider,
           enabledPlatforms,
           days: normalizedDays,
+          articlesPerAccountPerDay: normalizedArticlesPerAccountPerDay,
+          timeWindow: {
+            start: publishStartTime,
+            end: publishEndTime,
+          },
+          forceRefreshAccounts: true,
         }),
       });
       const data = (await response.json()) as { publishPlan?: PublishTaskPlan; error?: string };
       if (!response.ok || !data.publishPlan) throw new Error(data.error || "保存任务规划失败。");
       setPrerequisites((current) => (current ? { ...current, savedPlan: data.publishPlan } : current));
       window.dispatchEvent(new Event("geo-workflow-status-refresh"));
-      setNotice("任务已保存，可以进入内容池。");
+      setNotice("任务已保存，正在进入内容池。");
+      router.push("/content-pool");
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "保存任务规划失败。");
     } finally {
@@ -359,8 +418,7 @@ export function TaskPlanningWorkbench() {
   useEffect(() => {
     setEnabledPlatforms((current) => {
       const currentSet = new Set(current);
-      const next = mappedPlatforms.filter((platform) => currentSet.has(platform));
-      return next.length ? next : mappedPlatforms;
+      return mappedPlatforms.filter((platform) => currentSet.has(platform));
     });
     setSelectedPlatform((current) => (mappedPlatforms.includes(current) ? current : mappedPlatforms[0]));
   }, [mappedPlatforms]);
@@ -385,7 +443,7 @@ export function TaskPlanningWorkbench() {
           <div className="flex flex-wrap gap-2 text-xs">
             <span className={enterpriseReady ? "status-pill" : "status-pill opacity-60"}>企业信息</span>
             <span className={keywordReady ? "status-pill" : "status-pill opacity-60"}>5 个客户问题</span>
-            <span className="status-pill">9:00-18:00</span>
+            <span className="status-pill">{formatTimeWindow(publishStartTime, publishEndTime)}</span>
             <span className="status-pill">间隔 3 小时</span>
           </div>
         </div>
@@ -502,6 +560,7 @@ export function TaskPlanningWorkbench() {
                 <input
                   className="h-4 w-4 accent-[var(--accent)]"
                   type="checkbox"
+                  disabled={(selectedDetection?.accountCount ?? 0) === 0}
                   checked={enabledSet.has(selectedPlatform)}
                   onChange={(event) =>
                     setEnabledPlatforms((current) =>
@@ -540,7 +599,7 @@ export function TaskPlanningWorkbench() {
                         <AccountAvatar account={account} platform={selectedPlatform} />
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
-                            <p className="truncate text-sm font-semibold text-ink">{account.displayName || account.accountName}</p>
+                            <p className="truncate text-sm font-semibold text-ink">{formatAccountDisplayLabel(account, account.id) || account.id}</p>
                             <span className={`text-xs font-medium ${statusClassName(account)}`}>{statusText(account)}</span>
                           </div>
                           <p className="mt-1 break-all font-mono text-xs text-muted">ID：{account.accountName || account.id}</p>
@@ -582,7 +641,12 @@ export function TaskPlanningWorkbench() {
             <div className="mt-4 grid gap-2 border-t border-line pt-4 text-xs leading-5 text-muted sm:grid-cols-3">
               <p>可发布账号：{selectedDetection?.accountCount ?? 0}</p>
               <p>未计入账号：{selectedDetection?.ignoredCount ?? 0}</p>
-              <p>本平台文章：{enabledSet.has(selectedPlatform) ? (selectedDetection?.accountCount ?? 0) * normalizedDays * 2 : 0}</p>
+              <p>
+                本平台文章：
+                {enabledSet.has(selectedPlatform)
+                  ? (selectedDetection?.accountCount ?? 0) * normalizedDays * normalizedArticlesPerAccountPerDay
+                  : 0}
+              </p>
             </div>
           </div>
         </div>
@@ -594,26 +658,48 @@ export function TaskPlanningWorkbench() {
             <CalendarDays className="h-4 w-4 text-accent" />
             <h3 className="page-section-title">发布节奏</h3>
           </div>
-          <div className="mt-4 grid gap-4 sm:grid-cols-3">
+          <div className="mt-4 grid gap-4 sm:grid-cols-4">
             <label className="block">
               <span className="text-xs text-muted">发布天数</span>
               <input
                 className="mt-2 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent"
-                min={5}
+                min={1}
                 type="number"
                 value={days}
                 onChange={(event) => setDays(Number(event.target.value))}
               />
             </label>
-            <div className="subtle-card">
-              <p className="text-xs text-muted">每账号每天</p>
-              <p className="mt-2 text-lg font-semibold text-ink">2 篇</p>
-            </div>
-            <div className="subtle-card">
-              <p className="text-xs text-muted">发布时间</p>
-              <p className="mt-2 text-lg font-semibold text-ink">9:00-18:00</p>
-            </div>
+            <label className="block">
+              <span className="text-xs text-muted">每账号每天</span>
+              <input
+                className="mt-2 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent"
+                min={1}
+                type="number"
+                value={articlesPerAccountPerDay}
+                onChange={(event) => setArticlesPerAccountPerDay(Number(event.target.value))}
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs text-muted">开始时间</span>
+              <input
+                className="mt-2 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent"
+                type="time"
+                value={publishStartTime}
+                onChange={(event) => setPublishStartTime(event.target.value)}
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs text-muted">结束时间</span>
+              <input
+                className="mt-2 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent"
+                type="time"
+                value={publishEndTime}
+                onChange={(event) => setPublishEndTime(event.target.value)}
+              />
+            </label>
           </div>
+          <p className="mt-3 text-xs text-muted">默认发布时间为 {formatTimeWindow("09:00", "18:00")}，你也可以按任务节奏自行调整。</p>
+          {!isTimeWindowValid ? <p className="mt-2 text-xs text-red-500">结束时间必须晚于开始时间。</p> : null}
         </div>
 
         <aside className="section-card">
@@ -621,7 +707,7 @@ export function TaskPlanningWorkbench() {
           <div className="mt-4 grid grid-cols-3 gap-2 text-center">
             <div>
               <p className="text-2xl font-semibold text-ink">{totalAccounts}</p>
-              <p className="mt-1 text-xs text-muted">账号</p>
+              <p className="mt-1 text-xs text-muted">已登录账号</p>
             </div>
             <div>
               <p className="text-2xl font-semibold text-ink">{normalizedDays}</p>
@@ -632,7 +718,7 @@ export function TaskPlanningWorkbench() {
               <p className="mt-1 text-xs text-muted">篇</p>
             </div>
           </div>
-          <p className="mt-4 text-xs leading-5 text-muted">公式：启用平台可发布账号数 x 天数 x 2。</p>
+          <p className="mt-4 text-xs leading-5 text-muted">公式：已登录可发布账号总数 x 天数 x 每账号每天发布篇数。</p>
           <p className="mt-2 text-xs leading-5 text-muted">{platformSummary(prerequisites?.savedPlan)}</p>
           {error && <p className="mt-4 text-sm text-red-500">{error}</p>}
           {notice && <p className="mt-4 text-sm text-accent">{notice}</p>}
