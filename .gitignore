@@ -9,6 +9,7 @@ logs/
 patch_test.txt
 public/generated-images/
 .tmp-*
+.worktrees/
 CLAUDE.md
 
 .trae/*
