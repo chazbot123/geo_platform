@@ -146,7 +146,7 @@ export async function runQueuedPublishingJob(jobId: string) {
 
   const draft = await resolveJobDraft(job);
   const resolvedImagePaths = await resolvePublishImagePaths({
-    taskId: job.taskId,
+    taskId: job.contentPoolItemId ?? job.taskId,
     imageUrls: draft.imageUrls,
     localImagePaths: job.draftImagePaths?.length ? job.draftImagePaths : draft.localImagePaths,
   });

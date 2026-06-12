@@ -293,6 +293,12 @@ function resolveTimeoutMs(timeout: number) {
   return Math.max(5000, Number(timeout) || 60000);
 }
 
+function isAbortLikeError(error: unknown) {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return error.name === "AbortError" || message.includes("operation was aborted") || message.includes("aborted");
+}
+
 async function readJsonResponse(response: Response) {
   const rawText = await response.text();
   const contentType = response.headers.get("content-type") ?? "";
@@ -333,7 +339,7 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: numbe
       signal: controller.signal,
     });
   } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
+    if (isAbortLikeError(error)) {
       throw new Error("REQUEST_TIMEOUT");
     }
     throw error;
@@ -481,7 +487,7 @@ async function createViduTask(product: ProductProfile, prompt: string, config: M
         payload: product.taskId,
       }),
     },
-    Math.min(resolveTimeoutMs(config.timeout), 15000),
+    Math.min(resolveTimeoutMs(config.timeout), 60000),
   );
 
   const { payload, rawText } = await readJsonResponse(response);
@@ -706,6 +712,11 @@ async function runOpenAICompatibleImageModel(
           }),
           signal: controller.signal,
         });
+      } catch (error) {
+        if (isAbortLikeError(error)) {
+          throw new Error("REQUEST_TIMEOUT");
+        }
+        throw error;
       } finally {
         clearTimeout(timeoutId);
       }

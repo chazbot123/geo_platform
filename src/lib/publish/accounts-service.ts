@@ -1,5 +1,6 @@
 import path from "node:path";
 import { dataDirectories } from "@/lib/paths";
+import { isMeaningfulAccountIdentifier, sanitizeAccountProfileForSave } from "@/lib/publish/account-label";
 import { getSocialPlatformDescriptor } from "@/lib/publish/platforms";
 import {
   createRecordId,
@@ -84,14 +85,18 @@ function buildAuthPayloadPreview(authPayload?: string) {
   return preview.length > 120 ? `${preview.slice(0, 117)}...` : preview;
 }
 
-function collectAccountIdentityKeys(account: Pick<PlatformAccountRecord, "platformAccountId" | "accountName">) {
+function collectAccountIdentityKeys(
+  account: Pick<PlatformAccountRecord, "platformAccountId" | "accountName"> &
+    Partial<Pick<PlatformAccountRecord, "platform">>,
+) {
   const keys: string[] = [];
   const platformAccountId = normalizeIdentity(account.platformAccountId);
   const accountName = normalizeIdentity(account.accountName);
-  if (platformAccountId) {
+  const platform = "platform" in account ? account.platform : undefined;
+  if (platformAccountId && (!platform || isMeaningfulAccountIdentifier(account.platformAccountId || "", platform))) {
     keys.push(`platform:${platformAccountId}`);
   }
-  if (accountName) {
+  if (accountName && (!platform || isMeaningfulAccountIdentifier(account.accountName || "", platform))) {
     keys.push(`name:${accountName}`);
   }
   return keys;
@@ -109,6 +114,21 @@ function buildLoginResultPatch(
     avatarUrl?: string;
   },
 ): Partial<PlatformAccountRecord> {
+  const hasProfileUpdate =
+    typeof result.accountName === "string" ||
+    typeof result.displayName === "string" ||
+    typeof result.platformAccountId === "string";
+  const sanitizedProfile = hasProfileUpdate
+    ? sanitizeAccountProfileForSave(
+        current.platform,
+        {
+          accountName: result.accountName,
+          displayName: result.displayName,
+          platformAccountId: result.platformAccountId,
+        },
+        current,
+      )
+    : undefined;
   const patch: Partial<PlatformAccountRecord> = {
     loginStatus: result.loginStatus,
     status: result.status ?? (result.loginStatus === "authenticated" ? "active" : "saved"),
@@ -122,14 +142,10 @@ function buildLoginResultPatch(
     loginUrl: current.loginUrl,
     lastLoginStartedAt: current.lastLoginStartedAt,
   };
-  if (result.accountName?.trim()) {
-    patch.accountName = result.accountName.trim();
-  }
-  if (typeof result.displayName === "string") {
-    patch.displayName = result.displayName.trim() || undefined;
-  }
-  if (typeof result.platformAccountId === "string") {
-    patch.platformAccountId = result.platformAccountId.trim() || undefined;
+  if (sanitizedProfile) {
+    patch.accountName = sanitizedProfile.accountName;
+    patch.displayName = sanitizedProfile.displayName;
+    patch.platformAccountId = sanitizedProfile.platformAccountId;
   }
   if (typeof result.avatarUrl === "string") {
     patch.avatarUrl = result.avatarUrl.trim() || undefined;
@@ -335,6 +351,7 @@ async function mergeDuplicateAccounts(
   patch: Partial<PlatformAccountRecord>,
 ) {
   const identityKeys = collectAccountIdentityKeys({
+    platform: current.platform,
     platformAccountId: typeof patch.platformAccountId === "string" ? patch.platformAccountId : current.platformAccountId,
     accountName: typeof patch.accountName === "string" ? patch.accountName : current.accountName,
   });
@@ -544,14 +561,18 @@ export async function createPlatformAccount(input: {
 }) {
   const id = createRecordId();
   const sessionPartition = input.sessionPartition?.trim() || buildSessionPartition(id);
+  const sanitizedProfile = sanitizeAccountProfileForSave(input.platform, {
+    accountName: input.accountName,
+    displayName: input.displayName,
+  });
   const record: PlatformAccountRecord = {
     id,
     platform: input.platform,
     provider: "electron",
     authType: "session",
     source: "electron_shell",
-    accountName: input.accountName.trim(),
-    displayName: input.displayName?.trim() || input.accountName.trim(),
+    accountName: sanitizedProfile.accountName,
+    displayName: sanitizedProfile.displayName,
     loginUrl: input.loginUrl?.trim(),
     sessionPartition,
     loginStatus: input.loginStatus ?? "idle",

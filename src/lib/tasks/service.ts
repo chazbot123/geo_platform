@@ -528,7 +528,6 @@ export async function savePublishTaskPlan(input: {
     throw new Error("当前 AI 平台下暂无可自动加入任务的可发布账号。");
   }
   const timestamp = now();
-  const existingCreatedAt = task.publishPlan?.createdAt ?? timestamp;
   const publishPlan: PublishTaskPlan = {
     taskId: input.taskId,
     enterpriseTaskId: prerequisite.enterpriseTaskId ?? input.taskId,
@@ -541,7 +540,7 @@ export async function savePublishTaskPlan(input: {
     minSameAccountIntervalHours: MIN_SAME_ACCOUNT_INTERVAL_HOURS,
     totalAccountCount,
     totalArticleCount,
-    createdAt: existingCreatedAt,
+    createdAt: timestamp,
     updatedAt: timestamp,
   };
 

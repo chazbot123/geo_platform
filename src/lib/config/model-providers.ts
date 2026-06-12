@@ -77,7 +77,7 @@ const providerPresets: ModelProviderPreset[] = [
   {
     value: "vidu",
     label: "Vidu",
-    defaultBaseUrl: "https://api.vidu.com",
+    defaultBaseUrl: "https://api.vidu.cn",
     sections: {
       image: {
         defaultModelName: "viduq2",

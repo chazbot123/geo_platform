@@ -56,7 +56,7 @@ function isSameLocalDay(left?: string, right = new Date()) {
   );
 }
 
-function riskReasonFromJob(job: PublishingJobRecord) {
+export function riskReasonFromJob(job: PublishingJobRecord) {
   const haystack = [
     job.status,
     job.failureStage,
@@ -69,6 +69,10 @@ function riskReasonFromJob(job: PublishingJobRecord) {
     .join(" ")
     .toLowerCase();
 
+  if (/(prepare_images|upload_images|图片|image|素材|未提供|missing_images|without images)/i.test(haystack)) {
+    return null;
+  }
+
   if (/(captcha|验证码|验证|verification|verify)/i.test(haystack)) {
     return { state: "verification_blocked" as const, reason: "verification_or_captcha_detected" };
   }
@@ -77,6 +81,23 @@ function riskReasonFromJob(job: PublishingJobRecord) {
   }
   if (/(login|登录|session|cookie|account_binding)/i.test(haystack)) {
     return { state: "needs_login" as const, reason: "login_or_session_invalid" };
+  }
+  return null;
+}
+
+export function materialReasonFromJob(job: PublishingJobRecord) {
+  const haystack = [
+    job.failureStage,
+    job.errorMessage,
+    job.verificationEvidence,
+    ...(job.executionLog ?? []),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  if (/(prepare_images|upload_images|图片|image|素材|未提供|missing_images|without images)/i.test(haystack)) {
+    return job.failureStage || "prepare_images";
   }
   return null;
 }
@@ -343,6 +364,21 @@ export async function runDuePublishingJob(jobId: string) {
       cooldownUntil,
       lastPublishCompletedAt: now(),
       lastPublishError: undefined,
+    });
+    return result;
+  }
+
+  const materialReason = materialReasonFromJob(result);
+  if (materialReason) {
+    return recordPublishingJobResult({
+      jobId: result.id,
+      status: "manual_pending",
+      failureStage: materialReason,
+      errorMessage: result.errorMessage ?? "发布素材缺失，需要补充图片后再继续发布。",
+      executionLog: result.executionLog,
+      verificationEvidence: result.verificationEvidence,
+      verificationAttempts: result.verificationAttempts,
+      notes: "发布素材缺失，账号会话正常；请补充图片素材后再继续发布。",
     });
   }
 

@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ArticleGenerationContext } from "@/lib/content/article-generation-service";
 import { generateArticleForContentPool } from "@/lib/content/article-generation-service";
+import { loadPlatformStrategy, loadRiskWords } from "@/lib/content/prompt-loader";
+import { runImageModel } from "@/lib/integrations/images/client";
 import type { ReviewResult } from "@/lib/content/review-service";
 
 const appConfig = {
@@ -32,6 +34,47 @@ let reviewResult: ReviewResult = {
   },
 };
 
+const defaultPlatformStrategy = {
+  platform: "toutiao",
+  platformLabel: "今日头条",
+  title: {
+    maxLength: 12,
+    patterns: [],
+    bannedPatterns: [],
+    instructions: "",
+  },
+  body: {
+    preferredStructure: "",
+    paragraphLength: "",
+    maxParagraphChars: 150,
+    headingStyle: "",
+    sectionCount: { min: 3, max: 5 },
+    ctaStyle: "",
+    instructions: "",
+  },
+  metadata: {
+    allowPublicTraceId: false,
+    allowTimestamp: false,
+    allowMarkdownTable: false,
+    allowFaq: true,
+    faqCount: { min: 0, max: 3 },
+  },
+  review: {
+    riskWords: ["保证"],
+    mustHave: ["判断标准", "适用场景"],
+    mustNotHave: [],
+  },
+} as const;
+
+const defaultRiskWords = {
+  version: "test",
+  description: "test",
+  blockingWords: ["保证"],
+  warningWords: ["最好"],
+  contextualRules: [],
+  preferredPhrases: [],
+} as const;
+
 vi.mock("@/lib/config/service", () => ({
   getAppConfig: vi.fn(async () => appConfig),
 }));
@@ -41,45 +84,8 @@ vi.mock("@/lib/content/review-service", () => ({
 }));
 
 vi.mock("@/lib/content/prompt-loader", () => ({
-  loadPlatformStrategy: vi.fn(async () => ({
-    platform: "toutiao",
-    platformLabel: "今日头条",
-    title: {
-      maxLength: 12,
-      patterns: [],
-      bannedPatterns: [],
-      instructions: "",
-    },
-    body: {
-      preferredStructure: "",
-      paragraphLength: "",
-      maxParagraphChars: 150,
-      headingStyle: "",
-      sectionCount: { min: 3, max: 5 },
-      ctaStyle: "",
-      instructions: "",
-    },
-    metadata: {
-      allowPublicTraceId: false,
-      allowTimestamp: false,
-      allowMarkdownTable: false,
-      allowFaq: true,
-      faqCount: { min: 0, max: 3 },
-    },
-    review: {
-      riskWords: ["保证"],
-      mustHave: ["判断标准", "适用场景"],
-      mustNotHave: [],
-    },
-  })),
-  loadRiskWords: vi.fn(async () => ({
-    version: "test",
-    description: "test",
-    blockingWords: ["保证"],
-    warningWords: ["最好"],
-    contextualRules: [],
-    preferredPhrases: [],
-  })),
+  loadPlatformStrategy: vi.fn(async () => defaultPlatformStrategy),
+  loadRiskWords: vi.fn(async () => defaultRiskWords),
 }));
 
 vi.mock("@/lib/integrations/openai-compatible", () => ({
@@ -161,6 +167,8 @@ describe("generateArticleForContentPool", () => {
         questionCoverage: 100,
       },
     };
+    vi.mocked(loadPlatformStrategy).mockImplementation(async () => defaultPlatformStrategy);
+    vi.mocked(loadRiskWords).mockImplementation(async () => defaultRiskWords);
   });
 
   it("keeps article publishable when only model self-reports high risk", async () => {
@@ -212,5 +220,89 @@ describe("generateArticleForContentPool", () => {
     expect(result.item.status).toBe("failed");
     expect(result.item.body).toContain("保留显示的正文");
     expect(result.item.failedReason).toBe("复检发现 1 个阻断问题。");
+  });
+
+  it("runs per-article finalize steps sequentially", async () => {
+    payloadQueue = Array.from({ length: 5 }, () => ({
+      title: "正常标题",
+      summary: "正常摘要",
+      body: "正文包含判断标准。",
+      imagePrompt: "配图提示",
+      riskLevel: "low",
+      tags: ["标签"],
+      notes: [],
+    }));
+
+    const callOrder: string[] = [];
+    let releaseStrategy!: () => void;
+
+    vi.mocked(loadPlatformStrategy).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          callOrder.push("strategy:start");
+          releaseStrategy = () => {
+            callOrder.push("strategy:end");
+            resolve(defaultPlatformStrategy);
+          };
+        }),
+    );
+    vi.mocked(loadRiskWords).mockImplementation(async () => {
+      callOrder.push("risk:start");
+      return defaultRiskWords;
+    });
+
+    const generationPromise = generateArticleForContentPool(createContext());
+    for (let attempt = 0; attempt < 20 && !callOrder.includes("strategy:start"); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    expect(callOrder).toEqual(["strategy:start"]);
+
+    releaseStrategy();
+    await generationPromise;
+
+    expect(callOrder).toEqual(["strategy:start", "strategy:end", "risk:start"]);
+  });
+
+  it("keeps articles publishable and localizes aborted image generation errors", async () => {
+    payloadQueue = Array.from({ length: 5 }, () => ({
+      title: "正常标题",
+      summary: "正常摘要",
+      body: "正文包含判断标准和适用场景。",
+      imagePrompt: "配图提示",
+      riskLevel: "low",
+      tags: ["标签"],
+      notes: [],
+    }));
+    vi.mocked(runImageModel).mockRejectedValueOnce(new Error("This operation was aborted"));
+
+    const result = await generateArticleForContentPool(createContext());
+
+    expect(result.item.status).toBe("pending_publish");
+    expect(result.item.publishable).toBe(true);
+    expect(result.item.imageList).toHaveLength(0);
+    expect(result.item.pipeline.imageGeneration.status).toBe("needs_action");
+    expect(result.item.stageLog?.some((entry) => entry.message.includes("图片模型请求超时或被中断"))).toBe(true);
+    expect(result.item.stageLog?.some((entry) => entry.message.includes("This operation was aborted"))).toBe(false);
+  });
+
+  it("localizes invalid image api token errors", async () => {
+    payloadQueue = Array.from({ length: 5 }, () => ({
+      title: "正常标题",
+      summary: "正常摘要",
+      body: "正文包含判断标准和适用场景。",
+      imagePrompt: "配图提示",
+      riskLevel: "low",
+      tags: ["标签"],
+      notes: [],
+    }));
+    vi.mocked(runImageModel).mockRejectedValueOnce(new Error("IMAGE_API_401: Invalid token"));
+
+    const result = await generateArticleForContentPool(createContext());
+
+    expect(result.item.status).toBe("pending_publish");
+    expect(result.item.pipeline.imageGeneration.status).toBe("needs_action");
+    expect(result.item.stageLog?.some((entry) => entry.message.includes("图片模型认证失败"))).toBe(true);
+    expect(result.item.stageLog?.some((entry) => entry.message.includes("IMAGE_API_401"))).toBe(false);
   });
 });

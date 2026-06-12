@@ -2,10 +2,12 @@ import {
   createRecordId,
   getAccountPublishingDraft,
   getContent,
+  getContentPool,
   getPlatformAccount,
   getPublishingDraft,
   getPublishingJob,
   getPublishingJobsByTask,
+  saveContentPool,
   savePublishingJob,
 } from "@/lib/storage/data-store";
 import { updatePlatformAccountRecord } from "@/lib/publish/accounts-service";
@@ -13,7 +15,7 @@ import { buildManualDeliveryNotes } from "@/lib/publish/manual-delivery-service"
 import { getPlatformDescriptor } from "@/lib/publish/platforms";
 import { validateDraftForPlatform } from "@/lib/publish/draft-builders";
 import { resolvePublishImagePaths } from "@/lib/publish/publish-image-resolver";
-import type { PublishPlatform, PublishingDraft, PublishingExecutionMode, PublishingJobRecord, PublishingJobStatus } from "@/lib/types";
+import type { ContentPoolItemStatus, ContentPoolRecord, PublishPlatform, PublishingDraft, PublishingExecutionMode, PublishingJobRecord, PublishingJobStatus } from "@/lib/types";
 import type { ContentPoolItem } from "@/lib/types";
 
 function now() {
@@ -58,6 +60,210 @@ async function syncAccountPublishSnapshot(job: PublishingJobRecord, status: Publ
       lastPublishError: errorMessage ?? "最近一次发布失败",
     });
   }
+}
+
+function summarizeContentPool(record: ContentPoolRecord): ContentPoolRecord {
+  const generatedStatuses = new Set<ContentPoolItemStatus>([
+    "ready",
+    "sample",
+    "pending_publish",
+    "publishing",
+    "manual_pending",
+    "published",
+  ]);
+  return {
+    ...record,
+    totalArticleCount: record.items.length,
+    generatedArticleCount: record.items.filter((item) => generatedStatuses.has(item.status)).length,
+    generatingArticleCount: record.items.filter((item) => item.status === "generating").length,
+    failedArticleCount: record.items.filter((item) => item.status === "failed").length,
+    pendingPublishArticleCount: record.items.filter((item) => item.status === "pending_publish").length,
+  };
+}
+
+function statusFromPublishingJob(job: PublishingJobRecord): ContentPoolItemStatus | null {
+  if (job.status === "published" || job.status === "submitted" || job.status === "pending_review") {
+    return "published";
+  }
+  if (job.status === "running" || job.status === "verifying") {
+    return "publishing";
+  }
+  if (job.status === "manual_pending" || job.status === "verification_failed") {
+    return "manual_pending";
+  }
+  if (job.status === "failed") {
+    return "manual_pending";
+  }
+  if (job.status === "queued") {
+    return "pending_publish";
+  }
+  return null;
+}
+
+function displayStatusFromContentStatus(status: ContentPoolItemStatus): ContentPoolItem["displayStatus"] | undefined {
+  if (status === "manual_pending") return "pending_publish";
+  if (status === "sample") return "ready";
+  if (status === "pending_generation") return "pending";
+  return status;
+}
+
+function hasGeneratedContent(item: ContentPoolItem) {
+  return Boolean(item.title?.trim() && item.body?.trim());
+}
+
+function isPublishingJobForContentItem(job: PublishingJobRecord, item: ContentPoolItem) {
+  if (job.contentPoolItemId !== item.id) return false;
+  if (job.platform !== item.publishPlatform) return false;
+  if (job.accountId && job.accountId !== item.accountId) return false;
+  if (typeof job.contentSequence === "number" && job.contentSequence !== item.sequence) return false;
+  if (job.plannedPublishTime && item.plannedPublishTime && job.plannedPublishTime !== item.plannedPublishTime) return false;
+  return true;
+}
+
+function canSyncPublishingJobToContentItem(job: PublishingJobRecord, item: ContentPoolItem) {
+  if (!isPublishingJobForContentItem(job, item)) return false;
+  if (!hasGeneratedContent(item)) return false;
+  return true;
+}
+
+async function syncContentPoolPublishSnapshot(job: PublishingJobRecord) {
+  if (!job.contentPoolItemId) {
+    return null;
+  }
+
+  const status = statusFromPublishingJob(job);
+  if (!status) {
+    return null;
+  }
+
+  const record = await getContentPool(job.taskId);
+  if (!record) {
+    return null;
+  }
+
+  const item = record.items.find((current) => current.id === job.contentPoolItemId);
+  if (!item) {
+    return null;
+  }
+  if (!canSyncPublishingJobToContentItem(job, item)) {
+    const summarizedCurrent = summarizeContentPool(record);
+    const summaryChanged =
+      summarizedCurrent.totalArticleCount !== record.totalArticleCount ||
+      summarizedCurrent.generatedArticleCount !== record.generatedArticleCount ||
+      summarizedCurrent.generatingArticleCount !== record.generatingArticleCount ||
+      summarizedCurrent.failedArticleCount !== record.failedArticleCount ||
+      summarizedCurrent.pendingPublishArticleCount !== record.pendingPublishArticleCount;
+    return summaryChanged ? saveContentPool(summarizedCurrent) : summarizedCurrent;
+  }
+
+  const summarizedCurrent = summarizeContentPool(record);
+  const summaryChanged =
+    summarizedCurrent.totalArticleCount !== record.totalArticleCount ||
+    summarizedCurrent.generatedArticleCount !== record.generatedArticleCount ||
+    summarizedCurrent.generatingArticleCount !== record.generatingArticleCount ||
+    summarizedCurrent.failedArticleCount !== record.failedArticleCount ||
+    summarizedCurrent.pendingPublishArticleCount !== record.pendingPublishArticleCount;
+
+  if (item.status === status) {
+    return summaryChanged ? saveContentPool(summarizedCurrent) : summarizedCurrent;
+  }
+
+  const timestamp = now();
+  const nextRecord = summarizeContentPool({
+    ...record,
+    items: record.items.map((current) =>
+      current.id === job.contentPoolItemId
+        ? {
+            ...current,
+            status,
+            displayStatus: displayStatusFromContentStatus(status),
+            stageMessage:
+              status === "published"
+                ? "Publish completed."
+                : status === "publishing"
+                  ? "Publishing in progress."
+                  : status === "manual_pending"
+                    ? "Manual handling required."
+                    : current.stageMessage,
+            stageLog: [
+              ...(current.stageLog ?? []),
+              {
+                stage: `publish_${job.status}`,
+                message: `Publishing job ${job.id} changed to ${job.status}.`,
+                at: timestamp,
+              },
+            ],
+            updatedAt: timestamp,
+          }
+        : current,
+    ),
+    updatedAt: timestamp,
+  });
+  return saveContentPool(nextRecord);
+}
+
+export async function reconcileContentPoolPublishingStatuses(taskId: string) {
+  const [record, jobs] = await Promise.all([getContentPool(taskId), getPublishingJobsByTask(taskId)]);
+  if (!record) {
+    return null;
+  }
+
+  const latestJobsByItem = new Map<string, PublishingJobRecord>();
+  for (const job of jobs) {
+    if (!job.contentPoolItemId) continue;
+    const current = latestJobsByItem.get(job.contentPoolItemId);
+    if (!current || new Date(job.updatedAt).getTime() > new Date(current.updatedAt).getTime()) {
+      latestJobsByItem.set(job.contentPoolItemId, job);
+    }
+  }
+
+  let changed = false;
+  const timestamp = now();
+  const nextItems = record.items.map((item) => {
+    const job = latestJobsByItem.get(item.id);
+    if (!job) return item;
+    const status = statusFromPublishingJob(job);
+    if (!canSyncPublishingJobToContentItem(job, item)) return item;
+    if (!status || item.status === status) return item;
+    changed = true;
+    return {
+      ...item,
+      status,
+      displayStatus: displayStatusFromContentStatus(status),
+      stageMessage:
+        status === "published"
+          ? "Publish completed."
+          : status === "publishing"
+            ? "Publishing in progress."
+            : status === "manual_pending"
+              ? "Manual handling required."
+              : item.stageMessage,
+      stageLog: [
+        ...(item.stageLog ?? []),
+        {
+          stage: `publish_${job.status}`,
+          message: `Reconciled from publishing job ${job.id} (${job.status}).`,
+          at: timestamp,
+        },
+      ],
+      updatedAt: timestamp,
+    };
+  });
+
+  const summarized = summarizeContentPool({
+    ...record,
+    items: nextItems,
+    updatedAt: changed ? timestamp : record.updatedAt,
+  });
+
+  const summaryChanged =
+    summarized.totalArticleCount !== record.totalArticleCount ||
+    summarized.generatedArticleCount !== record.generatedArticleCount ||
+    summarized.generatingArticleCount !== record.generatingArticleCount ||
+    summarized.failedArticleCount !== record.failedArticleCount ||
+    summarized.pendingPublishArticleCount !== record.pendingPublishArticleCount;
+
+  return changed || summaryChanged ? saveContentPool(summarized) : summarized;
 }
 
 export async function createPublishingJob(input: {
@@ -197,7 +403,7 @@ export async function createContentPoolPublishingJob(input: {
 }): Promise<PublishingJobRecord> {
   const existingJobs = await getPublishingJobsByTask(input.item.taskId);
   const existing = existingJobs
-    .filter((job) => job.contentPoolItemId === input.item.id)
+    .filter((job) => isPublishingJobForContentItem(job, input.item))
     .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())[0];
 
   if (existing && existing.status !== "failed") {
@@ -278,7 +484,9 @@ export async function updatePublishingJobRecord(jobId: string, patch: Partial<Pu
     ...patch,
     updatedAt: now(),
   };
-  return savePublishingJob(next);
+  const saved = await savePublishingJob(next);
+  await syncContentPoolPublishSnapshot(saved);
+  return saved;
 }
 
 export async function transitionJobToRunning(jobId: string): Promise<PublishingJobRecord> {

@@ -237,7 +237,8 @@ async function finalizeArticlePayload(
   context: ArticleGenerationContext,
   payload: Required<ArticlePayload>,
 ): Promise<Required<ArticlePayload>> {
-  const [strategy, riskConfig] = await Promise.all([loadPlatformStrategy(context.platform), loadRiskWords()]);
+  const strategy = await loadPlatformStrategy(context.platform);
+  const riskConfig = await loadRiskWords();
   const strategyRiskWords = strategy?.review.riskWords ?? [];
   const blockingRiskWords = riskConfig?.blockingWords ?? [];
   const warningRiskWords = riskConfig?.warningWords ?? [];
@@ -442,6 +443,27 @@ function toContentPoolImages(images: NonNullable<Awaited<ReturnType<typeof runIm
   }));
 }
 
+function formatImageGenerationError(error: unknown) {
+  if (!(error instanceof Error)) return "图片生成失败。";
+  const message = error.message.trim();
+  const normalized = message.toLowerCase();
+  if (normalized.startsWith("image_api_401") || normalized.includes("invalid token")) {
+    return "图片模型认证失败：当前图片模型 API Key 无效、已过期，或该 Key 没有图片生成权限。请在模型设置中重新填写图片模型的 API Key 后再生成图片。";
+  }
+  if (normalized.startsWith("image_api_403")) {
+    return "图片模型无权限访问：当前 API Key 没有调用图片生成接口的权限，请检查图片模型账号权限或更换可用 Key。";
+  }
+  if (
+    message === "REQUEST_TIMEOUT" ||
+    error.name === "AbortError" ||
+    normalized.includes("operation was aborted") ||
+    normalized.includes("aborted")
+  ) {
+    return "图片模型请求超时或被中断，请检查图片模型接口是否可用，或在模型设置中适当调高图片生成超时时间。";
+  }
+  return message || "图片生成失败。";
+}
+
 export async function generateArticleForContentPool(context: ArticleGenerationContext): Promise<ArticleGenerationResult> {
   const appConfig = await getAppConfig();
   const config = appConfig.contentModelApiConfig;
@@ -547,7 +569,7 @@ export async function generateArticleForContentPool(context: ArticleGenerationCo
       imageList = localizedAsset.images?.length ? toContentPoolImages(localizedAsset.images) : [];
       log.push(stageLog("finalizing", `图片生成完成，共 ${imageList.length} 张。`));
     } catch (error) {
-      imageGenerationMessage = error instanceof Error ? error.message : "图片生成失败。";
+      imageGenerationMessage = formatImageGenerationError(error);
       log.push(stageLog("finalizing", `图片生成已跳过：${imageGenerationMessage}`));
     }
   }

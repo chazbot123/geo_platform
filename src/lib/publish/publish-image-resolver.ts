@@ -85,6 +85,26 @@ async function resolveOneImagePath(taskId: string, source: string, index: number
   return materializeRemoteImage(taskId, raw, index);
 }
 
+async function listGeneratedImagePaths(taskId: string) {
+  if (!taskId) return [];
+  const dir = path.join(dataDirectories.generatedImages, taskId);
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isFile() && /\.(png|jpe?g|webp)$/i.test(entry.name))
+      .map((entry) => path.join(dir, entry.name))
+      .sort((left, right) => {
+        const leftName = path.basename(left);
+        const rightName = path.basename(right);
+        if (leftName === "cover.png") return -1;
+        if (rightName === "cover.png") return 1;
+        return leftName.localeCompare(rightName, undefined, { numeric: true });
+      });
+  } catch {
+    return [];
+  }
+}
+
 export async function resolvePublishImagePaths(input: {
   taskId: string;
   imageUrls?: string[];
@@ -94,6 +114,9 @@ export async function resolvePublishImagePaths(input: {
     ...(input.localImagePaths ?? []),
     ...(input.imageUrls ?? []),
   ];
+  if (sources.length === 0) {
+    return listGeneratedImagePaths(input.taskId);
+  }
   const resolved: string[] = [];
   const seen = new Set<string>();
 

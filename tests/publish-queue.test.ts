@@ -122,4 +122,18 @@ describe("publish queue policy", () => {
     expect(resumed.riskState).toBe("active");
     expect(resumed.cooldownUntil).toBeUndefined();
   });
+
+  it("does not pause accounts for missing image material failures", async () => {
+    const { queueService } = await loadIsolatedQueue();
+    const missingImageJob = job({
+      id: "missing-image-job",
+      status: "failed",
+      failureStage: "prepare_images",
+      errorMessage: "小红书图文发布至少需要 1 张图片；当前 payload 未提供可上传图片",
+      executionLog: ["validate_session: authenticated", "prepare_images: validate xiaohongshu image materials"],
+    });
+
+    expect(queueService.materialReasonFromJob(missingImageJob)).toBe("prepare_images");
+    expect(queueService.riskReasonFromJob(missingImageJob)).toBeNull();
+  });
 });

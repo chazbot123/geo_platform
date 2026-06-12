@@ -14,6 +14,7 @@ import {
   saveContentPool,
 } from "@/lib/storage/data-store";
 import { getTaskBundle, listTaskBundles, markTaskFailed, updateTaskStatus } from "@/lib/tasks/service";
+import { reconcileContentPoolPublishingStatuses } from "@/lib/publish/jobs-service";
 import type {
   ContentDraft,
   ContentPoolItem,
@@ -416,17 +417,16 @@ function buildPendingContentPoolItem(input: {
 }
 
 function countFinishedGenerationItems(record: ContentPoolRecord) {
-  return record.items.filter((item) =>
-    item.status === "pending_publish" ||
-    item.status === "ready" ||
-    item.status === "sample" ||
-    item.status === "published" ||
-    item.status === "failed",
-  ).length;
+  return record.items.filter((item) => item.status === "failed" || Boolean(item.title?.trim() && item.body?.trim())).length;
 }
 
 function hasPendingGenerationItems(record: ContentPoolRecord) {
-  return record.items.some((item) => item.status === "pending_generation" || item.status === "generating");
+  return record.items.some(
+    (item) =>
+      item.status === "pending_generation" ||
+      item.status === "generating" ||
+      (item.status !== "failed" && !item.body?.trim()),
+  );
 }
 
 function hasRetryQueueItems(record: ContentPoolRecord) {
@@ -664,7 +664,7 @@ function buildFailedContentPoolItem(input: {
 }
 
 function summarizeContentPool(record: ContentPoolRecord): ContentPoolRecord {
-  const generatedArticleCount = record.items.filter((item) => item.status === "pending_publish" || item.status === "ready").length;
+  const generatedArticleCount = record.items.filter((item) => Boolean(item.title?.trim() && item.body?.trim())).length;
   const generatingArticleCount = record.items.filter((item) => item.status === "generating").length;
   const failedArticleCount = record.items.filter((item) => item.status === "failed").length;
   const pendingPublishArticleCount = record.items.filter((item) => item.status === "pending_publish").length;
@@ -834,6 +834,7 @@ export async function getCurrentContentPool() {
   const existing = await getContentPool(currentBundle.task.id);
   if (existing) {
     await resumeContentPoolQueuesIfNeeded(currentBundle.task.id, currentBundle, existing);
+    await reconcileContentPoolPublishingStatuses(currentBundle.task.id);
   }
   const latestExisting = await getContentPool(currentBundle.task.id);
   const current =
@@ -930,6 +931,7 @@ export async function getContentGenerationStatus(taskId?: string) {
   if (taskId) {
     const [record, bundle] = await Promise.all([getContentPool(taskId), getTaskBundle(taskId)]);
     await resumeContentPoolQueuesIfNeeded(taskId, bundle, record);
+    await reconcileContentPoolPublishingStatuses(taskId);
     const latestRecord = await getContentPool(taskId);
     const latestBundle = await getTaskBundle(taskId);
     return {

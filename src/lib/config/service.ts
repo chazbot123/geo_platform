@@ -33,9 +33,6 @@ function normalizeBaseUrl(provider: string, baseUrl: string) {
   if (normalizedProvider === "vidu") {
     try {
       const parsed = new URL(trimmed);
-      if (parsed.hostname.toLowerCase() === "api.vidu.cn") {
-        return "https://api.vidu.com";
-      }
       return parsed.origin;
     } catch {
       return trimmed.replace(/\/+$/g, "");

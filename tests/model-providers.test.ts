@@ -27,7 +27,7 @@ describe("model provider options", () => {
     expect(getDefaultModelNameForProvider("image", "deepseek")).toBe("deepseek-chat");
     expect(getDefaultModelNameForProvider("text", "volcengine-ark")).toBe("doubao-seed-1-6-250615");
     expect(getDefaultBaseUrlForProvider("deepseek")).toBe("https://api.deepseek.com/v1");
-    expect(getDefaultBaseUrlForProvider("vidu")).toBe("https://api.vidu.com");
+    expect(getDefaultBaseUrlForProvider("vidu")).toBe("https://api.vidu.cn");
     expect(getModelOptionsForProvider("text", "dashscope-qwen").map((item) => item.value)).toEqual([
       "qwen-max",
       "qwen-plus",
