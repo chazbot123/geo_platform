@@ -46,6 +46,7 @@ interface ContentGenerationStatusResponse {
 
 type ViewMode = "current" | "history";
 type StatusFilter = "all" | ContentPoolItemStatus;
+const articleTableGridClass = "lg:grid-cols-[56px_minmax(220px,1.4fr)_96px_96px_150px_minmax(160px,1fr)_88px_120px]";
 
 function formatDateTime(value?: string) {
   if (!value) return "未开始";
@@ -106,7 +107,7 @@ function ArticleRow({ item, taskId, task }: { item: ContentPoolItem; taskId: str
   const statusTime = resolveStatusTime(item, task);
   return (
     <Link
-      className="grid gap-3 border-b border-line px-4 py-3 text-sm transition hover:bg-panelSoft lg:grid-cols-[56px_minmax(220px,1.4fr)_120px_120px_150px_minmax(160px,1fr)_120px_130px]"
+      className={`grid gap-3 border-b border-line px-4 py-3 text-sm transition hover:bg-panelSoft lg:items-center ${articleTableGridClass}`}
       href={`/content-pool/${encodeURIComponent(item.id)}?taskId=${encodeURIComponent(taskId)}`}
     >
       <span className="text-muted">#{item.sequence}</span>
@@ -114,11 +115,11 @@ function ArticleRow({ item, taskId, task }: { item: ContentPoolItem; taskId: str
         <span className="block truncate font-medium text-ink">{item.title || item.stageMessage || "等待生成结果"}</span>
         <span className="mt-1 block truncate text-xs text-muted">{item.summary || item.stageMessage || "系统会在完成后写入最终成稿。"}</span>
       </span>
-      <span className="text-muted">{providerLabels[item.aiPlatform]}</span>
-      <span className="text-muted">{platformLabels[item.publishPlatform]}</span>
+      <span className="truncate whitespace-nowrap text-muted">{providerLabels[item.aiPlatform]}</span>
+      <span className="truncate whitespace-nowrap text-muted">{platformLabels[item.publishPlatform]}</span>
       <span className="truncate text-muted">{item.accountName || item.accountId}</span>
       <span className="truncate text-muted">{item.keywordText}</span>
-      <span>
+      <span className="whitespace-nowrap">
         <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-medium ${statusClassName(item.status)}`}>
           {statusLabels[item.status]}
         </span>
@@ -366,7 +367,7 @@ export function ContentPoolWorkbench() {
       </section>
 
       <section className="overflow-hidden rounded-md border border-line bg-panel">
-        <div className="hidden border-b border-line bg-surface px-4 py-2 text-xs font-medium text-muted lg:grid lg:grid-cols-[56px_minmax(220px,1.4fr)_120px_120px_150px_minmax(160px,1fr)_120px_130px]">
+        <div className={`hidden border-b border-line bg-surface px-4 py-2 text-xs font-medium text-muted lg:grid lg:items-center ${articleTableGridClass}`}>
           <span>序号</span>
           <span>标题</span>
           <span>AI 平台</span>

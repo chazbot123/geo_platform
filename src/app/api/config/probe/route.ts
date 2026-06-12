@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { getAppConfig } from "@/lib/config/service";
-import { buildJsonAuthHeaders } from "@/lib/integrations/auth";
+import { getAppConfig, normalizeAppConfig } from "@/lib/config/service";
+import { buildJsonAuthHeaders, normalizeApiKey } from "@/lib/integrations/auth";
 import {
   extractOpenAICompatibleErrorMessage,
   NewAPIProbeError,
@@ -9,7 +9,7 @@ import {
   resolveConfiguredOpenAICompatibleEndpoint,
   type NewAPIProbeAttempt,
 } from "@/lib/integrations/openai-compatible";
-import type { ModelApiConfig } from "@/lib/types";
+import type { AppConfig, ModelApiConfig } from "@/lib/types";
 
 interface ProbeOutcome {
   ok: boolean;
@@ -122,7 +122,64 @@ async function probeTextConfig(modelConfig: ModelApiConfig): Promise<ProbeOutcom
   }
 }
 
-function probeImageConfig(modelConfig: ModelApiConfig): ProbeOutcome {
+function resolveViduEndpoint(baseUrl: string, pathname: string) {
+  const trimmed = baseUrl.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  try {
+    const endpoint = new URL(new URL(trimmed).origin);
+    endpoint.pathname = pathname;
+    endpoint.searchParams.set("show_detail", "false");
+    return endpoint.toString();
+  } catch {
+    return "";
+  }
+}
+
+async function probeViduConfig(modelConfig: ModelApiConfig): Promise<ProbeOutcome> {
+  const endpoint = resolveViduEndpoint(modelConfig.baseUrl, "/ent/v2/credits");
+  const apiKey = normalizeApiKey(modelConfig.apiKey);
+  if (!endpoint || !apiKey) {
+    return { ok: false, provider: modelConfig.provider, error: "未配置 Vidu API 地址或 API Key" };
+  }
+
+  try {
+    const response = await fetch(endpoint, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Token ${apiKey}`,
+      },
+    });
+    const rawBody = await response.text();
+    if (!response.ok) {
+      const detail = extractOpenAICompatibleErrorMessage(rawBody) || rawBody.trim().slice(0, 160);
+      return {
+        ok: false,
+        endpoint,
+        provider: modelConfig.provider,
+        error: detail ? `HTTP ${response.status}: ${detail}` : `HTTP ${response.status}`,
+      };
+    }
+
+    return {
+      ok: true,
+      endpoint,
+      provider: modelConfig.provider,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      endpoint,
+      provider: modelConfig.provider,
+      error: error instanceof Error ? error.message : "Vidu 探测失败",
+    };
+  }
+}
+
+async function probeImageConfig(modelConfig: ModelApiConfig): Promise<ProbeOutcome> {
   const provider = modelConfig.provider.trim();
   const normalizedProvider = provider.toLowerCase();
 
@@ -139,6 +196,10 @@ function probeImageConfig(modelConfig: ModelApiConfig): ProbeOutcome {
     return { ok: false, provider: modelConfig.provider, error: "未配置 API 地址或 API Key" };
   }
 
+  if (normalizedProvider === "vidu") {
+    return probeViduConfig(modelConfig);
+  }
+
   return {
     ok: true,
     provider: modelConfig.provider,
@@ -146,12 +207,27 @@ function probeImageConfig(modelConfig: ModelApiConfig): ProbeOutcome {
   };
 }
 
-export async function POST() {
-  const config = await getAppConfig();
-  const text = await Promise.allSettled([probeTextConfig(config.contentModelApiConfig)]);
+async function getProbeConfig(request: Request) {
+  const rawBody = await request.text();
+
+  if (!rawBody.trim()) {
+    return getAppConfig();
+  }
+
+  const payload = JSON.parse(rawBody) as AppConfig | { config?: AppConfig };
+  const config = "config" in payload && payload.config ? payload.config : (payload as AppConfig);
+  return normalizeAppConfig(config);
+}
+
+export async function POST(request: Request) {
+  const config = await getProbeConfig(request);
+  const [text, image] = await Promise.allSettled([
+    probeTextConfig(config.contentModelApiConfig),
+    probeImageConfig(config.imageModelApiConfig),
+  ]);
 
   return NextResponse.json({
-    text: text[0].status === "fulfilled" ? text[0].value : { ok: false, error: String(text[0].reason) },
-    image: probeImageConfig(config.imageModelApiConfig),
+    text: text.status === "fulfilled" ? text.value : { ok: false, error: String(text.reason) },
+    image: image.status === "fulfilled" ? image.value : { ok: false, error: String(image.reason) },
   });
 }

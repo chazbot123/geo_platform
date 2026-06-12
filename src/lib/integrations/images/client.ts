@@ -465,7 +465,8 @@ function extractViduImageUrl(payload: Record<string, unknown> | null) {
 async function createViduTask(product: ProductProfile, prompt: string, config: ModelApiConfig, referenceImages: string[]) {
   const hasReferenceImages = referenceImages.length > 0;
   const model = resolveViduModel(config.modelName, hasReferenceImages);
-  const endpoint = buildViduEndpoint(config.baseUrl, "/ent/v2/reference2image");
+  const pathname = "/ent/v2/reference2image";
+  const endpoint = buildViduEndpoint(config.baseUrl, pathname);
   const response = await fetchWithTimeout(
     endpoint,
     {
@@ -689,17 +690,25 @@ async function runOpenAICompatibleImageModel(
   const endpoint = resolveOpenAIImageEndpoint(config.baseUrl);
   const items: ArticleImageItem[] = await Promise.all(
     prompts.map(async (entry) => {
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: buildJsonAuthHeaders(config.apiKey),
-        body: JSON.stringify({
-          model: config.modelName,
-          prompt: entry.prompt,
-          n: 1,
-          size: "1536x864",
-          response_format: "b64_json",
-        }),
-      });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), (config.timeout ?? 300000));
+      let response: Response;
+      try {
+        response = await fetch(endpoint, {
+          method: "POST",
+          headers: buildJsonAuthHeaders(config.apiKey),
+          body: JSON.stringify({
+            model: config.modelName,
+            prompt: entry.prompt,
+            n: 1,
+            size: "1024x1024",
+            response_format: "url",
+          }),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
       const rawText = await response.text();
       let payload: {

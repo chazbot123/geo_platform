@@ -102,9 +102,13 @@ export function ContentItemDetail({ itemId }: { itemId: string }) {
           action,
         }),
       });
-      const data = (await response.json()) as { error?: string };
+      const data = (await response.json()) as { current?: { items?: ContentPoolItem[] }; error?: string };
       if (!response.ok) {
         throw new Error(data.error || "处理文章失败。");
+      }
+      const nextItem = data.current?.items?.find((currentItem) => currentItem.id === item.id);
+      if (nextItem) {
+        setItem(nextItem);
       }
       await loadDetail({ silent: true });
     } catch (currentError) {

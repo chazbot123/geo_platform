@@ -88,4 +88,34 @@ describe("publish task planning", () => {
     expect(normalized.totalArticleCount).toBe(8);
     expect(normalized.enabledPlatforms).toHaveLength(9);
   });
+
+  it("preserves global account totals when normalizing saved plans", () => {
+    const normalized = normalizePublishTaskPlan({
+      taskId: "task-2",
+      enterpriseTaskId: "enterprise-2",
+      keywordTaskId: "keyword-2",
+      searchProvider: "doubao",
+      enabledPlatforms: [
+        {
+          platform: "toutiao",
+          enabled: true,
+          accountCount: 2,
+          accountIds: ["acc-1", "acc-2"],
+          articleCount: 2,
+          detectionAt: "2026-06-12T00:00:00.000Z",
+        },
+      ],
+      days: 3,
+      articlesPerAccountPerDay: 1,
+      timeWindow: { start: "09:00", end: "18:00" },
+      minSameAccountIntervalHours: 3,
+      totalAccountCount: 4,
+      totalArticleCount: 12,
+      createdAt: "2026-06-12T00:00:00.000Z",
+      updatedAt: "2026-06-12T00:00:00.000Z",
+    });
+
+    expect(normalized.totalAccountCount).toBe(4);
+    expect(normalized.totalArticleCount).toBe(12);
+  });
 });

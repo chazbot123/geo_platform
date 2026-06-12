@@ -322,6 +322,10 @@ function normalizeArticlesPerAccountPerDay(value: number) {
   return Math.max(1, Math.floor(Number.isFinite(value) ? value : DEFAULT_ARTICLES_PER_ACCOUNT_PER_DAY));
 }
 
+function normalizeAccountCount(value: number | undefined) {
+  return Math.max(0, Math.floor(Number.isFinite(value) ? value : 0));
+}
+
 function isValidTimeValue(value: string) {
   return /^\d{2}:\d{2}$/.test(value);
 }
@@ -380,6 +384,29 @@ function summarizePublishPlanPlatforms(enabledPlatforms: PublishTaskPlan["enable
   };
 }
 
+function summarizePublishPlanTotals(input: {
+  enabledPlatforms: PublishTaskPlan["enabledPlatforms"];
+  days: number;
+  articlesPerAccountPerDay: number;
+  globalAccountCount?: number;
+  globalArticleCount?: number;
+}) {
+  const scopedTotals = summarizePublishPlanPlatforms(input.enabledPlatforms);
+  const normalizedGlobalAccountCount = normalizeAccountCount(input.globalAccountCount);
+  const normalizedGlobalArticleCount = normalizeAccountCount(input.globalArticleCount);
+  const expectedGlobalArticleCount = normalizedGlobalAccountCount * input.days * input.articlesPerAccountPerDay;
+  const shouldPreserveGlobalTotals =
+    normalizedGlobalAccountCount > 0 &&
+    normalizedGlobalArticleCount > 0 &&
+    normalizedGlobalArticleCount === expectedGlobalArticleCount;
+  const totalAccountCount = shouldPreserveGlobalTotals ? normalizedGlobalAccountCount : scopedTotals.totalAccountCount;
+  return {
+    taskScopedAccountCount: scopedTotals.totalAccountCount,
+    totalAccountCount,
+    totalArticleCount: totalAccountCount * input.days * input.articlesPerAccountPerDay,
+  };
+}
+
 function constrainPlatformsToSearchProvider(searchProvider: SearchProvider, enabledPlatforms: SocialPlatform[]) {
   const allowedPlatforms = new Set(getPlatformsBySearchProvider(searchProvider));
   return Array.from(new Set(enabledPlatforms.filter((platform) => allowedPlatforms.has(platform))));
@@ -415,7 +442,13 @@ export function normalizePublishTaskPlan(plan: PublishTaskPlan): PublishTaskPlan
       articleCount: enabled ? accountCount * days * articlesPerAccountPerDay : 0,
     };
   });
-  const { totalAccountCount, totalArticleCount } = summarizePublishPlanPlatforms(enabledPlatforms);
+  const { totalAccountCount, totalArticleCount } = summarizePublishPlanTotals({
+    enabledPlatforms,
+    days,
+    articlesPerAccountPerDay,
+    globalAccountCount: plan.totalAccountCount,
+    globalArticleCount: plan.totalArticleCount,
+  });
 
   return {
     ...plan,
@@ -469,12 +502,6 @@ export async function savePublishTaskPlan(input: {
   }
 
   const allPlatforms = getAllPublishPlatforms();
-  const enabledPlatformSet = new Set(
-    constrainPlatformsToSearchProvider(
-      input.searchProvider,
-      input.enabledPlatforms.filter((platform) => allPlatforms.includes(platform)),
-    ),
-  );
   const mappedPlatformSet = new Set(getPlatformsBySearchProvider(input.searchProvider));
   const days = normalizeDays(input.days);
   const articlesPerAccountPerDay = normalizeArticlesPerAccountPerDay(input.articlesPerAccountPerDay);
@@ -484,13 +511,22 @@ export async function savePublishTaskPlan(input: {
   const enabledPlatforms = allPlatforms.map((platform) =>
     buildPlatformPlan({
       platform,
-      enabled: mappedPlatformSet.has(platform) && enabledPlatformSet.has(platform),
+      enabled: mappedPlatformSet.has(platform) && (detectionByPlatform.get(platform)?.accountCount ?? 0) > 0,
       detection: detectionByPlatform.get(platform),
       days,
       articlesPerAccountPerDay,
     }),
   );
-  const { totalAccountCount, totalArticleCount } = summarizePublishPlanPlatforms(enabledPlatforms);
+  const globalAccountCount = detection.items.reduce((total, item) => total + item.accountCount, 0);
+  const { taskScopedAccountCount, totalAccountCount, totalArticleCount } = summarizePublishPlanTotals({
+    enabledPlatforms,
+    days,
+    articlesPerAccountPerDay,
+    globalAccountCount,
+  });
+  if (taskScopedAccountCount <= 0) {
+    throw new Error("当前 AI 平台下暂无可自动加入任务的可发布账号。");
+  }
   const timestamp = now();
   const existingCreatedAt = task.publishPlan?.createdAt ?? timestamp;
   const publishPlan: PublishTaskPlan = {

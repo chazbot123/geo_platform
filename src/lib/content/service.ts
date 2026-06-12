@@ -383,7 +383,7 @@ function buildPendingContentPoolItem(input: {
   plannedPublishTime: string;
   timestamp: string;
 }): ContentPoolItem {
-  const imagePrompt = `${platformLabelMap[input.platform]}配图：${input.keyword.text}，真实产品服务场景，清晰、克制、适合图文发布`;
+  const imagePrompt = `${platformLabelMap[input.platform]}配图：${input.keyword.text.replace(/[？?。，,！!]+$/, "")}，真实产品服务场景，清晰、克制、适合图文发布`;
   return {
     id: `${input.plan.taskId}-${String(input.sequence).padStart(4, "0")}`,
     sequence: input.sequence,
@@ -623,7 +623,7 @@ function buildFailedContentPoolItem(input: {
   timestamp: string;
 }): ContentPoolItem {
   const failedReason = input.error instanceof Error ? input.error.message : "文章生成失败。";
-  const imagePrompt = `${platformLabelMap[input.platform]}配图：${input.keyword.text}，真实产品服务场景，清晰、克制、适合图文发布`;
+  const imagePrompt = `${platformLabelMap[input.platform]}配图：${input.keyword.text.replace(/[？?。，,！!]+$/, "")}，真实产品服务场景，清晰、克制、适合图文发布`;
   return {
     id: `${input.plan.taskId}-${String(input.sequence).padStart(4, "0")}`,
     sequence: input.sequence,

@@ -33,6 +33,9 @@ function normalizeBaseUrl(provider: string, baseUrl: string) {
   if (normalizedProvider === "vidu") {
     try {
       const parsed = new URL(trimmed);
+      if (parsed.hostname.toLowerCase() === "api.vidu.cn") {
+        return "https://api.vidu.com";
+      }
       return parsed.origin;
     } catch {
       return trimmed.replace(/\/+$/g, "");
@@ -75,7 +78,7 @@ function normalizeModelConfig(section: ModelSection, config: AppConfig["contentM
   };
 }
 
-function normalizeConfig(config: AppConfig): AppConfig {
+export function normalizeAppConfig(config: AppConfig): AppConfig {
   const mergedPublishConfig = {
     ...defaultAppConfig.publishApiConfig,
     ...config.publishApiConfig,
@@ -107,7 +110,7 @@ export async function getAppConfig() {
   await ensureStorageReady();
   const config = await getConfig();
   if (config) {
-    return normalizeConfig(config);
+    return normalizeAppConfig(config);
   }
   await saveConfig(defaultAppConfig);
   return defaultAppConfig;
@@ -115,7 +118,7 @@ export async function getAppConfig() {
 
 export async function updateAppConfig(nextConfig: AppConfig) {
   await ensureStorageReady();
-  const normalizedConfig = normalizeConfig(nextConfig);
+  const normalizedConfig = normalizeAppConfig(nextConfig);
   await saveConfig(normalizedConfig);
   return normalizedConfig;
 }

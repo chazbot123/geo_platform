@@ -1,4 +1,5 @@
 import { getAppConfig } from "@/lib/config/service";
+import { loadPlatformStrategy, loadRiskWords, type PlatformStrategy } from "@/lib/content/prompt-loader";
 import { materializeScopedImageAssetToLocal } from "@/lib/images/local-image-store";
 import { reviewContent, type ReviewResult } from "@/lib/content/review-service";
 import { runImageModel } from "@/lib/integrations/images/client";
@@ -65,6 +66,12 @@ interface ArticlePayload {
   imagePrompt?: string;
   riskLevel?: ContentPoolRiskLevel;
   notes?: string[];
+}
+
+interface ArticleStageResult {
+  payload: Required<ArticlePayload>;
+  usedFallback: boolean;
+  fallbackReason?: string;
 }
 
 export interface ArticleGenerationContext {
@@ -154,15 +161,126 @@ function sanitizePayload(payload: ArticlePayload | null, fallback: Required<Arti
   };
 }
 
+const riskWordReplacementMap: Record<string, string> = {
+  绝对: "更",
+  保证: "尽量",
+  包治: "缓解",
+  稳赚: "更稳妥",
+  必赚: "更有机会",
+  唯一: "更合适的",
+  "100%": "较高比例",
+  永久: "长期",
+  无风险: "需评估风险",
+  零风险: "风险较低",
+  万能: "更通用",
+  官方推荐: "常见选择",
+  国家认证: "资质信息需核验",
+  权威认证: "资质信息需核验",
+  最好: "更值得单独判断",
+  第一: "前列",
+  领先: "相对靠前",
+  顶级: "成熟",
+  极致: "更细致",
+  完美: "更完整",
+  立竿见影: "较快看到变化",
+  一劳永逸: "可长期复用",
+  专家推荐: "业内常见建议",
+  立刻见效: "较快起效",
+};
+
+function replaceRiskWords(text: string, words: string[]) {
+  let nextText = text;
+  for (const word of words) {
+    if (!word?.trim()) {
+      continue;
+    }
+    const replacement = riskWordReplacementMap[word] ?? "";
+    nextText = nextText.split(word).join(replacement);
+  }
+  return nextText.replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function buildMustHaveSnippet(required: string, context: ArticleGenerationContext) {
+  const region = [context.product.province, context.product.city, context.product.district].filter(Boolean).join("");
+  const scenario = context.product.scenarios || region || "当前业务场景";
+  const productName = context.product.productName || "当前服务";
+  switch (required) {
+    case "判断标准":
+    case "标准":
+      return `判断标准：优先看需求匹配度、可执行流程和风险边界，再决定是否推进 ${productName}。`;
+    case "适用场景":
+    case "场景":
+      return `适用场景：${scenario}，以及需要持续做内容获客、账号协同发布的业务。`;
+    case "风险":
+    case "边界":
+      return "风险边界：不同预算、团队协同和内容审核要求不同，结论不能直接套用到所有企业。";
+    case "结论":
+      return `结论：${productName} 是否适合，需要结合你的目标客户、内容节奏和审核要求综合判断。`;
+    case "建议":
+      return "建议：先用少量选题做测试，再根据数据反馈决定是否扩大执行范围。";
+    case "步骤":
+      return "步骤：先确认目标问题，再看账号节奏、内容结构和风险校验结果。";
+    case "验证":
+      return "验证方式：重点看线索质量、内容通过率和后续复用效率是否同步改善。";
+    case "观点":
+      return `核心观点：是否值得继续投入，不在于说法多强，而在于是否真的适合你的业务场景。`;
+    case "钩子":
+      return "先说结论：如果连适用场景和判断标准都说不清，再快生成也很难真正转化。";
+    case "口语化":
+      return "换成口语说，就是先别急着堆平台，先把适合不适合讲明白。";
+    default:
+      return `${required}：需要结合当前业务信息进一步判断。`;
+  }
+}
+
+async function finalizeArticlePayload(
+  context: ArticleGenerationContext,
+  payload: Required<ArticlePayload>,
+): Promise<Required<ArticlePayload>> {
+  const [strategy, riskConfig] = await Promise.all([loadPlatformStrategy(context.platform), loadRiskWords()]);
+  const strategyRiskWords = strategy?.review.riskWords ?? [];
+  const blockingRiskWords = riskConfig?.blockingWords ?? [];
+  const warningRiskWords = riskConfig?.warningWords ?? [];
+  const titleMaxLength = strategy?.title.maxLength ?? payload.title.length;
+  const combinedRiskWords = Array.from(new Set([...strategyRiskWords, ...blockingRiskWords, ...warningRiskWords]));
+
+  let title = replaceRiskWords(payload.title, combinedRiskWords);
+  if (title.length > titleMaxLength) {
+    title = title.slice(0, titleMaxLength).trim();
+  }
+
+  let summary = replaceRiskWords(payload.summary, combinedRiskWords);
+  let body = replaceRiskWords(payload.body, combinedRiskWords);
+  const combinedText = `${title}\n${summary}\n${body}`;
+  for (const required of strategy?.review.mustHave ?? []) {
+    if (combinedText.includes(required)) {
+      continue;
+    }
+    body = `${body}\n\n${buildMustHaveSnippet(required, context)}`.trim();
+  }
+
+  return {
+    ...payload,
+    title: title || payload.title,
+    summary: summary || payload.summary,
+    body: body || payload.body,
+  };
+}
+
 async function callArticleStage(input: {
   config: ModelApiConfig;
   context: ArticlePromptContext;
   stage: ArticleInternalStage;
   prompt: string;
-}) {
+  forceFallback?: boolean;
+}): Promise<ArticleStageResult> {
   const fallback = buildDevArticle(input.context, input.stage);
-  if (!hasConfiguredModel(input.config)) {
-    return fallback;
+  if (input.forceFallback || !hasConfiguredModel(input.config)) {
+    return {
+      payload: fallback,
+      usedFallback: Boolean(input.forceFallback),
+      fallbackReason: input.forceFallback ? "MODEL_FALLBACK_ACTIVE" : undefined,
+    };
   }
 
   const messages: OpenAICompatibleMessage[] = [
@@ -184,13 +302,37 @@ async function callArticleStage(input: {
       if (!payload?.body?.trim()) {
         throw new Error("ARTICLE_STAGE_EMPTY_BODY");
       }
-      return sanitizePayload(payload, fallback, input.context.keyword);
+      return {
+        payload: sanitizePayload(payload, fallback, input.context.keyword),
+        usedFallback: false,
+      };
     } catch (error) {
       lastError = error;
-      if (error instanceof OpenAICompatibleHttpError || (error instanceof Error && error.message === "REQUEST_TIMEOUT")) {
+      if (error instanceof Error && error.message === "REQUEST_TIMEOUT") {
+        return {
+          payload: {
+            ...fallback,
+            notes: [...fallback.notes, "模型请求超时，已使用本地兜底草稿。"],
+          },
+          usedFallback: true,
+          fallbackReason: "REQUEST_TIMEOUT",
+        };
+      }
+      if (error instanceof OpenAICompatibleHttpError) {
         break;
       }
     }
+  }
+
+  if (lastError instanceof Error && lastError.message === "ARTICLE_STAGE_EMPTY_BODY") {
+    return {
+      payload: {
+        ...fallback,
+        notes: [...fallback.notes, "模型返回内容为空，已使用本地兜底草稿。"],
+      },
+      usedFallback: true,
+      fallbackReason: "ARTICLE_STAGE_EMPTY_BODY",
+    };
   }
 
   throw lastError instanceof Error ? lastError : new Error("ARTICLE_STAGE_FAILED");
@@ -228,18 +370,18 @@ function buildRisk(reviewResult: ReviewResult, modelRisk: ContentPoolRiskLevel) 
     ...reviewResult.blockingIssues.map((issue) => issue.code),
     ...reviewResult.warnings.map((issue) => issue.code),
   ];
-  if (reviewResult.blockingIssues.length || modelRisk === "high") {
+  if (reviewResult.blockingIssues.length) {
     return {
       level: "high" as const,
-      message: `复检发现 ${reviewResult.blockingIssues.length || 1} 个阻断问题。`,
+      message: `复检发现 ${reviewResult.blockingIssues.length} 个阻断问题。`,
       riskCodes,
     };
   }
-  if (reviewResult.warnings.length || modelRisk === "medium") {
+  if (reviewResult.warnings.length || modelRisk === "medium" || modelRisk === "high") {
     return {
       level: "medium" as const,
       message: reviewResult.warnings.length ? `复检发现 ${reviewResult.warnings.length} 个提醒项。` : "模型复检提示需要关注风险边界。",
-      riskCodes,
+      riskCodes: modelRisk === "high" || modelRisk === "medium" ? [...riskCodes, "MODEL_SELF_REPORTED_RISK"] : riskCodes,
     };
   }
   return { level: "low" as const, message: "内容审查通过，可进入发布准备。", riskCodes };
@@ -247,28 +389,29 @@ function buildRisk(reviewResult: ReviewResult, modelRisk: ContentPoolRiskLevel) 
 
 function buildPipeline(input: {
   platform: SocialPlatform;
+  publishable: boolean;
   riskLevel: ContentPoolRiskLevel;
   riskMessage: string;
   imagePrompt: string;
   images: ContentPoolImageItem[];
+  imageGenerationMessage?: string;
   timestamp: string;
 }): ContentPoolPipelineState {
-  const passed = input.riskLevel === "low";
   return {
     negativeCheck: {
-      status: passed ? "passed" : "blocked",
+      status: input.publishable ? "passed" : "blocked",
       hits: [],
       checkedAt: input.timestamp,
     },
     riskReview: {
-      status: passed ? "passed" : input.riskLevel === "medium" ? "needs_action" : "blocked",
+      status: input.publishable ? (input.riskLevel === "low" ? "passed" : "needs_action") : "blocked",
       level: input.riskLevel,
       message: input.riskMessage,
       reviewedAt: input.timestamp,
     },
     sampleDraft: {
-      status: passed ? "passed" : "blocked",
-      passed,
+      status: input.publishable ? "passed" : "blocked",
+      passed: input.publishable,
       checkedAt: input.timestamp,
     },
     styleAdaptation: {
@@ -282,7 +425,7 @@ function buildPipeline(input: {
       message: "已完成标题、开头、结构、CTA 和图片提示的差异化改写。",
     },
     imageGeneration: {
-      status: input.images.length ? "passed" : "pending",
+      status: input.images.length ? "passed" : input.imageGenerationMessage ? "needs_action" : "pending",
       prompt: input.imagePrompt,
       images: input.images,
     },
@@ -317,9 +460,24 @@ export async function generateArticleForContentPool(context: ArticleGenerationCo
     previousOpening: getOpening(latestComparable?.body),
   };
 
+  let forceFallbackStages = false;
+  async function runStage(input: { context: ArticlePromptContext; stage: ArticleInternalStage; prompt: string }) {
+    const result = await callArticleStage({
+      config,
+      context: input.context,
+      stage: input.stage,
+      prompt: input.prompt,
+      forceFallback: forceFallbackStages,
+    });
+    if (result.usedFallback) {
+      forceFallbackStages = true;
+      log.push(stageLog(input.stage, `模型未及时返回，已切换本地兜底生成。原因：${result.fallbackReason ?? "MODEL_FALLBACK"}`));
+    }
+    return result.payload;
+  }
+
   log.push(stageLog("draft_generating", "正在生成正文。"));
-  const draft = await callArticleStage({
-    config,
+  const draft = await runStage({
     context: promptContext,
     stage: "draft_ready",
     prompt: buildDraftPrompt(promptContext),
@@ -327,8 +485,7 @@ export async function generateArticleForContentPool(context: ArticleGenerationCo
   log.push(stageLog("draft_ready", "首稿生成完成。"));
 
   log.push(stageLog("style_rewriting", "正在进行平台风格改写。"));
-  const styled = await callArticleStage({
-    config,
+  const styled = await runStage({
     context: { ...promptContext, previousBody: draft.body },
     stage: "style_ready",
     prompt: buildStyleRewritePrompt({ ...promptContext, previousBody: draft.body }),
@@ -336,8 +493,7 @@ export async function generateArticleForContentPool(context: ArticleGenerationCo
   log.push(stageLog("style_ready", "改写完成。"));
 
   log.push(stageLog("dedupe_rewriting", "正在进行降重改写。"));
-  const deduped = await callArticleStage({
-    config,
+  const deduped = await runStage({
     context: { ...promptContext, previousBody: styled.body },
     stage: "dedupe_ready",
     prompt: buildDedupeRewritePrompt({ ...promptContext, previousBody: styled.body }),
@@ -345,24 +501,23 @@ export async function generateArticleForContentPool(context: ArticleGenerationCo
   log.push(stageLog("dedupe_ready", "降重完成。"));
 
   log.push(stageLog("risk_rewriting", "风险检查中。"));
-  const finalPayload = await callArticleStage({
-    config,
+  const finalPayload = await runStage({
     context: { ...promptContext, previousBody: deduped.body },
     stage: "risk_ready",
     prompt: buildRiskRewritePrompt({ ...promptContext, previousBody: deduped.body }),
   });
   log.push(stageLog("risk_ready", "风险语言修正完成。"));
+  const finalizedPayload = await finalizeArticlePayload(context, finalPayload);
 
   log.push(stageLog("quality_reviewing", "正在进行最终复检。"));
-  if (hasConfiguredModel(config)) {
-    await callArticleStage({
-      config,
-      context: { ...promptContext, previousBody: finalPayload.body },
+  if (hasConfiguredModel(config) && !forceFallbackStages) {
+    await runStage({
+      context: { ...promptContext, previousBody: finalizedPayload.body },
       stage: "quality_passed",
-      prompt: buildQualityReviewPrompt({ ...promptContext, previousBody: finalPayload.body }),
+      prompt: buildQualityReviewPrompt({ ...promptContext, previousBody: finalizedPayload.body }),
     });
   }
-  const reviewDraft = toReviewDraft(context, finalPayload, timestamp);
+  const reviewDraft = toReviewDraft(context, finalizedPayload, timestamp);
   const reviewResult = await reviewContent(
     reviewDraft,
     context.platform,
@@ -376,26 +531,34 @@ export async function generateArticleForContentPool(context: ArticleGenerationCo
       cta: "",
     })),
   );
-  const risk = buildRisk(reviewResult, finalPayload.riskLevel);
+  const risk = buildRisk(reviewResult, finalizedPayload.riskLevel);
   log.push(stageLog("quality_passed", "最终复检完成。"));
   log.push(stageLog("finalizing", "正在写入最终成稿。"));
 
-  const publishable = risk.level === "low";
+  const publishable = reviewResult.blockingIssues.length === 0;
   let imageList: ContentPoolImageItem[] = [];
-  let imagePrompt = finalPayload.imagePrompt;
+  let imagePrompt = finalizedPayload.imagePrompt;
+  let imageGenerationMessage: string | undefined;
   if (publishable) {
-    const imageAsset = await runImageModel(context.product, context.theme, reviewDraft, appConfig.imageModelApiConfig);
-    const localizedAsset = await materializeScopedImageAssetToLocal(context.contentItemId, imageAsset);
-    imagePrompt = localizedAsset.images?.[0]?.prompt || imagePrompt;
-    imageList = localizedAsset.images?.length ? toContentPoolImages(localizedAsset.images) : [];
-    log.push(stageLog("finalizing", `图片生成完成，共 ${imageList.length} 张。`));
+    try {
+      const imageAsset = await runImageModel(context.product, context.theme, reviewDraft, appConfig.imageModelApiConfig);
+      const localizedAsset = await materializeScopedImageAssetToLocal(context.contentItemId, imageAsset);
+      imagePrompt = localizedAsset.images?.[0]?.prompt || imagePrompt;
+      imageList = localizedAsset.images?.length ? toContentPoolImages(localizedAsset.images) : [];
+      log.push(stageLog("finalizing", `图片生成完成，共 ${imageList.length} 张。`));
+    } catch (error) {
+      imageGenerationMessage = error instanceof Error ? error.message : "图片生成失败。";
+      log.push(stageLog("finalizing", `图片生成已跳过：${imageGenerationMessage}`));
+    }
   }
   const pipeline = buildPipeline({
     platform: context.platform,
+    publishable,
     riskLevel: risk.level,
     riskMessage: risk.message,
     imagePrompt,
     images: imageList,
+    imageGenerationMessage,
     timestamp,
   });
   const item: ContentPoolItem = {
@@ -411,9 +574,9 @@ export async function generateArticleForContentPool(context: ArticleGenerationCo
     keywordText: context.keywordText,
     accountKeywordOffset: context.accountKeywordOffset,
     plannedPublishTime: context.plannedPublishTime,
-    title: finalPayload.title,
-    summary: finalPayload.summary,
-    body: publishable ? finalPayload.body : "",
+    title: finalizedPayload.title,
+    summary: finalizedPayload.summary,
+    body: finalizedPayload.body,
     imagePrompt,
     imageList,
     riskLevel: risk.level,

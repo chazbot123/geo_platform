@@ -42,8 +42,6 @@ const platformLabels: Record<SocialPlatform, string> = {
 };
 const DEBUG_SERVER_URL = "http://127.0.0.1:7778/event";
 const DEBUG_SESSION_ID = "account-info-fetch";
-const PLAN_REFRESH_DEBUG_SERVER_URL = "http://127.0.0.1:7777/event";
-const PLAN_REFRESH_DEBUG_SESSION_ID = "plan-save-refresh";
 
 function emitDebug(hypothesisId: string, location: string, msg: string, data: Record<string, unknown>) {
   // #region debug-point shared:emit
@@ -51,23 +49,6 @@ function emitDebug(hypothesisId: string, location: string, msg: string, data: Re
     method: "POST",
     body: JSON.stringify({
       sessionId: DEBUG_SESSION_ID,
-      runId: "pre-fix",
-      hypothesisId,
-      location,
-      msg: `[DEBUG] ${msg}`,
-      data,
-      ts: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
-}
-
-function emitPlanRefreshDebug(hypothesisId: string, location: string, msg: string, data: Record<string, unknown>) {
-  // #region debug-point plan-shared:emit
-  fetch(PLAN_REFRESH_DEBUG_SERVER_URL, {
-    method: "POST",
-    body: JSON.stringify({
-      sessionId: PLAN_REFRESH_DEBUG_SESSION_ID,
       runId: "pre-fix",
       hypothesisId,
       location,
@@ -263,16 +244,18 @@ export function TaskPlanningWorkbench() {
   const normalizedArticlesPerAccountPerDay = normalizePositiveInteger(articlesPerAccountPerDayInput, 2, 1);
   const isTimeWindowValid =
     isValidTimeValue(publishStartTime) && isValidTimeValue(publishEndTime) && publishStartTime < publishEndTime;
-  const totalAccounts = enabledPlatforms.reduce(
+  const taskScopedAccountCount = enabledPlatforms.reduce(
     (total, platform) => total + (publishableAccountCountByPlatform.get(platform) ?? 0),
     0,
   );
+  const totalAccounts = publishableAccounts.length;
   const totalArticles = totalAccounts * normalizedDays * normalizedArticlesPerAccountPerDay;
+  const taskScopedArticles = taskScopedAccountCount * normalizedDays * normalizedArticlesPerAccountPerDay;
   const canSave = Boolean(
     prerequisites?.enterpriseReady &&
       prerequisites.keywordReady &&
       prerequisites.taskId &&
-      totalArticles > 0 &&
+      taskScopedAccountCount > 0 &&
       isTimeWindowValid,
   );
   const hasPlanChanges = useMemo(() => {
@@ -318,20 +301,6 @@ export function TaskPlanningWorkbench() {
       const response = await fetch("/api/tasks/plan", { cache: "no-store" });
       const data = (await response.json()) as PlanningPrerequisites & { error?: string };
       if (!response.ok) throw new Error(data.error || "读取任务规划失败。");
-      // #region debug-point B:load-prerequisites
-      emitPlanRefreshDebug("D", "task-planning-workbench.tsx:loadPrerequisites:response", "读取任务规划返回", {
-        enterpriseReady: data.enterpriseReady,
-        keywordReady: data.keywordReady,
-        taskId: data.taskId ?? null,
-        savedPlanTaskId: data.savedPlan?.taskId ?? null,
-        savedPlanUpdatedAt: data.savedPlan?.updatedAt ?? null,
-        savedPlanSearchProvider: data.savedPlan?.searchProvider ?? null,
-        savedPlanPlatforms: data.savedPlan?.enabledPlatforms.filter((item) => item.enabled).map((item) => item.platform) ?? [],
-        savedPlanDays: data.savedPlan?.days ?? null,
-        savedPlanArticlesPerAccountPerDay: data.savedPlan?.articlesPerAccountPerDay ?? null,
-        savedPlanTimeWindow: data.savedPlan?.timeWindow ?? null,
-      });
-      // #endregion
       setPrerequisites(data);
       if (data.savedPlan) {
         setSearchProvider(data.savedPlan.searchProvider);
@@ -368,10 +337,7 @@ export function TaskPlanningWorkbench() {
         const item = data.items.find((current) => current.platform === platform);
         return (item?.accountCount ?? 0) > 0;
       });
-      setEnabledPlatforms((current) => {
-        const next = current.filter((platform) => publishablePlatforms.includes(platform));
-        return current.length ? next : publishablePlatforms;
-      });
+      setEnabledPlatforms(publishablePlatforms);
       await loadAccounts();
       setNotice(forceRefresh ? "账号状态已刷新。" : "已同步账号状态。");
     } catch (currentError) {
@@ -526,21 +492,6 @@ export function TaskPlanningWorkbench() {
     setError("");
     setNotice("");
     try {
-      // #region debug-point C:save-plan-request
-      emitPlanRefreshDebug("A", "task-planning-workbench.tsx:savePlan:request", "提交保存计划请求", {
-        taskId: prerequisites.taskId,
-        searchProvider,
-        enabledPlatforms,
-        days: normalizedDays,
-        articlesPerAccountPerDay: normalizedArticlesPerAccountPerDay,
-        timeWindow: {
-          start: publishStartTime,
-          end: publishEndTime,
-        },
-        totalAccounts,
-        totalArticles,
-      });
-      // #endregion
       const response = await fetch("/api/tasks/plan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -559,35 +510,7 @@ export function TaskPlanningWorkbench() {
       });
       const data = (await response.json()) as { publishPlan?: PublishTaskPlan; error?: string };
       if (!response.ok || !data.publishPlan) throw new Error(data.error || "保存任务规划失败。");
-      // #region debug-point D:save-plan-response
-      emitPlanRefreshDebug("A", "task-planning-workbench.tsx:savePlan:response", "保存计划接口返回", {
-        responseOk: response.ok,
-        savedPlanTaskId: data.publishPlan.taskId,
-        savedPlanUpdatedAt: data.publishPlan.updatedAt,
-        savedPlanSearchProvider: data.publishPlan.searchProvider,
-        savedPlanPlatforms: data.publishPlan.enabledPlatforms.filter((item) => item.enabled).map((item) => item.platform),
-        savedPlanDays: data.publishPlan.days,
-        savedPlanArticlesPerAccountPerDay: data.publishPlan.articlesPerAccountPerDay,
-        savedPlanTimeWindow: data.publishPlan.timeWindow,
-        savedPlanTotalArticles: data.publishPlan.totalArticleCount,
-      });
-      // #endregion
-      setPrerequisites((current) => {
-        const next = current ? { ...current, savedPlan: data.publishPlan } : current;
-        // #region debug-point E:save-plan-state-commit
-        emitPlanRefreshDebug("A", "task-planning-workbench.tsx:savePlan:setPrerequisites", "保存计划后写入本地状态", {
-          hadCurrent: Boolean(current),
-          nextSavedPlanTaskId: next?.savedPlan?.taskId ?? null,
-          nextSavedPlanUpdatedAt: next?.savedPlan?.updatedAt ?? null,
-          nextSavedPlanSearchProvider: next?.savedPlan?.searchProvider ?? null,
-          nextSavedPlanPlatforms: next?.savedPlan?.enabledPlatforms.filter((item) => item.enabled).map((item) => item.platform) ?? [],
-          nextSavedPlanDays: next?.savedPlan?.days ?? null,
-          nextSavedPlanArticlesPerAccountPerDay: next?.savedPlan?.articlesPerAccountPerDay ?? null,
-          nextSavedPlanTimeWindow: next?.savedPlan?.timeWindow ?? null,
-        });
-        // #endregion
-        return next;
-      });
+      setPrerequisites((current) => (current ? { ...current, savedPlan: data.publishPlan } : current));
       dispatchWorkflowStatusRefresh();
       setNotice("计划已保存，可以开始生成。");
     } catch (currentError) {
@@ -630,44 +553,6 @@ export function TaskPlanningWorkbench() {
   useEffect(() => {
     void loadPrerequisites();
   }, []);
-
-  useEffect(() => {
-    // #region debug-point A:derived-state
-    emitPlanRefreshDebug("A", "task-planning-workbench.tsx:derived-state", "任务规划页派生状态变化", {
-      taskId: prerequisites?.taskId ?? null,
-      savedPlanTaskId: prerequisites?.savedPlan?.taskId ?? null,
-      savedPlanUpdatedAt: prerequisites?.savedPlan?.updatedAt ?? null,
-      savedPlanSearchProvider: prerequisites?.savedPlan?.searchProvider ?? null,
-      currentSearchProvider: searchProvider,
-      currentEnabledPlatforms: enabledPlatforms,
-      currentDays: normalizedDays,
-      currentArticlesPerAccountPerDay: normalizedArticlesPerAccountPerDay,
-      currentTimeWindow: {
-        start: publishStartTime,
-        end: publishEndTime,
-      },
-      totalAccounts,
-      totalArticles,
-      canSave,
-      hasPlanChanges,
-      savedPlanReady,
-    });
-    // #endregion
-  }, [
-    canSave,
-    enabledPlatforms,
-    hasPlanChanges,
-    normalizedArticlesPerAccountPerDay,
-    normalizedDays,
-    prerequisites?.savedPlan,
-    prerequisites?.taskId,
-    publishEndTime,
-    publishStartTime,
-    savedPlanReady,
-    searchProvider,
-    totalAccounts,
-    totalArticles,
-  ]);
 
   useEffect(() => {
     setEnabledPlatforms((current) => {
@@ -740,7 +625,7 @@ export function TaskPlanningWorkbench() {
           </button>
         </div>
 
-        <div className="mt-5 grid gap-4 xl:grid-cols-[190px_230px_minmax(0,1fr)]">
+        <div className="mt-5 grid gap-4 lg:grid-cols-[190px_230px_minmax(0,1fr)]">
           <nav className="grid content-start gap-2" aria-label="GEO AI 平台">
             {providerOrder.map((provider) => {
               const bundle = providerPublishMatrix[provider];
@@ -814,17 +699,11 @@ export function TaskPlanningWorkbench() {
                 <input
                   className="h-4 w-4 accent-[var(--accent)]"
                   type="checkbox"
-                  disabled={(selectedDetection?.accountCount ?? 0) === 0}
+                  disabled
                   checked={enabledSet.has(selectedPlatform)}
-                  onChange={(event) =>
-                    setEnabledPlatforms((current) =>
-                      event.target.checked
-                        ? Array.from(new Set([...current, selectedPlatform]))
-                        : current.filter((item) => item !== selectedPlatform),
-                    )
-                  }
+                  onChange={() => undefined}
                 />
-                加入任务
+                自动加入任务
               </label>
             </div>
 
@@ -968,7 +847,7 @@ export function TaskPlanningWorkbench() {
           <div className="mt-4 grid grid-cols-3 gap-2 text-center">
             <div>
               <p className="text-2xl font-semibold text-ink">{totalAccounts}</p>
-              <p className="mt-1 text-xs text-muted">已启用账号</p>
+              <p className="mt-1 text-xs text-muted">可用账号</p>
             </div>
             <div>
               <p className="text-2xl font-semibold text-ink">{normalizedDays}</p>
@@ -979,7 +858,10 @@ export function TaskPlanningWorkbench() {
               <p className="mt-1 text-xs text-muted">篇</p>
             </div>
           </div>
-          <p className="mt-4 text-xs leading-5 text-muted">预计总篇数 = 已启用账号数 x 发布天数 x 每个账号每天篇数。</p>
+          <p className="mt-4 text-xs leading-5 text-muted">预计总篇数 = 全部已登录可发布账号数 x 发布天数 x 每个账号每天篇数。</p>
+          <p className="mt-2 text-xs leading-5 text-muted">
+            当前全局已登录可发布账号 {totalAccounts} 个；其中当前 AI 平台可自动加入任务的账号 {taskScopedAccountCount} 个，当前 AI 平台预计 {taskScopedArticles} 篇。
+          </p>
           <p className="mt-2 text-xs leading-5 text-muted">
             {savedPlanReady
               ? `计划已保存：${platformSummary(prerequisites?.savedPlan)}`

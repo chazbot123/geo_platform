@@ -2,7 +2,13 @@
 
 import { useState } from "react";
 import { CheckCircle, ImageIcon, LoaderCircle, Save, Type, XCircle } from "lucide-react";
-import { modelProviderOptions, resolveModelNameForProviderChange, type ModelSection } from "@/lib/config/model-providers";
+import {
+  getModelOptionsForProvider,
+  hydrateModelConfigWithProviderDefaults,
+  modelProviderOptions,
+  resolveModelConfigForProviderChange,
+  type ModelSection,
+} from "@/lib/config/model-providers";
 import type { AppConfig, ModelApiConfig } from "@/lib/types";
 
 interface ProbeOutcome {
@@ -41,13 +47,24 @@ const fieldLabels: Record<keyof ModelApiConfig, string> = {
 };
 
 const editableFields: Array<keyof ModelApiConfig> = ["provider", "baseUrl", "modelName", "apiKey"];
+const CUSTOM_MODEL_VALUE = "__custom__";
 
 function getModelConfig(config: AppConfig, section: ModelSection) {
   return section === "text" ? config.contentModelApiConfig : config.imageModelApiConfig;
 }
 
+function hydrateConfigWithProviderDefaults(config: AppConfig): AppConfig {
+  const nextTextModel = hydrateModelConfigWithProviderDefaults("text", config.contentModelApiConfig);
+  return {
+    ...config,
+    stage1ModelApiConfig: nextTextModel,
+    contentModelApiConfig: nextTextModel,
+    imageModelApiConfig: hydrateModelConfigWithProviderDefaults("image", config.imageModelApiConfig),
+  };
+}
+
 export function SettingsForm({ initialConfig }: { initialConfig: AppConfig }) {
-  const [config, setConfig] = useState(initialConfig);
+  const [config, setConfig] = useState(() => hydrateConfigWithProviderDefaults(initialConfig));
   const [message, setMessage] = useState("");
   const [probing, setProbing] = useState(false);
   const [probeResult, setProbeResult] = useState<ProbeResult | null>(null);
@@ -61,7 +78,9 @@ export function SettingsForm({ initialConfig }: { initialConfig: AppConfig }) {
       };
 
       if (field === "provider") {
-        nextModelConfig.modelName = resolveModelNameForProviderChange(section, value, current.modelName, current.baseUrl);
+        const providerDefaults = resolveModelConfigForProviderChange(section, value);
+        nextModelConfig.baseUrl = providerDefaults.baseUrl;
+        nextModelConfig.modelName = providerDefaults.modelName;
       }
 
       if (section === "text") {
@@ -87,7 +106,7 @@ export function SettingsForm({ initialConfig }: { initialConfig: AppConfig }) {
       body: JSON.stringify(config),
     });
     const payload = await response.json();
-    setConfig(payload.config ?? config);
+    setConfig(payload.config ? hydrateConfigWithProviderDefaults(payload.config) : config);
     setMessage(response.ok ? "配置已保存。" : payload.error ?? "保存失败。");
   }
 
@@ -95,7 +114,11 @@ export function SettingsForm({ initialConfig }: { initialConfig: AppConfig }) {
     setProbing(true);
     setProbeResult(null);
     try {
-      const response = await fetch("/api/config/probe", { method: "POST" });
+      const response = await fetch("/api/config/probe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(config),
+      });
       const payload = (await response.json()) as ProbeResult;
       setProbeResult(payload);
     } catch {
@@ -111,6 +134,14 @@ export function SettingsForm({ initialConfig }: { initialConfig: AppConfig }) {
         {(["text", "image"] as const).map((section) => {
           const modelConfig = getModelConfig(config, section);
           const Icon = modelLabels[section].icon;
+          const modelOptions = getModelOptionsForProvider(section, modelConfig.provider);
+          const showsModelSelect = modelConfig.provider !== "openai" && modelOptions.length > 0;
+          const usesCustomModel = showsModelSelect && !modelOptions.some((option) => option.value === modelConfig.modelName.trim());
+          const selectedModelValue = showsModelSelect
+            ? usesCustomModel
+              ? CUSTOM_MODEL_VALUE
+              : modelConfig.modelName.trim()
+            : modelConfig.modelName;
 
           return (
             <section key={section} className="rounded-lg border border-stroke bg-panel/70 p-5 shadow-panel">
@@ -140,6 +171,30 @@ export function SettingsForm({ initialConfig }: { initialConfig: AppConfig }) {
                           </option>
                         ))}
                       </select>
+                    ) : field === "modelName" && showsModelSelect ? (
+                      <div className="space-y-2">
+                        <select
+                          className="input-base"
+                          value={selectedModelValue || CUSTOM_MODEL_VALUE}
+                          onChange={(event) => updateModel(section, field, event.target.value === CUSTOM_MODEL_VALUE ? "" : event.target.value)}
+                        >
+                          {modelOptions.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                          <option value={CUSTOM_MODEL_VALUE}>自定义输入</option>
+                        </select>
+                        {usesCustomModel || !modelConfig.modelName.trim() ? (
+                          <input
+                            className="input-base"
+                            type="text"
+                            value={modelConfig.modelName}
+                            placeholder="请输入自定义模型名称"
+                            onChange={(event) => updateModel(section, field, event.target.value)}
+                          />
+                        ) : null}
+                      </div>
                     ) : (
                       <input
                         className="input-base"
