@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
+import { strFromU8, unzipSync } from "fflate";
 import { getAppConfig } from "@/lib/config/service";
 import type { EnterpriseAsset, EnterpriseParseResult, EnterpriseProfileFields } from "@/lib/enterprise/types";
 import { callConfiguredTextModel, parseJsonFromModelText } from "@/lib/integrations/openai-compatible";
 import type { ModelApiConfig } from "@/lib/types";
 
 const textExtensions = new Set(["txt", "md", "csv", "json"]);
+const docxExtensions = new Set(["docx"]);
 const imageExtensions = new Set(["png", "jpg", "jpeg", "webp"]);
 const maxTextBytes = 1024 * 1024;
 const enterpriseFields = [
@@ -42,6 +44,48 @@ async function readText(file: File) {
 
   const buffer = Buffer.from(await file.arrayBuffer());
   return buffer.toString("utf8").replace(/\u0000/g, "").trim();
+}
+
+function decodeXmlEntities(text: string) {
+  return text
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+}
+
+function extractDocxXmlText(xml: string) {
+  return decodeXmlEntities(
+    xml
+      .replace(/<w:tab\/>/g, "\t")
+      .replace(/<w:br\/>/g, "\n")
+      .replace(/<\/w:p>/g, "\n")
+      .replace(/<[^>]+>/g, "")
+      .replace(/\r/g, "")
+      .replace(/\n{3,}/g, "\n\n"),
+  ).trim();
+}
+
+async function readDocxText(file: File) {
+  if (file.size > maxTextBytes * 5) {
+    return "";
+  }
+
+  try {
+    const archive = unzipSync(new Uint8Array(await file.arrayBuffer()));
+    const xmlEntries = Object.entries(archive)
+      .filter(([name]) => /^word\/(?:document|header\d+|footer\d+|footnotes|endnotes)\.xml$/i.test(name))
+      .sort(([left], [right]) => left.localeCompare(right));
+
+    return xmlEntries
+      .map(([, data]) => extractDocxXmlText(strFromU8(data)))
+      .filter(Boolean)
+      .join("\n\n")
+      .trim();
+  } catch {
+    return "";
+  }
 }
 
 function findValue(text: string, labels: string[]) {
@@ -168,6 +212,17 @@ export async function POST(request: Request) {
         continue;
       }
 
+      if (docxExtensions.has(extension)) {
+        materialFiles.push(makeAsset(file, "material"));
+        const text = await readDocxText(file);
+        if (text) {
+          textParts.push(text);
+        } else {
+          skipped.push(file.name);
+        }
+        continue;
+      }
+
       if (imageExtensions.has(extension)) {
         imageFiles.push(makeAsset(file, "image"));
         continue;
@@ -187,11 +242,12 @@ export async function POST(request: Request) {
     const suggestions = mergeSuggestions(ruleSuggestions, modelResult.suggestions);
     const filledCount = Object.values(suggestions).filter(Boolean).length;
     const parseSource = modelResult.usedModel ? "AI 大模型" : "规则";
+
     const message =
       filledCount > 0
         ? `已通过${parseSource}识别 ${filledCount} 个字段，请确认后保存；图片会保留为后续生图参考。`
         : skipped.length
-          ? "已记录企业资料，暂未识别出可回填字段，可手动填写后保存。图片会保留为后续生图参考。"
+          ? `已记录企业资料，但 ${skipped.join("、")} 暂未提取到可回填文本，可手动填写后保存。图片会保留为后续生图参考。`
           : "已记录企业资料，可手动补充企业信息后保存。图片会保留为后续生图参考。";
 
     const result: EnterpriseParseResult = {

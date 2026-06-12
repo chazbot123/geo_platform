@@ -206,11 +206,51 @@ async function loadAuthorization() {
     api("/api/admin/device-license-bindings"),
   ]);
 
-  renderLicenses(licensePayload.licenseCodes || []);
-  renderBindings(bindingPayload.bindings || []);
+  renderLicenses(licensePayload.licenseCodes || [], bindingPayload.bindings || []);
 }
 
-function renderLicenses(licenses) {
+function groupBindingsByLicenseId(bindings) {
+  const grouped = new Map();
+  for (const item of bindings) {
+    const licenseId = item.license_code_id;
+    if (!licenseId) continue;
+    const list = grouped.get(licenseId) || [];
+    list.push(item);
+    grouped.set(licenseId, list);
+  }
+  return grouped;
+}
+
+function renderLicenseBindings(bindings) {
+  if (!bindings.length) {
+    return '<div class="empty binding-empty">暂无绑定设备。</div>';
+  }
+
+  return `
+    <div class="binding-list">
+      ${bindings
+        .map(
+          (item) => `
+            <div class="binding-item">
+              <div class="binding-item-header">
+                <strong>${escapeHtml(item.device_label || item.fingerprint || "未命名设备")}</strong>
+                <span class="badge ${escapeHtml(item.status || "active")}">${escapeHtml(item.status || "active")}</span>
+              </div>
+              <div class="record-meta">
+                <span><strong>设备指纹</strong> ${escapeHtml(item.fingerprint || "-")}</span>
+                <span><strong>机器码</strong> ${escapeHtml(item.machine_code || "-")}</span>
+                <span><strong>绑定时间</strong> ${formatDate(item.bound_at)}</span>
+                <span><strong>最近校验</strong> ${formatDate(item.last_checked_at)}</span>
+              </div>
+            </div>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function renderLicenses(licenses, bindings) {
   const list = $("#licensesList");
   list.innerHTML = "";
   if (!licenses.length) {
@@ -218,10 +258,13 @@ function renderLicenses(licenses) {
     return;
   }
 
+  const bindingMap = groupBindingsByLicenseId(bindings);
+
   for (const item of licenses) {
     const node = document.createElement("div");
     const statusLabel = licenseStatusLabels[item.status] || item.status;
     const displayCode = item.code || maskHash(item.codeHash);
+    const licenseBindings = bindingMap.get(item.id) || [];
     node.className = "record-item";
     node.innerHTML = `
       <div class="record-header">
@@ -230,7 +273,11 @@ function renderLicenses(licenses) {
       </div>
       <div class="record-meta">
         <span><strong>发放对象</strong> ${escapeHtml(item.issuedTo || "未填写")}</span>
-        <span><strong>设备数</strong> ${item.maxDevices} 台 · <strong>到期</strong> ${formatDate(item.expiresAt)}</span>
+        <span><strong>设备数</strong> ${licenseBindings.length}/${item.maxDevices} 台 · <strong>到期</strong> ${formatDate(item.expiresAt)}</span>
+      </div>
+      <div class="binding-section">
+        <div class="binding-section-title">绑定设备</div>
+        ${renderLicenseBindings(licenseBindings)}
       </div>
       <div class="item-actions">
         <button class="secondary" data-copy-license="${escapeHtml(item.code || "")}" ${item.code ? "" : "disabled"}>复制</button>
@@ -270,31 +317,6 @@ function renderLicenses(licenses) {
       }
     });
   });
-}
-
-function renderBindings(bindings) {
-  const list = $("#bindingsList");
-  list.innerHTML = "";
-  if (!bindings.length) {
-    list.innerHTML = '<div class="empty">暂无绑定记录。</div>';
-    return;
-  }
-
-  for (const item of bindings) {
-    const node = document.createElement("div");
-    node.className = "record-item";
-    node.innerHTML = `
-      <div class="record-header">
-        <strong class="record-title">${escapeHtml(item.fingerprint)}</strong>
-        <span class="badge ${escapeHtml(item.status)}">${escapeHtml(item.status)}</span>
-      </div>
-      <div class="record-meta">
-        <span><strong>机器码</strong> ${escapeHtml(item.machine_code || "-")}</span>
-        <span><strong>绑定时间</strong> ${formatDate(item.bound_at)}</span>
-      </div>
-    `;
-    list.appendChild(node);
-  }
 }
 
 async function createLicense() {

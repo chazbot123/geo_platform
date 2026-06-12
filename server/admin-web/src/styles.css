@@ -418,6 +418,45 @@ h3 {
   margin-top: 6px;
 }
 
+.binding-section {
+  border-top: 1px solid rgba(60, 79, 93, 0.6);
+  margin-top: 4px;
+  padding-top: 10px;
+}
+
+.binding-section-title {
+  color: var(--muted-strong);
+  font-size: 12px;
+  font-weight: 800;
+  margin-bottom: 8px;
+}
+
+.binding-list {
+  display: grid;
+  gap: 8px;
+}
+
+.binding-item {
+  border: 1px solid rgba(60, 79, 93, 0.7);
+  border-radius: 8px;
+  background: rgba(13, 20, 26, 0.72);
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+.binding-item-header {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.binding-empty {
+  min-height: 56px;
+  padding: 10px 12px;
+}
+
 .output {
   align-items: center;
   min-height: 54px;

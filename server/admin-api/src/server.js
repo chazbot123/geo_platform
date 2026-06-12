@@ -687,7 +687,7 @@ app.patch("/api/admin/license-codes/:id", adminRateLimit, requireAdmin, async (r
 app.get("/api/admin/device-license-bindings", adminRateLimit, requireAdmin, async (_request, response) => {
   const result = await pool.query(
     `
-      SELECT b.*, d.fingerprint, l.code
+      SELECT b.*, d.fingerprint, d.device_label, l.code
       FROM device_license_bindings b
       JOIN devices d ON d.id = b.device_id
       JOIN license_codes l ON l.id = b.license_code_id

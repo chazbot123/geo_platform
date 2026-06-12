@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, FileText, ImageIcon, Loader2, MapPinned, Save, UploadCloud } from "lucide-react";
+import { CheckCircle2, FileText, ImageIcon, Loader2, MapPinned, Save, Trash2, UploadCloud } from "lucide-react";
 import { dispatchWorkflowStatusRefresh } from "@/components/layout/app-shell";
 import { chinaRegions } from "@/lib/regions/china-admin";
 import { requireLicensedAction } from "@/lib/license/guard";
@@ -142,7 +142,15 @@ function parseRegion(region: string): RegionSelection {
   return emptyRegionSelection;
 }
 
-function AssetList({ assets, emptyText }: { assets: EnterpriseAsset[]; emptyText: string }) {
+function AssetList({
+  assets,
+  emptyText,
+  onRemove,
+}: {
+  assets: EnterpriseAsset[];
+  emptyText: string;
+  onRemove: (assetId: string) => void;
+}) {
   if (!assets.length) {
     return <p className="text-sm text-muted">{emptyText}</p>;
   }
@@ -152,7 +160,18 @@ function AssetList({ assets, emptyText }: { assets: EnterpriseAsset[]; emptyText
       {assets.map((asset) => (
         <li key={asset.id} className="flex items-center justify-between gap-3 rounded-md border border-line bg-surface-soft px-3 py-2 text-sm">
           <span className="min-w-0 truncate text-ink">{asset.name}</span>
-          <span className="shrink-0 text-xs text-muted">{Math.max(1, Math.round(asset.size / 1024))} KB</span>
+          <div className="flex items-center gap-2">
+            <span className="shrink-0 text-xs text-muted">{Math.max(1, Math.round(asset.size / 1024))} KB</span>
+            <button
+              type="button"
+              onClick={() => onRemove(asset.id)}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-line bg-surface text-muted transition hover:border-red-300 hover:text-red-500"
+              aria-label={`删除${asset.name}`}
+              title="删除"
+            >
+              <Trash2 className="h-4 w-4" />
+            </button>
+          </div>
         </li>
       ))}
     </ul>
@@ -274,6 +293,17 @@ export function EnterpriseProfileWorkbench() {
   function updateRegion(nextValue: string) {
     setRegionSelection(parseRegion(nextValue));
     updateField("region", nextValue);
+  }
+
+  function removeAsset(kind: EnterpriseAsset["kind"], assetId: string) {
+    if (kind === "image") {
+      setImageFiles((current) => current.filter((asset) => asset.id !== assetId));
+    } else {
+      setMaterialFiles((current) => current.filter((asset) => asset.id !== assetId));
+    }
+    setDirty(true);
+    setStatusMessage("");
+    setErrorMessage("");
   }
 
   async function parseFiles(files: FileList | null) {
@@ -431,14 +461,14 @@ export function EnterpriseProfileWorkbench() {
                     <FileText className="h-4 w-4 text-accent" />
                     企业文档
                   </div>
-                  <AssetList assets={materialFiles} emptyText="暂无文档资料" />
+                  <AssetList assets={materialFiles} emptyText="暂无文档资料" onRemove={(assetId) => removeAsset("material", assetId)} />
                 </div>
                 <div>
                   <div className="mb-2 flex items-center gap-2 text-sm font-medium text-ink">
                     <ImageIcon className="h-4 w-4 text-accent" />
                     参考图片
                   </div>
-                  <AssetList assets={imageFiles} emptyText="暂无参考图片" />
+                  <AssetList assets={imageFiles} emptyText="暂无参考图片" onRemove={(assetId) => removeAsset("image", assetId)} />
                 </div>
               </div>
             </div>
