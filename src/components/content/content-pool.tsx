@@ -76,7 +76,34 @@ function progressPercent(record: ContentPoolRecord | null) {
   return Math.round((finished / record.items.length) * 100);
 }
 
-function ArticleRow({ item, taskId }: { item: ContentPoolItem; taskId: string }) {
+function latestStageAt(item: ContentPoolItem) {
+  return item.stageLog?.[item.stageLog.length - 1]?.at;
+}
+
+function resolveStatusTime(item: ContentPoolItem, task?: TaskRecord | null) {
+  const stageAt = latestStageAt(item);
+  if ((item.status === "pending_generation" || item.status === "generating") && task?.generationStartedAt) {
+    return {
+      label: item.status === "generating" ? "本轮生成" : "本轮待生成",
+      value: stageAt || task.generationStartedAt,
+    };
+  }
+
+  if (stageAt) {
+    return {
+      label: "最近状态",
+      value: stageAt,
+    };
+  }
+
+  return {
+    label: "上次改动",
+    value: item.updatedAt,
+  };
+}
+
+function ArticleRow({ item, taskId, task }: { item: ContentPoolItem; taskId: string; task?: TaskRecord | null }) {
+  const statusTime = resolveStatusTime(item, task);
   return (
     <Link
       className="grid gap-3 border-b border-line px-4 py-3 text-sm transition hover:bg-panelSoft lg:grid-cols-[56px_minmax(220px,1.4fr)_120px_120px_150px_minmax(160px,1fr)_120px_130px]"
@@ -96,7 +123,10 @@ function ArticleRow({ item, taskId }: { item: ContentPoolItem; taskId: string })
           {statusLabels[item.status]}
         </span>
       </span>
-      <span className="text-muted">{formatDateTime(item.updatedAt)}</span>
+      <span className="min-w-0">
+        <span className="block text-muted">{formatDateTime(statusTime.value)}</span>
+        <span className="mt-1 block truncate text-xs text-muted">{statusTime.label}</span>
+      </span>
     </Link>
   );
 }
@@ -344,10 +374,10 @@ export function ContentPoolWorkbench() {
           <span>账号</span>
           <span>关键词</span>
           <span>状态</span>
-          <span>更新时间</span>
+          <span>最近状态</span>
         </div>
         {filteredItems.length ? (
-          filteredItems.map((item) => <ArticleRow key={item.id} item={item} taskId={visibleRecord?.taskId ?? item.taskId} />)
+          filteredItems.map((item) => <ArticleRow key={item.id} item={item} taskId={visibleRecord?.taskId ?? item.taskId} task={task} />)
         ) : (
           <div className="px-4 py-8 text-center text-sm text-muted">当前筛选下没有文章。</div>
         )}

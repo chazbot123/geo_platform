@@ -11,8 +11,10 @@ import {
   listPublishingDrafts,
   listPublishingJobs,
   listTasks,
+  saveAccountPublishingDraft,
   savePlatformAccount,
   savePublishingDraft,
+  savePublishingJob,
   saveTask,
 } from "@/lib/storage/data-store";
 import { readJsonFile, writeJsonFile } from "@/lib/storage/json-store";
@@ -29,6 +31,8 @@ import type {
 
 const ACCOUNT_DETECTION_CACHE_TTL_MS = 30 * 60 * 1000;
 const ACCOUNT_DETECTION_CACHE_FILE = path.join(dataDirectories.config, "publish-account-detection-cache.json");
+const DEBUG_SERVER_URL = "http://127.0.0.1:7778/event";
+const DEBUG_SESSION_ID = "account-info-fetch";
 
 interface CachedAccountDetection {
   items: PlatformAccountDetectionItem[];
@@ -37,6 +41,31 @@ interface CachedAccountDetection {
 
 function now() {
   return new Date().toISOString();
+}
+
+function emitDebug(hypothesisId: string, location: string, msg: string, data: Record<string, unknown>) {
+  // #region debug-point shared:emit
+  fetch(DEBUG_SERVER_URL, {
+    method: "POST",
+    body: JSON.stringify({
+      sessionId: DEBUG_SESSION_ID,
+      runId: "pre-fix",
+      hypothesisId,
+      location,
+      msg: `[DEBUG] ${msg}`,
+      data,
+      ts: Date.now(),
+    }),
+  }).catch(() => {});
+  // #endregion
+}
+
+function normalizeIdentity(value?: string) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function uniqueValues(values: string[]) {
+  return Array.from(new Set(values));
 }
 
 function buildSessionPartition(accountId: string) {
@@ -53,6 +82,299 @@ function buildAuthPayloadPreview(authPayload?: string) {
     .slice(0, 3)
     .join("; ");
   return preview.length > 120 ? `${preview.slice(0, 117)}...` : preview;
+}
+
+function collectAccountIdentityKeys(account: Pick<PlatformAccountRecord, "platformAccountId" | "accountName">) {
+  const keys: string[] = [];
+  const platformAccountId = normalizeIdentity(account.platformAccountId);
+  const accountName = normalizeIdentity(account.accountName);
+  if (platformAccountId) {
+    keys.push(`platform:${platformAccountId}`);
+  }
+  if (accountName) {
+    keys.push(`name:${accountName}`);
+  }
+  return keys;
+}
+
+function buildLoginResultPatch(
+  current: PlatformAccountRecord,
+  result: {
+    loginStatus: PlatformAccountLoginStatus;
+    status?: PlatformAccountStatus;
+    lastError?: string;
+    accountName?: string;
+    displayName?: string;
+    platformAccountId?: string;
+    avatarUrl?: string;
+  },
+): Partial<PlatformAccountRecord> {
+  const patch: Partial<PlatformAccountRecord> = {
+    loginStatus: result.loginStatus,
+    status: result.status ?? (result.loginStatus === "authenticated" ? "active" : "saved"),
+    riskState: result.loginStatus === "authenticated" ? "active" : "needs_login",
+    riskReason: result.loginStatus === "authenticated" ? undefined : result.lastError,
+    cooldownUntil: undefined,
+    lastError: result.lastError,
+    lastLoginCompletedAt: now(),
+    lastValidatedAt: now(),
+    sessionPartition: current.sessionPartition,
+    loginUrl: current.loginUrl,
+    lastLoginStartedAt: current.lastLoginStartedAt,
+  };
+  if (result.accountName?.trim()) {
+    patch.accountName = result.accountName.trim();
+  }
+  if (typeof result.displayName === "string") {
+    patch.displayName = result.displayName.trim() || undefined;
+  }
+  if (typeof result.platformAccountId === "string") {
+    patch.platformAccountId = result.platformAccountId.trim() || undefined;
+  }
+  if (typeof result.avatarUrl === "string") {
+    patch.avatarUrl = result.avatarUrl.trim() || undefined;
+  }
+  return patch;
+}
+
+async function replaceAccountReferences(fromAccountId: string, toAccountId: string, accountName?: string) {
+  const [tasks, publishingDrafts, accountPublishingDrafts, publishingJobs] = await Promise.all([
+    listTasks(),
+    listPublishingDrafts(),
+    listAccountPublishingDrafts(),
+    listPublishingJobs(),
+  ]);
+
+  await Promise.all(
+    tasks.map(async (task) => {
+      if (!task.publishPlan) return;
+
+      let changed = false;
+      const enabledPlatforms = task.publishPlan.enabledPlatforms.map((platformPlan) => {
+        if (!platformPlan.accountIds.includes(fromAccountId)) {
+          return platformPlan;
+        }
+
+        changed = true;
+        const accountIds = uniqueValues(platformPlan.accountIds.map((id) => (id === fromAccountId ? toAccountId : id)));
+        const enabled = platformPlan.enabled && accountIds.length > 0;
+        const accountCount = enabled ? accountIds.length : 0;
+        return {
+          ...platformPlan,
+          enabled,
+          accountIds: enabled ? accountIds : [],
+          accountCount,
+          articleCount: accountCount * task.publishPlan!.days * task.publishPlan!.articlesPerAccountPerDay,
+        };
+      });
+
+      if (!changed) return;
+
+      const totalAccountCount = enabledPlatforms.reduce((total, platformPlan) => total + (platformPlan.enabled ? platformPlan.accountCount : 0), 0);
+      const totalArticleCount = enabledPlatforms.reduce((total, platformPlan) => total + platformPlan.articleCount, 0);
+      await saveTask({
+        ...task,
+        publishPlan: {
+          ...task.publishPlan,
+          enabledPlatforms,
+          totalAccountCount,
+          totalArticleCount,
+          updatedAt: now(),
+        },
+        updatedAt: now(),
+      });
+    }),
+  );
+
+  await Promise.all(
+    publishingDrafts.map(async (draft) => {
+      const nextAccountId = draft.accountId === fromAccountId ? toAccountId : draft.accountId;
+      const nextAccountIds = draft.accountIds?.includes(fromAccountId)
+        ? uniqueValues(draft.accountIds.map((id) => (id === fromAccountId ? toAccountId : id)))
+        : draft.accountIds;
+      if (nextAccountId === draft.accountId && nextAccountIds === draft.accountIds) {
+        return;
+      }
+      await savePublishingDraft({
+        ...draft,
+        accountId: nextAccountId,
+        accountIds: nextAccountIds,
+        updatedAt: now(),
+      });
+    }),
+  );
+
+  await Promise.all(
+    accountPublishingDrafts.map(async (draft) => {
+      if (draft.accountId !== fromAccountId) return;
+      await saveAccountPublishingDraft({
+        ...draft,
+        accountId: toAccountId,
+        accountName: accountName ?? draft.accountName,
+        updatedAt: now(),
+      });
+    }),
+  );
+
+  await Promise.all(
+    publishingJobs.map(async (job) => {
+      if (job.accountId !== fromAccountId) return;
+      await savePublishingJob({
+        ...job,
+        accountId: toAccountId,
+        accountName: accountName ?? job.accountName,
+        updatedAt: now(),
+      });
+    }),
+  );
+}
+
+function selectCanonicalAccount(accounts: PlatformAccountRecord[]) {
+  return [...accounts].sort((left, right) => {
+    const leftScore =
+      (left.loginStatus === "authenticated" ? 100 : 0) +
+      ((left.status === "valid" || left.status === "active") ? 20 : 0) +
+      (left.sessionPartition ? 10 : 0) +
+      (left.platformAccountId ? 5 : 0) +
+      (left.avatarUrl ? 1 : 0);
+    const rightScore =
+      (right.loginStatus === "authenticated" ? 100 : 0) +
+      ((right.status === "valid" || right.status === "active") ? 20 : 0) +
+      (right.sessionPartition ? 10 : 0) +
+      (right.platformAccountId ? 5 : 0) +
+      (right.avatarUrl ? 1 : 0);
+
+    if (rightScore !== leftScore) {
+      return rightScore - leftScore;
+    }
+
+    const rightLoginAt = new Date(right.lastLoginCompletedAt ?? right.updatedAt).getTime();
+    const leftLoginAt = new Date(left.lastLoginCompletedAt ?? left.updatedAt).getTime();
+    if (rightLoginAt !== leftLoginAt) {
+      return rightLoginAt - leftLoginAt;
+    }
+
+    const createdDiff = new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime();
+    return createdDiff || left.id.localeCompare(right.id);
+  })[0];
+}
+
+function buildCanonicalMergePatch(canonical: PlatformAccountRecord, related: PlatformAccountRecord[]) {
+  const richest = selectCanonicalAccount(related);
+  return {
+    accountName: richest.accountName || canonical.accountName,
+    displayName: richest.displayName || canonical.displayName,
+    platformAccountId: richest.platformAccountId || canonical.platformAccountId,
+    avatarUrl: richest.avatarUrl || canonical.avatarUrl,
+    loginStatus: richest.loginStatus,
+    status: richest.status,
+    riskState: richest.riskState,
+    riskReason: richest.riskReason,
+    cooldownUntil: richest.cooldownUntil,
+    lastError: richest.lastError,
+    lastLoginStartedAt: richest.lastLoginStartedAt || canonical.lastLoginStartedAt,
+    lastLoginCompletedAt: richest.lastLoginCompletedAt || canonical.lastLoginCompletedAt,
+    lastValidatedAt: richest.lastValidatedAt || canonical.lastValidatedAt,
+    sessionPartition: richest.sessionPartition || canonical.sessionPartition,
+    loginUrl: richest.loginUrl || canonical.loginUrl,
+    authPayload: richest.authPayload || canonical.authPayload,
+    authPayloadUpdatedAt: richest.authPayloadUpdatedAt || canonical.authPayloadUpdatedAt,
+    loginSessionToken: richest.loginSessionToken || canonical.loginSessionToken,
+    publishSessionToken: richest.publishSessionToken || canonical.publishSessionToken,
+    browserProfileDir: richest.browserProfileDir || canonical.browserProfileDir,
+    remark: canonical.remark || richest.remark,
+  } satisfies Partial<PlatformAccountRecord>;
+}
+
+function groupDuplicateAccounts(accounts: PlatformAccountRecord[]) {
+  const visited = new Set<string>();
+  const groups: PlatformAccountRecord[][] = [];
+
+  for (const account of accounts) {
+    if (visited.has(account.id)) continue;
+    const seedKeys = collectAccountIdentityKeys(account);
+    if (!seedKeys.length) continue;
+
+    const queue = [account];
+    const group = new Map<string, PlatformAccountRecord>();
+    const knownKeys = new Set(seedKeys);
+
+    while (queue.length) {
+      const current = queue.shift();
+      if (!current || group.has(current.id)) continue;
+      group.set(current.id, current);
+      const currentKeys = collectAccountIdentityKeys(current);
+      for (const key of currentKeys) {
+        knownKeys.add(key);
+      }
+
+      for (const candidate of accounts) {
+        if (candidate.platform !== account.platform || group.has(candidate.id)) continue;
+        const candidateKeys = collectAccountIdentityKeys(candidate);
+        if (!candidateKeys.length) continue;
+        if (candidateKeys.some((key) => knownKeys.has(key))) {
+          queue.push(candidate);
+        }
+      }
+    }
+
+    if (group.size > 1) {
+      const groupedAccounts = Array.from(group.values());
+      groupedAccounts.forEach((item) => visited.add(item.id));
+      groups.push(groupedAccounts);
+    } else {
+      visited.add(account.id);
+    }
+  }
+
+  return groups;
+}
+
+async function mergeDuplicateAccounts(
+  current: PlatformAccountRecord,
+  patch: Partial<PlatformAccountRecord>,
+) {
+  const identityKeys = collectAccountIdentityKeys({
+    platformAccountId: typeof patch.platformAccountId === "string" ? patch.platformAccountId : current.platformAccountId,
+    accountName: typeof patch.accountName === "string" ? patch.accountName : current.accountName,
+  });
+  if (!identityKeys.length) {
+    return updatePlatformAccountRecord(current.id, patch);
+  }
+
+  const allAccounts = await getAllPlatformAccounts();
+  const duplicates = allAccounts.filter((account) => {
+    if (account.id === current.id || account.platform !== current.platform) {
+      return false;
+    }
+    const accountKeys = collectAccountIdentityKeys(account);
+    return accountKeys.some((key) => identityKeys.includes(key));
+  });
+
+  if (!duplicates.length) {
+    return updatePlatformAccountRecord(current.id, patch);
+  }
+
+  const canonical = [current, ...duplicates]
+    .sort((left, right) => {
+      const createdDiff = new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime();
+      return createdDiff || left.id.localeCompare(right.id);
+    })[0];
+
+  const next = await updatePlatformAccountRecord(canonical.id, {
+    ...patch,
+    sessionPartition: current.sessionPartition || canonical.sessionPartition,
+    loginUrl: current.loginUrl || canonical.loginUrl,
+    lastLoginStartedAt: current.lastLoginStartedAt || canonical.lastLoginStartedAt,
+  });
+
+  const duplicatesToRemove = [current, ...duplicates].filter((account) => account.id !== canonical.id);
+  for (const duplicate of duplicatesToRemove) {
+    await replaceAccountReferences(duplicate.id, canonical.id, next.displayName ?? next.accountName);
+    await deletePlatformAccount(duplicate.id);
+  }
+
+  return next;
 }
 
 export async function getAllPlatformAccounts() {
@@ -354,29 +676,70 @@ export async function markPlatformAccountLoginResult(
     avatarUrl?: string;
   },
 ) {
-  const patch: Partial<PlatformAccountRecord> = {
+  const current = await getPlatformAccount(accountId);
+  if (!current) {
+    throw new Error("账号不存在");
+  }
+
+  // #region debug-point B:service-input
+  emitDebug("B", "accounts-service.ts:markPlatformAccountLoginResult:input", "服务端收到登录结果 patch", {
+    accountId,
+    platform: current.platform,
+    currentAccountName: current.accountName,
+    currentDisplayName: current.displayName ?? null,
+    currentPlatformAccountId: current.platformAccountId ?? null,
+    nextAccountName: result.accountName ?? null,
+    nextDisplayName: result.displayName ?? null,
+    nextPlatformAccountId: result.platformAccountId ?? null,
+    nextAvatarUrl: result.avatarUrl ?? null,
     loginStatus: result.loginStatus,
-    status: result.status ?? (result.loginStatus === "authenticated" ? "active" : "saved"),
-    riskState: result.loginStatus === "authenticated" ? "active" : "needs_login",
-    riskReason: result.loginStatus === "authenticated" ? undefined : result.lastError,
-    cooldownUntil: result.loginStatus === "authenticated" ? undefined : undefined,
-    lastError: result.lastError,
-    lastLoginCompletedAt: now(),
-    lastValidatedAt: now(),
+    status: result.status ?? null,
+  });
+  // #endregion
+  const patch = buildLoginResultPatch(current, result);
+  // #region debug-point C:service-patch
+  emitDebug("C", "accounts-service.ts:markPlatformAccountLoginResult:patch", "服务端构造最终登录 patch", {
+    accountId,
+    platform: current.platform,
+    patchAccountName: patch.accountName ?? null,
+    patchDisplayName: patch.displayName ?? null,
+    patchPlatformAccountId: patch.platformAccountId ?? null,
+    patchAvatarUrl: patch.avatarUrl ?? null,
+    patchLoginStatus: patch.loginStatus ?? null,
+    patchStatus: patch.status ?? null,
+  });
+  // #endregion
+  return mergeDuplicateAccounts(current, patch);
+}
+
+export async function deduplicateHistoricalPlatformAccounts(platform?: SocialPlatform) {
+  const allAccounts = await getAllPlatformAccounts();
+  const scopedAccounts = platform ? allAccounts.filter((account) => account.platform === platform) : allAccounts;
+  const duplicateGroups = groupDuplicateAccounts(scopedAccounts);
+
+  let mergedGroups = 0;
+  let removedAccounts = 0;
+
+  for (const group of duplicateGroups) {
+    const canonical = selectCanonicalAccount(group);
+    const duplicates = group.filter((account) => account.id !== canonical.id);
+    if (!duplicates.length) continue;
+
+    const next = await updatePlatformAccountRecord(canonical.id, buildCanonicalMergePatch(canonical, group));
+    for (const duplicate of duplicates) {
+      await replaceAccountReferences(duplicate.id, canonical.id, next.displayName ?? next.accountName);
+      await deletePlatformAccount(duplicate.id);
+    }
+
+    mergedGroups += 1;
+    removedAccounts += duplicates.length;
+  }
+
+  return {
+    mergedGroups,
+    removedAccounts,
+    remainingAccounts: (await getAllPlatformAccounts()).filter((account) => (!platform || account.platform === platform)).length,
   };
-  if (result.accountName?.trim()) {
-    patch.accountName = result.accountName.trim();
-  }
-  if (typeof result.displayName === "string") {
-    patch.displayName = result.displayName.trim() || undefined;
-  }
-  if (typeof result.platformAccountId === "string") {
-    patch.platformAccountId = result.platformAccountId.trim() || undefined;
-  }
-  if (typeof result.avatarUrl === "string") {
-    patch.avatarUrl = result.avatarUrl.trim() || undefined;
-  }
-  return updatePlatformAccountRecord(accountId, patch);
 }
 
 export function getPlatformAccountSessionPartition(account: Pick<PlatformAccountRecord, "id" | "sessionPartition">) {

@@ -1,12 +1,14 @@
 import os from "node:os";
 import path from "node:path";
+import * as nodeFs from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { readJsonFile, writeJsonFile } from "@/lib/storage/json-store";
 
 let tempDir: string | undefined;
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   if (!tempDir) {
     return;
   }
@@ -45,5 +47,27 @@ describe("json-store", () => {
 
     const raw = await readFile(filePath, "utf8");
     expect(JSON.parse(raw)).toEqual({ ok: true, count: 2 });
+  });
+
+  it("retries temp file rename when the destination file is transiently locked", async () => {
+    const filePath = await makeTempFile("rename-retry.json");
+    const originalRename = nodeFs.promises.rename.bind(nodeFs.promises);
+    let attempts = 0;
+
+    vi.spyOn(nodeFs.promises, "rename").mockImplementation(async (from, to) => {
+      attempts += 1;
+      if (attempts === 1) {
+        const error = new Error("locked") as NodeJS.ErrnoException;
+        error.code = "EPERM";
+        throw error;
+      }
+      return originalRename(from, to);
+    });
+
+    await writeJsonFile(filePath, { ok: true, count: 3 });
+
+    const raw = await readFile(filePath, "utf8");
+    expect(JSON.parse(raw)).toEqual({ ok: true, count: 3 });
+    expect(attempts).toBe(2);
   });
 });

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ExternalLink, FileImage, FileUp, LoaderCircle, RefreshCcw, Save, Trash2 } from "lucide-react";
 import { auditPlatformAccountSession } from "@/lib/publish/account-session-validator";
+import { formatAccountDisplayLabel } from "@/lib/publish/account-label";
 import { getPlatformPublishProgressWindow } from "@/lib/publish/electron-login-client";
 import { toDisplayImageItems } from "@/lib/publish/image-display";
 import { getPlatformPublisher } from "@/lib/publish/platform-publishers";
@@ -1264,7 +1265,7 @@ export function PublishWorkbench({
                                     </svg>
                                   </div>
                                 </div>
-                                <span className="text-sm font-medium text-ink">{account.displayName ?? account.accountName}</span>
+                                <span className="text-sm font-medium text-ink">{formatAccountDisplayLabel(account, account.id)}</span>
                               </label>
                             ))
                           ) : (
@@ -1287,7 +1288,7 @@ export function PublishWorkbench({
                         {authenticatedAccounts.length === 1 && selectedAccounts.length === 1 ? (
                           <p className="flex items-center gap-1.5 text-xs font-medium text-emerald-400">
                             <span className="h-1.5 w-1.5 rounded-full bg-emerald-400"></span>
-                            已自动绑定唯一账号：{selectedAccounts[0].displayName ?? selectedAccounts[0].accountName}
+                            已自动绑定唯一账号：{formatAccountDisplayLabel(selectedAccounts[0], selectedAccounts[0].id)}
                           </p>
                         ) : null}
                         {authenticatedAccounts.length > 1 && edit.accountIds.length === 0 ? (

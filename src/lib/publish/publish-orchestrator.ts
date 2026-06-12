@@ -14,6 +14,7 @@ import {
   getDraftImages,
   getDraftLocalImagePaths,
 } from "@/lib/publish/draft-builders";
+import { formatAccountDisplayLabel, resolveAccountIdentifier } from "@/lib/publish/account-label";
 import type {
   AccountPublishingDraft,
   PlatformAccountRecord,
@@ -32,7 +33,7 @@ function buildAccountPublishingDraft(
   searchProvider: SearchProvider,
 ): AccountPublishingDraft {
   const descriptor = getPlatformDescriptor(account.platform);
-  const title = buildAccountDraftTitle(bundle, account.platform, account.displayName ?? account.accountName);
+  const title = buildAccountDraftTitle(bundle, account.platform, formatAccountDisplayLabel(account, account.id));
   const body = buildDraftBody(bundle, account.platform);
   const imageUrls = getDraftImages(bundle);
   const localImagePaths = getDraftLocalImagePaths(bundle);
@@ -43,7 +44,7 @@ function buildAccountPublishingDraft(
     taskId: bundle.task.id,
     platform: account.platform,
     accountId: account.id,
-    accountName: account.displayName ?? account.accountName,
+    accountName: resolveAccountIdentifier(account, account.id),
     searchProvider,
     sourceContentTaskId: bundle.content?.taskId,
     sourceTheme: theme,

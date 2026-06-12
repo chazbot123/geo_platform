@@ -12,6 +12,7 @@ import {
 } from "@/lib/content/prompt-builder";
 import {
   callConfiguredTextModel,
+  OpenAICompatibleHttpError,
   parseJsonFromModelText,
   type OpenAICompatibleMessage,
 } from "@/lib/integrations/openai-compatible";
@@ -186,6 +187,9 @@ async function callArticleStage(input: {
       return sanitizePayload(payload, fallback, input.context.keyword);
     } catch (error) {
       lastError = error;
+      if (error instanceof OpenAICompatibleHttpError || (error instanceof Error && error.message === "REQUEST_TIMEOUT")) {
+        break;
+      }
     }
   }
 

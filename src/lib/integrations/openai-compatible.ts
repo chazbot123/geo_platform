@@ -134,6 +134,8 @@ interface ProbeCacheEntry {
 }
 
 const probeCache = new Map<string, ProbeCacheEntry>();
+const RETRYABLE_HTTP_STATUS = new Set([502, 503]);
+const OPENAI_COMPATIBLE_RETRY_DELAYS_MS = [500, 1500];
 
 export function normalizeOpenAICompatibleProviderName(provider: string) {
   const normalized = provider.trim().toLowerCase();
@@ -515,6 +517,20 @@ function parseResponsePayload(endpoint: string, rawBody: string) {
   }
 }
 
+function isRetryableOpenAICompatibleFailure(error: unknown) {
+  if (error instanceof OpenAICompatibleHttpError) {
+    return RETRYABLE_HTTP_STATUS.has(error.status);
+  }
+
+  return error instanceof Error && error.message === "REQUEST_TIMEOUT";
+}
+
+function sleep(ms: number) {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 export function extractJsonString(rawText: string) {
   const fencedMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fencedMatch?.[1]) {
@@ -549,7 +565,7 @@ export function parseJsonFromModelText<T>(rawText: string): T | null {
   }
 }
 
-async function performTextRequest(
+async function performSingleTextRequest(
   endpoint: string,
   headers: Record<string, string>,
   config: ModelApiConfig,
@@ -594,6 +610,31 @@ async function performTextRequest(
   } finally {
     clearTimeout(timeoutHandle);
   }
+}
+
+async function performTextRequest(
+  endpoint: string,
+  headers: Record<string, string>,
+  config: ModelApiConfig,
+  messages: OpenAICompatibleMessage[],
+) {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt <= OPENAI_COMPATIBLE_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      return await performSingleTextRequest(endpoint, headers, config, messages);
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableOpenAICompatibleFailure(error) || attempt >= OPENAI_COMPATIBLE_RETRY_DELAYS_MS.length) {
+        break;
+      }
+
+      // Upstream overloads and transient timeouts often recover on a short retry.
+      await sleep(OPENAI_COMPATIBLE_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("OPENAI_COMPATIBLE_REQUEST_FAILED");
 }
 
 export async function callOpenAICompatibleTextModel(

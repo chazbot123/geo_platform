@@ -1,5 +1,6 @@
 const DEFAULT_ADMIN_API_HOST = "127.0.0.1";
 const DEFAULT_ADMIN_API_PORT = "8080";
+const DEFAULT_PUBLIC_ADMIN_BASE_URL = "https://geoadmin.jizhidaoai.com";
 
 function readEnv(name: string) {
   return process.env[name]?.trim() || "";
@@ -23,9 +24,16 @@ export function resolveLicenseEndpoint(kind: "activate" | "status") {
     return configuredEndpoint;
   }
 
-  if (process.env.NODE_ENV === "production") {
-    return "";
+  const configuredBaseUrl = readEnv("GEO_ADMIN_API_BASE_URL");
+  if (configuredBaseUrl) {
+    return `${configuredBaseUrl.replace(/\/+$/, "")}/api/licenses/${kind}`;
   }
 
-  return `${localAdminApiBaseUrl()}/api/licenses/${kind}`;
+  const configuredHost = readEnv("GEO_ADMIN_API_HOST");
+  const configuredPort = readEnv("GEO_ADMIN_API_PORT");
+  if (configuredHost || configuredPort) {
+    return `${localAdminApiBaseUrl()}/api/licenses/${kind}`;
+  }
+
+  return `${DEFAULT_PUBLIC_ADMIN_BASE_URL}/api/licenses/${kind}`;
 }

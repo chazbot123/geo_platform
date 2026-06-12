@@ -175,7 +175,7 @@ html.dark [aria-disabled="true"] {
   }
 
   .status-pill {
-    @apply inline-flex items-center gap-1.5 rounded-full border border-stroke bg-panelSoft px-2.5 py-1 text-[11px] font-medium text-muted;
+    @apply inline-flex max-w-full shrink-0 self-start items-center gap-1.5 whitespace-nowrap rounded-full border border-stroke bg-panelSoft px-2.5 py-1 text-[11px] font-medium text-muted;
   }
 
   .page-section-title {

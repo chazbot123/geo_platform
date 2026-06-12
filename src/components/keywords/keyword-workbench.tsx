@@ -235,12 +235,12 @@ export function KeywordWorkbench({ taskId, task, initialTheme }: { taskId: strin
             </div>
 
             <div className="rounded-[32px] border border-stroke bg-panel/50 p-8 shadow-panel backdrop-blur-xl">
-              <div className="flex items-start justify-between gap-4">
-                <div>
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="min-w-0 flex-1">
                   <p className="font-mono text-xs font-semibold uppercase tracking-[0.2em] text-muted">10 条推荐提问句</p>
                   <p className="mt-2 text-sm leading-relaxed text-muted">从推荐提问句中最多选择 5 条，系统会按你的选择顺序合并成一个提问主题，供下一步生成权威报告文章。</p>
                 </div>
-                <div className="rounded-full border border-stroke bg-white/5 px-3 py-1 text-xs font-medium text-slate-300">
+                <div className="shrink-0 whitespace-nowrap rounded-full border border-stroke bg-white/5 px-3 py-1 text-xs font-medium text-slate-300">
                   共 {questionCandidates.length} 个
                 </div>
               </div>

@@ -2,6 +2,7 @@ import path from "node:path";
 import { promises as fs } from "node:fs";
 import { createRecordId, getPlatformAccount, getPublishingJob, listPublishingJobs } from "@/lib/storage/data-store";
 import { dataDirectories } from "@/lib/paths";
+import { resolveAccountIdentifier } from "@/lib/publish/account-label";
 import { updatePlatformAccountRecord } from "@/lib/publish/accounts-service";
 import { recordPublishingJobResult, updatePublishingJobRecord } from "@/lib/publish/jobs-service";
 import { runQueuedPublishingJob } from "@/lib/publish/server-publish-runner";
@@ -270,7 +271,7 @@ export async function pauseAccountForPublishingRisk(
     taskId: job?.taskId,
     platform: account.platform,
     accountId: account.id,
-    accountName: account.displayName ?? account.accountName,
+    accountName: resolveAccountIdentifier(account, account.id),
     reason,
     details: { state },
   });
@@ -291,7 +292,7 @@ export async function resumePlatformAccount(accountId: string) {
     eventType: "account_resumed",
     platform: account.platform,
     accountId: account.id,
-    accountName: account.displayName ?? account.accountName,
+    accountName: resolveAccountIdentifier(account, account.id),
     reason: "manual_resume",
   });
   return account;

@@ -245,8 +245,8 @@ export function CustomerKeywordWorkbench() {
           const candidates = data.keywordSet?.candidates[heat] ?? [];
           return (
             <div key={heat} className="section-card">
-              <div className="flex items-start justify-between gap-3">
-                <div>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
                   <h3 className="text-base font-semibold text-ink">{HEAT_LABELS[heat]}</h3>
                   <p className="mt-1 text-xs leading-5 text-muted">{HEAT_DESC[heat]}</p>
                 </div>

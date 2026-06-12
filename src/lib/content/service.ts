@@ -25,6 +25,7 @@ import type {
   SearchProvider,
   SocialPlatform,
   TaskBundle,
+  TaskRecord,
 } from "@/lib/types";
 
 const activeGenerationTasks = new Set<string>();
@@ -430,6 +431,47 @@ function hasPendingGenerationItems(record: ContentPoolRecord) {
 
 function hasRetryQueueItems(record: ContentPoolRecord) {
   return record.items.some((item) => item.status === "generating" || item.status === "failed" || item.riskLevel === "high");
+}
+
+function reconcileInterruptedGenerationRecord(record: ContentPoolRecord, task: TaskRecord) {
+  const timestamp = new Date().toISOString();
+  const baseReason = String(task.errorMessage || "").trim() || "本轮内容生成已中断，请重新生成。";
+
+  return summarizeContentPool({
+    ...record,
+    items: record.items.map((item) => {
+      if (item.status !== "pending_generation" && item.status !== "generating") {
+        return item;
+      }
+
+      const reason =
+        item.status === "generating"
+          ? baseReason
+          : `本条内容尚未开始生成，任务已中断。${baseReason}`;
+
+      return {
+        ...item,
+        riskLevel: "high",
+        status: "failed",
+        publishable: false,
+        displayStatus: "failed",
+        internalStage: "failed",
+        stageMessage: reason,
+        failedReason: reason,
+        pipeline: {
+          negativeCheck: { status: "blocked", hits: [reason], checkedAt: timestamp },
+          riskReview: { status: "blocked", level: "high", message: reason, reviewedAt: timestamp },
+          sampleDraft: { status: "blocked", passed: false, checkedAt: timestamp },
+          styleAdaptation: { status: "blocked", platform: item.publishPlatform, notes: [] },
+          dispersion: { status: "blocked", changedDimensions: [], message: "生成已中断，未产出降重结果。" },
+          imageGeneration: { status: "blocked", prompt: item.imagePrompt, images: item.imageList ?? [] },
+        },
+        stageLog: [...(item.stageLog ?? []), { stage: "failed", message: reason, at: timestamp }],
+        updatedAt: timestamp,
+      };
+    }),
+    updatedAt: timestamp,
+  });
 }
 
 function calculateGenerationProgress(record: ContentPoolRecord) {
@@ -1049,6 +1091,11 @@ async function resumeContentPoolQueuesIfNeeded(taskId: string, bundle?: TaskBund
   const resolvedBundle = bundle ?? (await getTaskBundle(taskId));
   const resolvedRecord = record ?? (await getContentPool(taskId));
   if (!resolvedBundle?.task.publishPlan || !resolvedRecord) {
+    return;
+  }
+
+  if (resolvedBundle.task.status === "failed" && hasPendingGenerationItems(resolvedRecord)) {
+    await saveContentPool(reconcileInterruptedGenerationRecord(resolvedRecord, resolvedBundle.task));
     return;
   }
 

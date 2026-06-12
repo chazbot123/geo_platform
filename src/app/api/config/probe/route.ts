@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getAppConfig } from "@/lib/config/service";
+import { buildJsonAuthHeaders } from "@/lib/integrations/auth";
 import {
   extractOpenAICompatibleErrorMessage,
   NewAPIProbeError,
@@ -17,6 +18,63 @@ interface ProbeOutcome {
   attempts?: NewAPIProbeAttempt[];
   isMockFallback?: boolean;
   provider?: string;
+}
+
+function resolveModelCatalogEndpoint(modelConfig: ModelApiConfig) {
+  return resolveConfiguredOpenAICompatibleEndpoint(modelConfig.provider, modelConfig.baseUrl).replace(
+    /\/chat\/completions$/i,
+    "/models",
+  );
+}
+
+async function confirmModelCatalogAvailability(modelConfig: ModelApiConfig): Promise<ProbeOutcome | null> {
+  const endpoint = resolveModelCatalogEndpoint(modelConfig);
+
+  try {
+    const response = await fetch(endpoint, {
+      method: "GET",
+      headers: buildJsonAuthHeaders(modelConfig.apiKey),
+    });
+    const rawBody = await response.text();
+
+    if (!response.ok) {
+      if (response.status === 404 || response.status === 405) {
+        return null;
+      }
+
+      const detail = extractOpenAICompatibleErrorMessage(rawBody);
+      return {
+        ok: false,
+        endpoint,
+        provider: modelConfig.provider,
+        error: detail ? `HTTP ${response.status}: ${detail}` : `HTTP ${response.status}`,
+      };
+    }
+
+    try {
+      const payload = JSON.parse(rawBody) as { data?: Array<{ id?: string }> };
+      const modelName = modelConfig.modelName.trim();
+      const modelExists = payload.data?.some((item) => item?.id?.trim() === modelName);
+      if (modelName && payload.data?.length && !modelExists) {
+        return {
+          ok: false,
+          endpoint,
+          provider: modelConfig.provider,
+          error: `模型 ${modelName} 不在当前服务的可用列表中`,
+        };
+      }
+    } catch {
+      // Some compatible gateways return non-standard model payloads. A 200 still proves the gateway is reachable.
+    }
+
+    return {
+      ok: true,
+      endpoint,
+      provider: modelConfig.provider,
+    };
+  } catch {
+    return null;
+  }
 }
 
 async function probeTextConfig(modelConfig: ModelApiConfig): Promise<ProbeOutcome> {
@@ -37,6 +95,12 @@ async function probeTextConfig(modelConfig: ModelApiConfig): Promise<ProbeOutcom
       };
     }
     if (error instanceof OpenAICompatibleHttpError) {
+      if (error.status === 503) {
+        const fallbackResult = await confirmModelCatalogAvailability(modelConfig);
+        if (fallbackResult) {
+          return fallbackResult;
+        }
+      }
       const endpoint = resolveConfiguredOpenAICompatibleEndpoint(modelConfig.provider, modelConfig.baseUrl);
       const detail = extractOpenAICompatibleErrorMessage(error.responseBody);
       return {
@@ -47,6 +111,10 @@ async function probeTextConfig(modelConfig: ModelApiConfig): Promise<ProbeOutcom
       };
     }
     if (error instanceof Error && error.message === "REQUEST_TIMEOUT") {
+      const fallbackResult = await confirmModelCatalogAvailability(modelConfig);
+      if (fallbackResult) {
+        return fallbackResult;
+      }
       const endpoint = resolveConfiguredOpenAICompatibleEndpoint(modelConfig.provider, modelConfig.baseUrl);
       return { ok: false, endpoint, provider: modelConfig.provider, error: "请求超时" };
     }

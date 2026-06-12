@@ -90,12 +90,66 @@ export async function readJsonFile<T>(filePath: string, fallback: T): Promise<T>
   }
 }
 
+const retryableRenameErrorCodes = new Set(["EPERM", "EACCES", "EBUSY"]);
+const renameRetryDelaysMs = [20, 50, 100, 150];
+
+function isRetryableRenameError(error: NodeJS.ErrnoException) {
+  return Boolean(error.code && retryableRenameErrorCodes.has(error.code));
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function safeUnlink(filePath: string) {
+  try {
+    await fs.unlink(filePath);
+  } catch (error) {
+    const nodeError = error as NodeJS.ErrnoException;
+    if (nodeError.code !== "ENOENT") {
+      throw error;
+    }
+  }
+}
+
+async function replaceFileFromTemp(tempFilePath: string, filePath: string, nextContent: string) {
+  let lastRenameError: NodeJS.ErrnoException | undefined;
+
+  for (let attempt = 0; attempt <= renameRetryDelaysMs.length; attempt += 1) {
+    try {
+      await fs.rename(tempFilePath, filePath);
+      return;
+    } catch (error) {
+      const nodeError = error as NodeJS.ErrnoException;
+      if (!isRetryableRenameError(nodeError) || attempt === renameRetryDelaysMs.length) {
+        lastRenameError = nodeError;
+        break;
+      }
+      await sleep(renameRetryDelaysMs[attempt]);
+    }
+  }
+
+  if (lastRenameError && isRetryableRenameError(lastRenameError)) {
+    await fs.writeFile(filePath, nextContent, "utf8");
+    await safeUnlink(tempFilePath);
+    return;
+  }
+
+  throw lastRenameError ?? new Error(`写入 JSON 文件失败：${filePath}`);
+}
+
 export async function writeJsonFile<T>(filePath: string, value: T) {
   await ensureDir(path.dirname(filePath));
   const nextContent = JSON.stringify(value, null, 2);
   const tempFilePath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   await fs.writeFile(tempFilePath, nextContent, "utf8");
-  await fs.rename(tempFilePath, filePath);
+  try {
+    await replaceFileFromTemp(tempFilePath, filePath, nextContent);
+  } finally {
+    await safeUnlink(tempFilePath);
+  }
 }
 
 export async function listJsonFiles<T>(dirPath: string): Promise<T[]> {

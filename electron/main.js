@@ -200,11 +200,21 @@ function getPlatformPublishProgress(input = {}) {
   return snapshot;
 }
 
+function resolvePreferredDataDir() {
+  const externalDataPath = String(process.env.GEO_DATA_DIR || "").trim();
+  if (externalDataPath) {
+    return externalDataPath;
+  }
+  if (isDev) {
+    return path.join(process.cwd(), "data");
+  }
+  return path.join(app.getPath("userData"), "data");
+}
+
 function setupPersistencePaths() {
   const userDataPath = app.getPath("userData");
   const sessionDataPath = path.join(userDataPath, "session-data");
-  const externalDataPath = String(process.env.GEO_DATA_DIR || "").trim();
-  const dataPath = externalDataPath || path.join(userDataPath, "data");
+  const dataPath = resolvePreferredDataDir();
   fs.mkdirSync(sessionDataPath, { recursive: true });
   fs.mkdirSync(dataPath, { recursive: true });
   app.setPath("sessionData", sessionDataPath);
@@ -218,9 +228,9 @@ function sleep(ms) {
 }
 
 function ensureDataDir() {
-  const userDataDir = path.join(app.getPath("userData"), "data");
-  fs.mkdirSync(userDataDir, { recursive: true });
-  process.env.GEO_DATA_DIR = userDataDir;
+  const dataDir = resolvePreferredDataDir();
+  fs.mkdirSync(dataDir, { recursive: true });
+  process.env.GEO_DATA_DIR = dataDir;
 }
 
 function hideWindowMenu(windowInstance) {
@@ -619,16 +629,62 @@ function buildPlatformAccountProfileProbe(platform) {
   switch (String(platform || "").trim()) {
     case "toutiao":
       return {
-        displayNameSelectors: [".user-name", ".header-user-name", ".user__name", ".header-right .name", ".header-user-info .name", ".avatar-name"],
-        avatarSelectors: [".header-avatar img", ".user-avatar img", ".avatar img", "img[src*='toutiaoimg.com']"],
-        accountIdSelectors: [".user-id", ".account-id", "[data-e2e='user-id']"],
+        displayNameSelectors: [
+          ".user-name",
+          ".header-user-name",
+          ".user__name",
+          ".header-right .name",
+          ".header-user-info .name",
+          ".avatar-name",
+          "[class*='user-name']",
+          "[class*='account-name']",
+          "[data-e2e='user-name']",
+        ],
+        avatarSelectors: [
+          ".header-avatar img",
+          ".user-avatar img",
+          ".avatar img",
+          "[class*='avatar'] img",
+          "[class*='user-avatar'] img",
+          "img[src*='toutiaoimg.com']",
+          "img[src*='byteimg.com']",
+        ],
+        accountIdSelectors: [".user-id", ".account-id", "[data-e2e='user-id']", "[class*='user-id']", "[class*='account-id']"],
         idPatterns: ["头条号[:：\\\\s]*([A-Za-z0-9_-]{4,})", "账号ID[:：\\\\s]*([A-Za-z0-9_-]{4,})", "ID[:：\\\\s]*([A-Za-z0-9_-]{4,})"],
       };
     case "douyin":
       return {
-        displayNameSelectors: [".semi-navigation-header .user-name", ".creator-header-user-name", ".account-info-name", ".creator-header .name", "[data-e2e='creator-name']"],
-        avatarSelectors: [".semi-navigation-header img", ".creator-header img", ".account-avatar img", "img[src*='douyinpic.com']"],
-        accountIdSelectors: [".account-id", "[data-e2e='account-id']", ".creator-header .user-id"],
+        displayNameSelectors: [
+          ".semi-navigation-header .user-name",
+          ".creator-header-user-name",
+          ".account-info-name",
+          ".creator-header .name",
+          "[data-e2e='creator-name']",
+          "[class*='creator-name']",
+          "[class*='nickname']",
+          "[class*='user-name']",
+          "[class*='account-name']",
+        ],
+        avatarSelectors: [
+          ".semi-navigation-header img",
+          ".creator-header img",
+          ".account-avatar img",
+          ".creator-avatar img",
+          ".semi-avatar img",
+          "[data-e2e='creator-avatar'] img",
+          "[class*='avatar'] img",
+          "[class*='account-avatar'] img",
+          "[class*='creator-avatar'] img",
+          "[class*='semi-avatar'] img",
+          "[class*='avatar']",
+          "[class*='creator-avatar']",
+          "[data-e2e='creator-avatar']",
+          "img[alt*='头像']",
+          "img[src*='douyinpic.com']",
+          "img[src*='byteimg.com']",
+          "img[src*='pstatp.com']",
+        ],
+        accountIdSelectors: [".account-id", "[data-e2e='account-id']", ".creator-header .user-id", "[class*='account-id']", "[class*='user-id']"],
         idPatterns: ["抖音号[:：\\\\s]*([A-Za-z0-9._-]{4,})", "账号ID[:：\\\\s]*([A-Za-z0-9._-]{4,})", "ID[:：\\\\s]*([A-Za-z0-9._-]{4,})"],
       };
     default:
@@ -646,31 +702,71 @@ async function extractPlatformAccountProfile(windowInstance, input = {}) {
   return windowInstance.webContents.executeJavaScript(
     `(() => {
       const probe = ${JSON.stringify(probe)};
-      const blockedNames = new Set(["主页", "创作", "文章", "视频", "微头条", "管理", "数据", "收益", "任务", "创作中心", "发布", "发布作品", "内容管理", "作品管理", "首页", "消息", "登录", "退出登录"]);
+      const platform = ${JSON.stringify(String(input.platform || "").trim())};
+      const blockedNames = new Set(["主页", "创作", "文章", "视频", "微头条", "管理", "数据", "收益", "任务", "创作中心", "发布", "发布作品", "内容管理", "作品管理", "首页", "消息", "登录", "退出登录", "去发布", "发作品", "发布内容", "高清发布", "立即发布", "定时发布", "发布设置", "活动管理"]);
+      const genericPlatformNames = new Set(["今日头条", "今日头条账号", "百家号", "百家号账号", "抖音", "抖音账号", "小红书", "小红书账号", "微信公众号", "微信公众号账号", "视频号", "视频号账号", "知乎", "知乎账号", "微博", "微博账号", "CSDN", "CSDN账号"]);
+      const blockedNamePattern = /发文规范|创作中心|内容管理|作品管理|发布作品|发布内容|创作服务平台|工作台|去发布|发作品|退出登录|活动管理|互动管理/i;
+      const invalidProfileValues = new Set(["true", "false", "null", "undefined", "nan", "[object object]"]);
+      const userTrailPattern = /user|account|profile|creator|author|member|owner|avatar|nick|display|uid|sec_uid|secuid|login/i;
+      const displayNameTrailPattern =
+        platform === "douyin"
+          ? /nickname|nick_name|screen_name|display_name|displayname|remark_name|nick/i
+          : /nickname|nick_name|screen_name|display_name|displayname|name|user_name|username|authorname/i;
+      const displayNameValuePattern =
+        platform === "douyin"
+          ? /nickname|nick_name|screen_name|display_name|displayname|remark_name|nick/i
+          : /nickname|nick_name|screen_name|display_name|displayname|name|user_name|username|authorname/i;
       const normalizeText = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+      const isMeaningfulName = (value) => {
+        const text = normalizeText(value);
+        const lower = text.toLowerCase();
+        return Boolean(text) && !blockedNames.has(text) && !genericPlatformNames.has(text) && !invalidProfileValues.has(lower) && !blockedNamePattern.test(text) && text.length >= 2 && text.length <= 40;
+      };
+      const isMeaningfulPlatformId = (value) => {
+        const text = normalizeText(value).replace(/^(账号ID|ID|抖音号|头条号)[:：\\s]*/i, "");
+        const lower = text.toLowerCase();
+        if (!text || invalidProfileValues.has(lower)) return false;
+        if (text.length < 4 || text.length > 80) return false;
+        if (/^(yes|no|on|off)$/i.test(text)) return false;
+        if (!/[a-z0-9._-]/i.test(text)) return false;
+        return true;
+      };
+      const toAbsoluteUrl = (value) => {
+        const text = normalizeText(value);
+        if (!text) return "";
+        try {
+          return new URL(text, window.location.href).href;
+        } catch (_) {
+          return text;
+        }
+      };
       const isVisible = (element) => {
         if (!element) return false;
         const style = window.getComputedStyle(element);
         const rect = element.getBoundingClientRect();
         return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
       };
-      const pickTextBySelectors = (selectors) => {
+      const pickTextBySelectors = (selectors, validator = isMeaningfulName) => {
         for (const selector of selectors || []) {
-          const node = document.querySelector(selector);
-          const text = normalizeText(node?.textContent);
-          if (text && isVisible(node) && !blockedNames.has(text) && text.length >= 2 && text.length <= 40) return text;
+          const nodes = Array.from(document.querySelectorAll(selector));
+          for (const node of nodes) {
+            const text = normalizeText(node?.textContent);
+            if (isVisible(node) && validator(text)) return text;
+          }
         }
         return "";
       };
       const pickAvatarBySelectors = (selectors) => {
         for (const selector of selectors || []) {
-          const node = document.querySelector(selector);
-          if (!node || !isVisible(node)) continue;
-          const src = normalizeText(node.getAttribute("src") || node.getAttribute("data-src") || "");
-          if (src && /^https?:\\/\\//i.test(src)) return src;
-          const backgroundImage = normalizeText(window.getComputedStyle(node).backgroundImage || "");
-          const matched = backgroundImage.match(/url\\(["']?(https?:[^"')]+)["']?\\)/i);
-          if (matched?.[1]) return matched[1];
+          const nodes = Array.from(document.querySelectorAll(selector));
+          for (const node of nodes) {
+            if (!node || !isVisible(node)) continue;
+            const src = toAbsoluteUrl(node.getAttribute("src") || node.getAttribute("data-src") || "");
+            if (src && /^https?:\\/\\//i.test(src)) return src;
+            const backgroundImage = normalizeText(window.getComputedStyle(node).backgroundImage || "");
+            const matched = backgroundImage.match(/url\\(["']?(https?:[^"')]+)["']?\\)/i);
+            if (matched?.[1]) return matched[1];
+          }
         }
         return "";
       };
@@ -709,36 +805,86 @@ async function extractPlatformAccountProfile(windowInstance, input = {}) {
           // Ignore storage access errors.
         }
       }
-      const pickStorageValue = (pattern, validator) => {
+      for (const script of Array.from(document.querySelectorAll("script")).slice(0, 20)) {
+        try {
+          const type = normalizeText(script.getAttribute("type") || "");
+          const id = normalizeText(script.getAttribute("id") || "");
+          if (!(type.includes("json") || /state|data|initial|rehydration/i.test(id))) continue;
+          const raw = String(script.textContent || "").trim();
+          if (!raw || raw.length > 400000 || !/^[\\[{]/.test(raw)) continue;
+          const parsed = parseJson(raw);
+          if (parsed) walkObject(parsed, [id || type || "script-json"], 0);
+        } catch (_) {
+          // Ignore script parsing errors.
+        }
+      }
+      const globalObjectCandidates = [
+        ["__INITIAL_STATE__", window.__INITIAL_STATE__],
+        ["__NEXT_DATA__", window.__NEXT_DATA__],
+        ["__NUXT__", window.__NUXT__],
+        ["__STORE__", window.__STORE__],
+      ];
+      for (const [key, value] of globalObjectCandidates) {
+        try {
+          if (value && typeof value === "object") {
+            walkObject(value, [key], 0);
+          }
+        } catch (_) {
+          // Ignore global data access errors.
+        }
+      }
+      const pickStorageValue = (pattern, validator, trailValidator) => {
         for (const [trail, value] of storageCandidates) {
           if (!pattern.test(trail)) continue;
+          if (trailValidator && !trailValidator(trail)) continue;
           const text = normalizeText(value);
           if (text && (!validator || validator(text))) return text;
         }
         return "";
       };
-      const fallbackName = Array.from(document.querySelectorAll("header *, nav *, [class*='header'] *, [class*='avatar'] *"))
+      const fallbackName = Array.from(document.querySelectorAll("header *, nav *, [class*='header'] *, [class*='avatar'] *, [class*='user'] *"))
         .filter((element) => isVisible(element))
         .map((element) => normalizeText(element.textContent))
-        .find((text) => text && !blockedNames.has(text) && text.length >= 2 && text.length <= 32) || "";
+        .find((text) => isMeaningfulName(text) && text.length <= 32) || "";
+      const metaAvatar = toAbsoluteUrl(
+        document.querySelector("meta[property='og:image'], meta[name='og:image'], meta[name='twitter:image'], meta[itemprop='image']")?.getAttribute("content") || "",
+      );
+      const fallbackAvatar = Array.from(document.querySelectorAll("img"))
+        .filter((element) => isVisible(element) && element.naturalWidth >= 32 && element.naturalHeight >= 32)
+        .map((element) => toAbsoluteUrl(element.getAttribute("src") || element.getAttribute("data-src") || ""))
+        .find((src) => /avatar|head|portrait|douyinpic|toutiaoimg|byteimg|pstatp/i.test(src)) || "";
       const pageText = normalizeText(document.body?.innerText || "");
-      let platformAccountId = pickTextBySelectors(probe.accountIdSelectors).replace(/^(账号ID|ID|抖音号|头条号)[:：\\s]*/i, "")
-        || pickStorageValue(/uid|user_id|userid|sec_uid|secuid|account_id|accountid|profile_id|profileid|memberid/i, (text) => text.length >= 4)
+      let platformAccountId = pickTextBySelectors(probe.accountIdSelectors, isMeaningfulPlatformId).replace(/^(账号ID|ID|抖音号|头条号)[:：\\s]*/i, "")
+        || pickStorageValue(
+          /uid|user_id|userid|sec_uid|secuid|account_id|accountid|profile_id|profileid|memberid|unique_id|short_id|douyin_id/i,
+          isMeaningfulPlatformId,
+          (trail) => userTrailPattern.test(trail),
+        )
         || "";
       if (!platformAccountId) {
         for (const source of probe.idPatterns || []) {
           const matched = pageText.match(new RegExp(source, "i"));
-          if (matched?.[1]) {
+          if (matched?.[1] && isMeaningfulPlatformId(matched[1])) {
             platformAccountId = normalizeText(matched[1]);
             break;
           }
         }
       }
-      const displayName = pickTextBySelectors(probe.displayNameSelectors)
-        || pickStorageValue(/nickname|nick_name|screen_name|display_name|displayname|name|user_name|username|authorname/i, (text) => !blockedNames.has(text) && text.length >= 2 && text.length <= 40)
-        || fallbackName;
+      const displayName = pickTextBySelectors(probe.displayNameSelectors, isMeaningfulName)
+        || pickStorageValue(
+          displayNameValuePattern,
+          (text) => isMeaningfulName(text),
+          (trail) => userTrailPattern.test(trail) && displayNameTrailPattern.test(trail),
+        )
+        || (platform === "douyin" ? "" : fallbackName);
       const avatarUrl = pickAvatarBySelectors(probe.avatarSelectors)
-        || pickStorageValue(/avatar|avatarurl|avatar_url|head_url|headurl|portrait|image/i, (text) => /^https?:\\/\\//i.test(text));
+        || pickStorageValue(
+          /avatar|avatarurl|avatar_url|head_url|headurl|portrait|image/i,
+          (text) => /^https?:\\/\\//i.test(text),
+          (trail) => userTrailPattern.test(trail),
+        )
+        || metaAvatar
+        || fallbackAvatar;
       const accountName = normalizeText(displayName || platformAccountId || "");
       return {
         accountName: accountName || undefined,
@@ -750,6 +896,159 @@ async function extractPlatformAccountProfile(windowInstance, input = {}) {
     })()`,
     true,
   );
+}
+
+function isMeaningfulAccountProfileText(value) {
+  const text = String(value || "").trim();
+  const lower = text.toLowerCase();
+  if (!text) {
+    return false;
+  }
+  if (["true", "false", "null", "undefined", "nan", "[object object]"].includes(lower)) {
+    return false;
+  }
+  if (["高清发布", "立即发布", "定时发布", "发布设置", "活动管理"].includes(text)) {
+    return false;
+  }
+  return !/^(douyin|toutiao|baijiahao|wechat|videohao|weibo|zhihu|csdn)[-_]?(account|user)-\d{6,}$/i.test(text);
+}
+
+const DEBUG_SERVER_URL = "http://127.0.0.1:7778/event";
+const DEBUG_SESSION_ID = "account-info-fetch";
+
+function emitDebug(hypothesisId, location, msg, data) {
+  // #region debug-point shared:emit
+  fetch(DEBUG_SERVER_URL, {
+    method: "POST",
+    body: JSON.stringify({
+      sessionId: DEBUG_SESSION_ID,
+      runId: "pre-fix",
+      hypothesisId,
+      location,
+      msg: `[DEBUG] ${msg}`,
+      data,
+      ts: Date.now(),
+    }),
+  }).catch(() => {});
+  // #endregion
+}
+
+function hasMeaningfulAccountProfile(profile = {}) {
+  return Boolean(
+    isMeaningfulAccountProfileText(profile.displayName) ||
+      isMeaningfulAccountProfileText(profile.platformAccountId) ||
+      /^https?:\/\//i.test(String(profile.avatarUrl || "").trim()),
+  );
+}
+
+function mergePlatformAccountProfiles(currentProfile = {}, nextProfile = {}) {
+  const merged = { ...currentProfile };
+
+  const nextDisplayName = String(nextProfile.displayName || "").trim();
+  const currentDisplayName = String(currentProfile.displayName || "").trim();
+  if (isMeaningfulAccountProfileText(nextDisplayName) || !isMeaningfulAccountProfileText(currentDisplayName)) {
+    if (nextDisplayName) {
+      merged.displayName = nextDisplayName;
+    }
+  }
+
+  const nextAccountName = String(nextProfile.accountName || "").trim();
+  const currentAccountName = String(currentProfile.accountName || "").trim();
+  if (isMeaningfulAccountProfileText(nextAccountName) || !isMeaningfulAccountProfileText(currentAccountName)) {
+    if (nextAccountName) {
+      merged.accountName = nextAccountName;
+    }
+  }
+
+  const nextPlatformId = String(nextProfile.platformAccountId || "").trim();
+  const currentPlatformId = String(currentProfile.platformAccountId || "").trim();
+  if (isMeaningfulAccountProfileText(nextPlatformId) || !isMeaningfulAccountProfileText(currentPlatformId)) {
+    if (nextPlatformId) {
+      merged.platformAccountId = nextPlatformId;
+    }
+  }
+
+  const nextAvatarUrl = String(nextProfile.avatarUrl || "").trim();
+  if (/^https?:\/\//i.test(nextAvatarUrl)) {
+    merged.avatarUrl = nextAvatarUrl;
+  }
+
+  const nextSourceUrl = String(nextProfile.sourceUrl || "").trim();
+  if (nextSourceUrl) {
+    merged.sourceUrl = nextSourceUrl;
+  }
+
+  return merged;
+}
+
+function getPlatformAccountProfileProbeUrls(input = {}) {
+  switch (String(input.platform || "").trim()) {
+    case "douyin":
+      return [
+        "https://creator.douyin.com/creator-micro/home",
+        "https://creator.douyin.com/creator-micro/content/manage",
+      ];
+    default:
+      return [];
+  }
+}
+
+async function resolvePlatformAccountProfileFromWindow(windowInstance, input = {}, timeoutMs = 12000) {
+  const startedAt = Date.now();
+  let latestProfile = {};
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const profile = await extractPlatformAccountProfile(windowInstance, input);
+      latestProfile = profile && typeof profile === "object" ? profile : latestProfile;
+      if (hasMeaningfulAccountProfile(latestProfile)) {
+        return latestProfile;
+      }
+    } catch (_) {
+      // Ignore transient extraction failures while the platform shell is hydrating.
+    }
+    await sleep(1200);
+  }
+  return latestProfile;
+}
+
+async function resolvePlatformAccountProfile(windowInstance, input = {}) {
+  const initialProfile = await resolvePlatformAccountProfileFromWindow(windowInstance, input, 12000);
+  const probeUrls = getPlatformAccountProfileProbeUrls(input);
+  const hasMeaningfulDisplayName = isMeaningfulAccountProfileText(initialProfile.displayName);
+  if ((!probeUrls.length || hasMeaningfulDisplayName) && hasMeaningfulAccountProfile(initialProfile) && (initialProfile.avatarUrl || initialProfile.platformAccountId)) {
+    return initialProfile;
+  }
+  if (!probeUrls.length) {
+    return initialProfile;
+  }
+
+  const probeWindow = createScopedWindow({
+    title: `${input.platform || "平台"} 资料探测`,
+    sessionPartition: typeof input.sessionPartition === "string" && input.sessionPartition.trim() ? input.sessionPartition.trim() : undefined,
+    show: false,
+  });
+  probeWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  let latestProfile = initialProfile;
+  try {
+    for (const probeUrl of probeUrls) {
+      await loadWindowUrlWithTimeout(probeWindow, probeUrl, 20000);
+      await waitForWindowStable(probeWindow);
+      const profile = await resolvePlatformAccountProfileFromWindow(probeWindow, { ...input, loginUrl: probeUrl }, 5000);
+      if (profile && typeof profile === "object") {
+        latestProfile = mergePlatformAccountProfiles(latestProfile, profile);
+      }
+      if (hasMeaningfulAccountProfile(latestProfile) && latestProfile.avatarUrl && latestProfile.platformAccountId) {
+        break;
+      }
+    }
+  } catch (_) {
+    // Ignore hidden profile probe failures and fall back to the best profile collected so far.
+  } finally {
+    if (!probeWindow.isDestroyed()) {
+      probeWindow.close();
+    }
+  }
+  return latestProfile;
 }
 
 async function inspectPlatformSession(input = {}) {
@@ -850,7 +1149,20 @@ function openPlatformLoginWindow(input = {}) {
         const cookieCount = await getSessionCookieCount(spec, partition);
         const sessionState = await inspectLoadedPlatformPage(loginWindow, spec, cookieCount);
         if (sessionState.status === "authenticated") {
-          const profile = await extractPlatformAccountProfile(loginWindow, input).catch(() => ({}));
+          const profile = await resolvePlatformAccountProfile(loginWindow, input).catch(() => ({}));
+          // #region debug-point A:electron-profile
+          emitDebug("A", "electron/main.js:openPlatformLoginWindow:profile", "Electron 提取账号资料", {
+            platform: input.platform || null,
+            sessionPartition: partition || null,
+            loginUrl,
+            accountName: profile?.accountName ?? null,
+            displayName: profile?.displayName ?? null,
+            platformAccountId: profile?.platformAccountId ?? null,
+            avatarUrl: profile?.avatarUrl ?? null,
+            sourceUrl: profile?.sourceUrl ?? null,
+            sessionReason: sessionState.reason || null,
+          });
+          // #endregion
           finishAuthenticated({
             status: "authenticated",
             reason: sessionState.reason,

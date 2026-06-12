@@ -5,6 +5,7 @@ import { CheckCircle2, ExternalLink, FileImage, LoaderCircle, LogIn, RefreshCcw,
 import { openPlatformLoginWindow, validatePlatformSessionWindow } from "@/lib/publish/electron-login-client";
 import { toDisplayImageItems } from "@/lib/publish/image-display";
 import { detectDesktopBridge, hasElectronDesktopBridge, type DesktopBridgeAvailability } from "@/lib/publish/local-bridge-client";
+import { formatAccountDisplayLabel, resolveAccountIdentifier } from "@/lib/publish/account-label";
 import { auditPlatformAccountSession, buildDesktopSessionFailureReason, describeAccountPublishability } from "@/lib/publish/account-session-validator";
 import { requireLicensedAction } from "@/lib/license/guard";
 import { publishPlatformDescriptors } from "@/lib/publish/platforms";
@@ -12,6 +13,25 @@ import type { AccountPublishedJobsGroup, PlatformAccountRecord, PublishingJobRec
 
 const TOUTIAO_PLATFORM = "toutiao";
 const TOUTIAO_LABEL = "今日头条";
+const DEBUG_SERVER_URL = "http://127.0.0.1:7778/event";
+const DEBUG_SESSION_ID = "account-info-fetch";
+
+function emitDebug(hypothesisId: string, location: string, msg: string, data: Record<string, unknown>) {
+  // #region debug-point shared:emit
+  fetch(DEBUG_SERVER_URL, {
+    method: "POST",
+    body: JSON.stringify({
+      sessionId: DEBUG_SESSION_ID,
+      runId: "pre-fix",
+      hypothesisId,
+      location,
+      msg: `[DEBUG] ${msg}`,
+      data,
+      ts: Date.now(),
+    }),
+  }).catch(() => {});
+  // #endregion
+}
 
 function routeAvailabilityBadge(availability: import("@/lib/publish/platforms").PlatformRouteAvailability) {
   const config = {
@@ -96,7 +116,7 @@ function buildJobBodyPreview(body: string) {
 }
 
 function AccountAvatar({ account }: { account: PlatformAccountRecord }) {
-  const label = account.displayName || account.accountName || platformLabel(account.platform);
+  const label = formatAccountDisplayLabel(account, platformLabel(account.platform));
   if (account.avatarUrl) {
     return (
       <img
@@ -188,6 +208,18 @@ export function PlatformAccountCenter({
   );
 
   async function sendAccountPatch(accountId: string, patch: Record<string, unknown>) {
+    // #region debug-point B:send-patch
+    emitDebug("B", "platform-account-center.tsx:sendAccountPatch:before", "前端发送账号 patch", {
+      accountId,
+      loginStatus: patch.loginStatus ?? null,
+      status: patch.status ?? null,
+      accountName: typeof patch.accountName === "string" ? patch.accountName : null,
+      displayName: typeof patch.displayName === "string" ? patch.displayName : null,
+      platformAccountId: typeof patch.platformAccountId === "string" ? patch.platformAccountId : null,
+      avatarUrl: typeof patch.avatarUrl === "string" ? patch.avatarUrl : null,
+      lastError: typeof patch.lastError === "string" ? patch.lastError : null,
+    });
+    // #endregion
     const response = await fetch(`/api/publish/accounts/${accountId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -197,6 +229,17 @@ export function PlatformAccountCenter({
     if (!response.ok) {
       throw new Error(payload.error ?? "更新账号失败");
     }
+    // #region debug-point C:patch-response
+    emitDebug("C", "platform-account-center.tsx:sendAccountPatch:after", "前端收到账号 patch 返回", {
+      accountId: payload.account?.id ?? accountId,
+      accountName: payload.account?.accountName ?? null,
+      displayName: payload.account?.displayName ?? null,
+      platformAccountId: payload.account?.platformAccountId ?? null,
+      avatarUrl: payload.account?.avatarUrl ?? null,
+      loginStatus: payload.account?.loginStatus ?? null,
+      status: payload.account?.status ?? null,
+    });
+    // #endregion
     return payload.account as PlatformAccountRecord;
   }
 
@@ -270,6 +313,19 @@ export function PlatformAccountCenter({
       }
 
       const loginResult = await openPlatformLoginWindow(loginRequest);
+      // #region debug-point A:login-result
+      emitDebug("A", "platform-account-center.tsx:startLogin:loginResult", "桌面登录返回结果", {
+        accountId: targetAccountId,
+        platform,
+        status: loginResult.status,
+        reason: loginResult.reason ?? null,
+        accountName: loginResult.profile?.accountName ?? null,
+        displayName: loginResult.profile?.displayName ?? null,
+        platformAccountId: loginResult.profile?.platformAccountId ?? null,
+        avatarUrl: loginResult.profile?.avatarUrl ?? null,
+        sourceUrl: loginResult.profile?.sourceUrl ?? null,
+      });
+      // #endregion
       if (loginResult.status === "unsupported") {
         throw new Error("当前桌面壳未暴露登录桥，无法打开平台登录窗。");
       }
@@ -377,6 +433,41 @@ export function PlatformAccountCenter({
       setMessage("账号已删除。");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "删除账号失败");
+    } finally {
+      setLoadingKey("");
+    }
+  }
+
+  async function cleanHistoricalDuplicates() {
+    const licenseGuard = await requireLicensedAction("manage_publish_account");
+    if (!licenseGuard.allowed) {
+      setMessage(licenseGuard.message ?? "当前设备未授权，请先激活授权码。");
+      return;
+    }
+
+    setLoadingKey("deduplicate-history");
+    setMessage("");
+    try {
+      const response = await fetch("/api/publish/accounts/deduplicate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error ?? "清理重复账号失败");
+      }
+
+      await refreshAccounts();
+      const mergedGroups = Number(payload.mergedGroups ?? 0);
+      const removedAccounts = Number(payload.removedAccounts ?? 0);
+      setMessage(
+        mergedGroups > 0
+          ? `已清理 ${mergedGroups} 组重复账号，移除 ${removedAccounts} 条重复记录。`
+          : "未发现需要清理的重复账号。",
+      );
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "清理重复账号失败");
     } finally {
       setLoadingKey("");
     }
@@ -492,6 +583,14 @@ export function PlatformAccountCenter({
               {loadingKey === TOUTIAO_PLATFORM ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <LogIn className="h-4 w-4" />}
               {isBridgeReady ? "打开今日头条登录窗" : "请先启动桌面版"}
             </button>
+            <button
+              className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-stroke bg-white/5 px-4 py-3 text-sm font-bold text-ink transition-colors hover:bg-white/10 disabled:opacity-50"
+              onClick={cleanHistoricalDuplicates}
+              disabled={loadingKey === "deduplicate-history"}
+            >
+              {loadingKey === "deduplicate-history" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+              清理历史重复账号
+            </button>
           </div>
         </div>
       </div>
@@ -599,7 +698,7 @@ export function PlatformAccountCenter({
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
                         <h4 className="max-w-[260px] truncate text-sm font-semibold text-ink">
-                          {account.displayName ?? account.accountName}
+                          {formatAccountDisplayLabel(account, account.id)}
                         </h4>
                         <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
                           account.loginStatus === "authenticated" ? "bg-emerald-500/15 text-emerald-400" :
@@ -613,8 +712,8 @@ export function PlatformAccountCenter({
                         </span>
                       </div>
                       <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted">
-                        <span className="break-all font-mono">平台ID：{account.platformAccountId || account.accountName || "--"}</span>
-                        <span className="break-all font-mono">账号名：{account.accountName || "--"}</span>
+                        <span className="break-all font-mono">平台ID：{account.platformAccountId || "--"}</span>
+                        <span className="break-all font-mono">账号名：{resolveAccountIdentifier(account, "--")}</span>
                         <span>更新：{new Date(account.updatedAt).toLocaleString()}</span>
                       </div>
                       <p className="mt-1 line-clamp-2 max-w-3xl text-xs leading-5 text-muted">

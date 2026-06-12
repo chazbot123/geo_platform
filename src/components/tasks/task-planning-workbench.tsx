@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { CalendarDays, CheckCircle2, LoaderCircle, LogIn, PlayCircle, RefreshCw, Save, Settings2, ShieldCheck, Trash2 } from "lucide-react";
 import { dispatchWorkflowStatusRefresh } from "@/components/layout/app-shell";
 import { requireLicensedAction } from "@/lib/license/guard";
-import { formatAccountDisplayLabel } from "@/lib/publish/account-label";
+import { formatAccountDisplayLabel, resolveAccountIdentifier } from "@/lib/publish/account-label";
 import { openPlatformLoginWindow, validatePlatformSessionWindow } from "@/lib/publish/electron-login-client";
 import { getPlatformsBySearchProvider, providerPublishMatrix } from "@/lib/publish/provider-platform-matrix";
 import { getSearchProviderIcon, getSocialPlatformIcon } from "@/lib/platform-icons";
@@ -40,6 +40,44 @@ const platformLabels: Record<SocialPlatform, string> = {
   weibo: "微博",
   csdn: "CSDN",
 };
+const DEBUG_SERVER_URL = "http://127.0.0.1:7778/event";
+const DEBUG_SESSION_ID = "account-info-fetch";
+const PLAN_REFRESH_DEBUG_SERVER_URL = "http://127.0.0.1:7777/event";
+const PLAN_REFRESH_DEBUG_SESSION_ID = "plan-save-refresh";
+
+function emitDebug(hypothesisId: string, location: string, msg: string, data: Record<string, unknown>) {
+  // #region debug-point shared:emit
+  fetch(DEBUG_SERVER_URL, {
+    method: "POST",
+    body: JSON.stringify({
+      sessionId: DEBUG_SESSION_ID,
+      runId: "pre-fix",
+      hypothesisId,
+      location,
+      msg: `[DEBUG] ${msg}`,
+      data,
+      ts: Date.now(),
+    }),
+  }).catch(() => {});
+  // #endregion
+}
+
+function emitPlanRefreshDebug(hypothesisId: string, location: string, msg: string, data: Record<string, unknown>) {
+  // #region debug-point plan-shared:emit
+  fetch(PLAN_REFRESH_DEBUG_SERVER_URL, {
+    method: "POST",
+    body: JSON.stringify({
+      sessionId: PLAN_REFRESH_DEBUG_SESSION_ID,
+      runId: "pre-fix",
+      hypothesisId,
+      location,
+      msg: `[DEBUG] ${msg}`,
+      data,
+      ts: Date.now(),
+    }),
+  }).catch(() => {});
+  // #endregion
+}
 
 interface PlanningPrerequisites {
   enterpriseReady: boolean;
@@ -72,13 +110,25 @@ function isValidTimeValue(value: string) {
 }
 
 function formatTime(value?: string) {
-  if (!value) return "未校验";
+  if (!value) return "暂无记录";
   return new Intl.DateTimeFormat("zh-CN", {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function normalizePositiveInteger(value: string, fallback: number, min = 1) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(min, parsed);
+}
+
+function sanitizePositiveIntegerInput(raw: string) {
+  return raw.replace(/[^\d]/g, "");
 }
 
 function statusText(account: PlatformAccountRecord) {
@@ -104,12 +154,25 @@ function platformSummary(plan?: PublishTaskPlan) {
   return enabled.map((item) => `${platformLabels[item.platform]} ${item.accountCount} 个`).join("，");
 }
 
+function normalizePlatformSelection(platforms: SocialPlatform[]) {
+  return Array.from(new Set(platforms)).sort();
+}
+
+function areSamePlatformSelections(left: SocialPlatform[], right: SocialPlatform[]) {
+  const normalizedLeft = normalizePlatformSelection(left);
+  const normalizedRight = normalizePlatformSelection(right);
+  if (normalizedLeft.length !== normalizedRight.length) {
+    return false;
+  }
+  return normalizedLeft.every((platform, index) => platform === normalizedRight[index]);
+}
+
 function validationFailureText(status: string, reason?: string) {
   if (reason?.trim()) return reason;
   if (status === "expired") return "平台会话已过期，请重新登录。";
   if (status === "missing_session") return "未检测到有效平台会话，请重新登录。";
-  if (status === "unsupported") return "当前环境缺少桌面登录桥，请启动 GEO 桌面版。";
-  return "平台会话校验未通过，请重新登录。";
+  if (status === "unsupported") return "当前环境无法打开桌面登录，请启动 GEO 桌面版。";
+  return "登录状态检查未通过，请重新登录。";
 }
 
 function buildLoginSuccessPatch(loginResult: Awaited<ReturnType<typeof openPlatformLoginWindow>>) {
@@ -162,8 +225,8 @@ export function TaskPlanningWorkbench() {
   const [searchProvider, setSearchProvider] = useState<SearchProvider>("doubao");
   const [enabledPlatforms, setEnabledPlatforms] = useState<SocialPlatform[]>([]);
   const [selectedPlatform, setSelectedPlatform] = useState<SocialPlatform>("toutiao");
-  const [days, setDays] = useState(5);
-  const [articlesPerAccountPerDay, setArticlesPerAccountPerDay] = useState(2);
+  const [daysInput, setDaysInput] = useState("5");
+  const [articlesPerAccountPerDayInput, setArticlesPerAccountPerDayInput] = useState("2");
   const [publishStartTime, setPublishStartTime] = useState("09:00");
   const [publishEndTime, setPublishEndTime] = useState("18:00");
   const [detectionItems, setDetectionItems] = useState<PlatformAccountDetectionItem[]>([]);
@@ -184,19 +247,26 @@ export function TaskPlanningWorkbench() {
       ),
     [accounts],
   );
+  const publishableAccountCountByPlatform = useMemo(() => {
+    const counts = new Map<SocialPlatform, number>();
+    for (const account of publishableAccounts) {
+      counts.set(account.platform, (counts.get(account.platform) ?? 0) + 1);
+    }
+    return counts;
+  }, [publishableAccounts]);
   const selectedDetection = detectionByPlatform.get(selectedPlatform);
   const selectedAccounts = useMemo(
     () => accounts.filter((account) => account.platform === selectedPlatform),
     [accounts, selectedPlatform],
   );
-  const normalizedDays = Math.max(5, Number.isFinite(days) ? Math.floor(days) : 5);
-  const normalizedArticlesPerAccountPerDay = Math.max(
-    1,
-    Number.isFinite(articlesPerAccountPerDay) ? Math.floor(articlesPerAccountPerDay) : 1,
-  );
+  const normalizedDays = normalizePositiveInteger(daysInput, 5, 1);
+  const normalizedArticlesPerAccountPerDay = normalizePositiveInteger(articlesPerAccountPerDayInput, 2, 1);
   const isTimeWindowValid =
     isValidTimeValue(publishStartTime) && isValidTimeValue(publishEndTime) && publishStartTime < publishEndTime;
-  const totalAccounts = publishableAccounts.length;
+  const totalAccounts = enabledPlatforms.reduce(
+    (total, platform) => total + (publishableAccountCountByPlatform.get(platform) ?? 0),
+    0,
+  );
   const totalArticles = totalAccounts * normalizedDays * normalizedArticlesPerAccountPerDay;
   const canSave = Boolean(
     prerequisites?.enterpriseReady &&
@@ -205,7 +275,32 @@ export function TaskPlanningWorkbench() {
       totalArticles > 0 &&
       isTimeWindowValid,
   );
-  const savedPlanReady = Boolean(prerequisites?.savedPlan && (prerequisites.savedPlan.totalArticleCount ?? 0) > 0);
+  const hasPlanChanges = useMemo(() => {
+    const savedPlan = prerequisites?.savedPlan;
+    if (!savedPlan) {
+      return false;
+    }
+    const savedEnabledPlatforms = savedPlan.enabledPlatforms.filter((item) => item.enabled).map((item) => item.platform);
+    return !(
+      savedPlan.searchProvider === searchProvider &&
+      savedPlan.days === normalizedDays &&
+      savedPlan.articlesPerAccountPerDay === normalizedArticlesPerAccountPerDay &&
+      (savedPlan.timeWindow?.start ?? "09:00") === publishStartTime &&
+      (savedPlan.timeWindow?.end ?? "18:00") === publishEndTime &&
+      areSamePlatformSelections(savedEnabledPlatforms, enabledPlatforms)
+    );
+  }, [
+    articlesPerAccountPerDayInput,
+    enabledPlatforms,
+    normalizedArticlesPerAccountPerDay,
+    normalizedDays,
+    prerequisites?.savedPlan,
+    publishEndTime,
+    publishStartTime,
+    searchProvider,
+  ]);
+  const savedPlanReady = Boolean(prerequisites?.savedPlan && !hasPlanChanges && (prerequisites.savedPlan.totalArticleCount ?? 0) > 0);
+  const hasSavedPlan = Boolean(prerequisites?.savedPlan);
   const enterpriseReady = Boolean(prerequisites?.enterpriseReady);
   const keywordReady = Boolean(prerequisites?.keywordReady);
 
@@ -223,11 +318,25 @@ export function TaskPlanningWorkbench() {
       const response = await fetch("/api/tasks/plan", { cache: "no-store" });
       const data = (await response.json()) as PlanningPrerequisites & { error?: string };
       if (!response.ok) throw new Error(data.error || "读取任务规划失败。");
+      // #region debug-point B:load-prerequisites
+      emitPlanRefreshDebug("D", "task-planning-workbench.tsx:loadPrerequisites:response", "读取任务规划返回", {
+        enterpriseReady: data.enterpriseReady,
+        keywordReady: data.keywordReady,
+        taskId: data.taskId ?? null,
+        savedPlanTaskId: data.savedPlan?.taskId ?? null,
+        savedPlanUpdatedAt: data.savedPlan?.updatedAt ?? null,
+        savedPlanSearchProvider: data.savedPlan?.searchProvider ?? null,
+        savedPlanPlatforms: data.savedPlan?.enabledPlatforms.filter((item) => item.enabled).map((item) => item.platform) ?? [],
+        savedPlanDays: data.savedPlan?.days ?? null,
+        savedPlanArticlesPerAccountPerDay: data.savedPlan?.articlesPerAccountPerDay ?? null,
+        savedPlanTimeWindow: data.savedPlan?.timeWindow ?? null,
+      });
+      // #endregion
       setPrerequisites(data);
       if (data.savedPlan) {
         setSearchProvider(data.savedPlan.searchProvider);
-        setDays(data.savedPlan.days);
-        setArticlesPerAccountPerDay(data.savedPlan.articlesPerAccountPerDay);
+        setDaysInput(String(data.savedPlan.days));
+        setArticlesPerAccountPerDayInput(String(data.savedPlan.articlesPerAccountPerDay));
         setPublishStartTime(data.savedPlan.timeWindow?.start ?? "09:00");
         setPublishEndTime(data.savedPlan.timeWindow?.end ?? "18:00");
         const savedPlatforms = data.savedPlan.enabledPlatforms.filter((item) => item.enabled).map((item) => item.platform);
@@ -264,7 +373,7 @@ export function TaskPlanningWorkbench() {
         return current.length ? next : publishablePlatforms;
       });
       await loadAccounts();
-      setNotice(forceRefresh ? "账号检测已刷新。" : "已读取账号检测结果。");
+      setNotice(forceRefresh ? "账号状态已刷新。" : "已同步账号状态。");
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "账号检测失败。");
     } finally {
@@ -273,6 +382,18 @@ export function TaskPlanningWorkbench() {
   }
 
   async function patchAccountStatus(accountId: string, patch: Record<string, unknown>) {
+    // #region debug-point B:task-send-patch
+    emitDebug("B", "task-planning-workbench.tsx:patchAccountStatus:before", "任务页发送账号 patch", {
+      accountId,
+      loginStatus: patch.loginStatus ?? null,
+      status: patch.status ?? null,
+      accountName: typeof patch.accountName === "string" ? patch.accountName : null,
+      displayName: typeof patch.displayName === "string" ? patch.displayName : null,
+      platformAccountId: typeof patch.platformAccountId === "string" ? patch.platformAccountId : null,
+      avatarUrl: typeof patch.avatarUrl === "string" ? patch.avatarUrl : null,
+      lastError: typeof patch.lastError === "string" ? patch.lastError : null,
+    });
+    // #endregion
     const response = await fetch(`/api/publish/accounts/${accountId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -280,6 +401,12 @@ export function TaskPlanningWorkbench() {
     });
     const data = (await response.json()) as { error?: string };
     if (!response.ok) throw new Error(data.error || "更新账号状态失败。");
+    // #region debug-point C:task-patch-response
+    emitDebug("C", "task-planning-workbench.tsx:patchAccountStatus:after", "任务页收到账号 patch 返回", {
+      accountId,
+      responseOk: response.ok,
+    });
+    // #endregion
   }
 
   async function startLogin(platform: SocialPlatform, accountId?: string) {
@@ -308,6 +435,19 @@ export function TaskPlanningWorkbench() {
       }
 
       const loginResult = await openPlatformLoginWindow(payload.loginRequest);
+      // #region debug-point A:task-login-result
+      emitDebug("A", "task-planning-workbench.tsx:startLogin:loginResult", "任务页收到桌面登录结果", {
+        accountId: payload.account.id,
+        platform,
+        status: loginResult.status,
+        reason: loginResult.reason ?? null,
+        accountName: loginResult.profile?.accountName ?? null,
+        displayName: loginResult.profile?.displayName ?? null,
+        platformAccountId: loginResult.profile?.platformAccountId ?? null,
+        avatarUrl: loginResult.profile?.avatarUrl ?? null,
+        sourceUrl: loginResult.profile?.sourceUrl ?? null,
+      });
+      // #endregion
       if (loginResult.status === "unsupported") {
         throw new Error("当前环境缺少桌面登录桥，请启动 GEO 桌面版。");
       }
@@ -329,7 +469,7 @@ export function TaskPlanningWorkbench() {
             status: "valid",
             lastError: undefined,
           });
-          setNotice(`${platformLabels[platform]}账号已登录并通过校验。`);
+          setNotice(`${platformLabels[platform]}账号已登录，可用于发布。`);
           loginSucceeded = true;
         } else {
           const lastError = validationFailureText(validation.status, validation.reason);
@@ -357,7 +497,7 @@ export function TaskPlanningWorkbench() {
 
   async function removeAccount(account: PlatformAccountRecord) {
     const accountLabel = formatAccountDisplayLabel(account, account.id) || account.id;
-    const confirmed = window.confirm(`确定将 ${platformLabels[account.platform]} 账号「${accountLabel}」下号并移除吗？移除后会从已保存任务和草稿绑定中摘除，不再计入任务。`);
+    const confirmed = window.confirm(`确定移除 ${platformLabels[account.platform]} 账号「${accountLabel}」吗？移除后会从已保存任务和内容绑定中摘除，不再加入当前任务。`);
     if (!confirmed) return;
 
     setRemovingKey(account.id);
@@ -369,7 +509,7 @@ export function TaskPlanningWorkbench() {
       });
       const data = (await response.json()) as { error?: string };
       if (!response.ok) throw new Error(data.error || "移除账号失败。");
-      setNotice(`${platformLabels[account.platform]}账号已下号并移除。`);
+      setNotice(`${platformLabels[account.platform]}账号已移除。`);
       await loadAccounts();
       await detectAccounts(true);
       window.dispatchEvent(new Event("geo-workflow-status-refresh"));
@@ -386,6 +526,21 @@ export function TaskPlanningWorkbench() {
     setError("");
     setNotice("");
     try {
+      // #region debug-point C:save-plan-request
+      emitPlanRefreshDebug("A", "task-planning-workbench.tsx:savePlan:request", "提交保存计划请求", {
+        taskId: prerequisites.taskId,
+        searchProvider,
+        enabledPlatforms,
+        days: normalizedDays,
+        articlesPerAccountPerDay: normalizedArticlesPerAccountPerDay,
+        timeWindow: {
+          start: publishStartTime,
+          end: publishEndTime,
+        },
+        totalAccounts,
+        totalArticles,
+      });
+      // #endregion
       const response = await fetch("/api/tasks/plan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -404,7 +559,35 @@ export function TaskPlanningWorkbench() {
       });
       const data = (await response.json()) as { publishPlan?: PublishTaskPlan; error?: string };
       if (!response.ok || !data.publishPlan) throw new Error(data.error || "保存任务规划失败。");
-      setPrerequisites((current) => (current ? { ...current, savedPlan: data.publishPlan } : current));
+      // #region debug-point D:save-plan-response
+      emitPlanRefreshDebug("A", "task-planning-workbench.tsx:savePlan:response", "保存计划接口返回", {
+        responseOk: response.ok,
+        savedPlanTaskId: data.publishPlan.taskId,
+        savedPlanUpdatedAt: data.publishPlan.updatedAt,
+        savedPlanSearchProvider: data.publishPlan.searchProvider,
+        savedPlanPlatforms: data.publishPlan.enabledPlatforms.filter((item) => item.enabled).map((item) => item.platform),
+        savedPlanDays: data.publishPlan.days,
+        savedPlanArticlesPerAccountPerDay: data.publishPlan.articlesPerAccountPerDay,
+        savedPlanTimeWindow: data.publishPlan.timeWindow,
+        savedPlanTotalArticles: data.publishPlan.totalArticleCount,
+      });
+      // #endregion
+      setPrerequisites((current) => {
+        const next = current ? { ...current, savedPlan: data.publishPlan } : current;
+        // #region debug-point E:save-plan-state-commit
+        emitPlanRefreshDebug("A", "task-planning-workbench.tsx:savePlan:setPrerequisites", "保存计划后写入本地状态", {
+          hadCurrent: Boolean(current),
+          nextSavedPlanTaskId: next?.savedPlan?.taskId ?? null,
+          nextSavedPlanUpdatedAt: next?.savedPlan?.updatedAt ?? null,
+          nextSavedPlanSearchProvider: next?.savedPlan?.searchProvider ?? null,
+          nextSavedPlanPlatforms: next?.savedPlan?.enabledPlatforms.filter((item) => item.enabled).map((item) => item.platform) ?? [],
+          nextSavedPlanDays: next?.savedPlan?.days ?? null,
+          nextSavedPlanArticlesPerAccountPerDay: next?.savedPlan?.articlesPerAccountPerDay ?? null,
+          nextSavedPlanTimeWindow: next?.savedPlan?.timeWindow ?? null,
+        });
+        // #endregion
+        return next;
+      });
       dispatchWorkflowStatusRefresh();
       setNotice("计划已保存，可以开始生成。");
     } catch (currentError) {
@@ -447,6 +630,44 @@ export function TaskPlanningWorkbench() {
   useEffect(() => {
     void loadPrerequisites();
   }, []);
+
+  useEffect(() => {
+    // #region debug-point A:derived-state
+    emitPlanRefreshDebug("A", "task-planning-workbench.tsx:derived-state", "任务规划页派生状态变化", {
+      taskId: prerequisites?.taskId ?? null,
+      savedPlanTaskId: prerequisites?.savedPlan?.taskId ?? null,
+      savedPlanUpdatedAt: prerequisites?.savedPlan?.updatedAt ?? null,
+      savedPlanSearchProvider: prerequisites?.savedPlan?.searchProvider ?? null,
+      currentSearchProvider: searchProvider,
+      currentEnabledPlatforms: enabledPlatforms,
+      currentDays: normalizedDays,
+      currentArticlesPerAccountPerDay: normalizedArticlesPerAccountPerDay,
+      currentTimeWindow: {
+        start: publishStartTime,
+        end: publishEndTime,
+      },
+      totalAccounts,
+      totalArticles,
+      canSave,
+      hasPlanChanges,
+      savedPlanReady,
+    });
+    // #endregion
+  }, [
+    canSave,
+    enabledPlatforms,
+    hasPlanChanges,
+    normalizedArticlesPerAccountPerDay,
+    normalizedDays,
+    prerequisites?.savedPlan,
+    prerequisites?.taskId,
+    publishEndTime,
+    publishStartTime,
+    savedPlanReady,
+    searchProvider,
+    totalAccounts,
+    totalArticles,
+  ]);
 
   useEffect(() => {
     setEnabledPlatforms((current) => {
@@ -505,7 +726,7 @@ export function TaskPlanningWorkbench() {
             <Settings2 className="h-4 w-4 text-accent" />
             <div>
               <h3 className="page-section-title">平台与账号</h3>
-              <p className="page-section-desc">发布平台只来自当前 GEO AI 平台的默认映射，小红书本轮仅归入通义千问。</p>
+              <p className="page-section-desc">这里会展示当前 GEO AI 平台对应的发布平台，以及每个平台已登录的可用账号。</p>
             </div>
           </div>
           <button
@@ -515,7 +736,7 @@ export function TaskPlanningWorkbench() {
             onClick={() => void detectAccounts(true)}
           >
             <RefreshCw className={`h-4 w-4 ${detecting ? "animate-spin" : ""}`} />
-            手动刷新检测
+            刷新账号状态
           </button>
         </div>
 
@@ -584,8 +805,8 @@ export function TaskPlanningWorkbench() {
                 <div className="min-w-0">
                   <h4 className="text-base font-semibold text-ink">{platformLabels[selectedPlatform]}账号</h4>
                   <p className="mt-1 text-xs leading-5 text-muted">
-                    上次检测：{formatTime(selectedDetection?.detectedAt)}
-                    {selectedDetection?.fromCache ? "（30 分钟缓存）" : ""}
+                    最近检查：{formatTime(selectedDetection?.detectedAt)}
+                    {selectedDetection?.fromCache ? "（30 分钟内结果）" : ""}
                   </p>
                 </div>
               </div>
@@ -603,7 +824,7 @@ export function TaskPlanningWorkbench() {
                     )
                   }
                 />
-                计入任务
+                加入任务
               </label>
             </div>
 
@@ -617,8 +838,8 @@ export function TaskPlanningWorkbench() {
                 <span className="flex items-center gap-3">
                   <EmptyAvatar platform={selectedPlatform} />
                   <span>
-                    <span className="block text-sm font-semibold text-ink">登录新的{platformLabels[selectedPlatform]}账号</span>
-                    <span className="mt-1 block text-xs text-muted">复用账号中心的桌面登录窗口和会话校验。</span>
+                    <span className="block text-sm font-semibold text-ink">添加{platformLabels[selectedPlatform]}账号</span>
+                    <span className="mt-1 block text-xs text-muted">打开桌面登录窗口完成登录，登录成功后会自动同步到这里。</span>
                   </span>
                 </span>
                 {loginKey === selectedPlatform ? <LoaderCircle className="h-4 w-4 animate-spin text-accent" /> : <LogIn className="h-4 w-4 text-accent" />}
@@ -635,9 +856,12 @@ export function TaskPlanningWorkbench() {
                             <p className="truncate text-sm font-semibold text-ink">{formatAccountDisplayLabel(account, account.id) || account.id}</p>
                             <span className={`text-xs font-medium ${statusClassName(account)}`}>{statusText(account)}</span>
                           </div>
-                          <p className="mt-1 break-all font-mono text-xs text-muted">ID：{account.accountName || account.id}</p>
-                          <p className="mt-1 break-all font-mono text-xs text-muted">本地记录：{account.id}</p>
-                          <p className="mt-1 text-xs text-muted">最近校验：{formatTime(account.lastValidatedAt || account.lastLoginCompletedAt || account.updatedAt)}</p>
+                          {account.accountName || account.platformAccountId ? (
+                            <p className="mt-1 break-all text-xs text-muted">登录账号：{resolveAccountIdentifier(account, account.id)}</p>
+                          ) : null}
+                          {account.lastLoginCompletedAt ? (
+                            <p className="mt-1 text-xs text-muted">最近登录时间：{formatTime(account.lastLoginCompletedAt)}</p>
+                          ) : null}
                           {account.lastError ? <p className="mt-2 text-xs leading-5 text-red-500">{account.lastError}</p> : null}
                         </div>
                       </div>
@@ -649,7 +873,7 @@ export function TaskPlanningWorkbench() {
                           onClick={() => void startLogin(account.platform, account.id)}
                         >
                           {loginKey === account.id ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <ShieldCheck className="h-3.5 w-3.5" />}
-                          {account.loginStatus === "authenticated" ? "重新上号/校验" : "上号"}
+                          {account.loginStatus === "authenticated" ? "重新登录" : "登录"}
                         </button>
                         <button
                           type="button"
@@ -658,7 +882,7 @@ export function TaskPlanningWorkbench() {
                           onClick={() => void removeAccount(account)}
                         >
                           {removingKey === account.id ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-                          下号
+                          移除
                         </button>
                       </div>
                     </div>
@@ -672,10 +896,10 @@ export function TaskPlanningWorkbench() {
             </div>
 
             <div className="mt-4 grid gap-2 border-t border-line pt-4 text-xs leading-5 text-muted sm:grid-cols-3">
-              <p>可发布账号：{selectedDetection?.accountCount ?? 0}</p>
-              <p>未计入账号：{selectedDetection?.ignoredCount ?? 0}</p>
+              <p>可用账号：{selectedDetection?.accountCount ?? 0}</p>
+              <p>未加入任务：{selectedDetection?.ignoredCount ?? 0}</p>
               <p>
-                本平台文章：
+                预计文章数：
                 {enabledSet.has(selectedPlatform)
                   ? (selectedDetection?.accountCount ?? 0) * normalizedDays * normalizedArticlesPerAccountPerDay
                   : 0}
@@ -696,10 +920,12 @@ export function TaskPlanningWorkbench() {
               <span className="text-xs text-muted">发布天数</span>
               <input
                 className="mt-2 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent"
-                min={5}
+                min={1}
                 type="number"
-                value={days}
-                onChange={(event) => setDays(Number(event.target.value))}
+                inputMode="numeric"
+                value={daysInput}
+                onChange={(event) => setDaysInput(sanitizePositiveIntegerInput(event.target.value))}
+                onBlur={() => setDaysInput(String(normalizedDays))}
               />
             </label>
             <label className="block">
@@ -708,8 +934,10 @@ export function TaskPlanningWorkbench() {
                 className="mt-2 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent"
                 min={1}
                 type="number"
-                value={articlesPerAccountPerDay}
-                onChange={(event) => setArticlesPerAccountPerDay(Number(event.target.value))}
+                inputMode="numeric"
+                value={articlesPerAccountPerDayInput}
+                onChange={(event) => setArticlesPerAccountPerDayInput(sanitizePositiveIntegerInput(event.target.value))}
+                onBlur={() => setArticlesPerAccountPerDayInput(String(normalizedArticlesPerAccountPerDay))}
               />
             </label>
             <label className="block">
@@ -740,7 +968,7 @@ export function TaskPlanningWorkbench() {
           <div className="mt-4 grid grid-cols-3 gap-2 text-center">
             <div>
               <p className="text-2xl font-semibold text-ink">{totalAccounts}</p>
-              <p className="mt-1 text-xs text-muted">已登录账号</p>
+              <p className="mt-1 text-xs text-muted">已启用账号</p>
             </div>
             <div>
               <p className="text-2xl font-semibold text-ink">{normalizedDays}</p>
@@ -751,9 +979,13 @@ export function TaskPlanningWorkbench() {
               <p className="mt-1 text-xs text-muted">篇</p>
             </div>
           </div>
-          <p className="mt-4 text-xs leading-5 text-muted">公式：已登录可发布账号总数 x 天数 x 每账号每天发布篇数。</p>
+          <p className="mt-4 text-xs leading-5 text-muted">预计总篇数 = 已启用账号数 x 发布天数 x 每个账号每天篇数。</p>
           <p className="mt-2 text-xs leading-5 text-muted">
-            {savedPlanReady ? `计划已保存：${platformSummary(prerequisites?.savedPlan)}` : platformSummary(prerequisites?.savedPlan)}
+            {savedPlanReady
+              ? `计划已保存：${platformSummary(prerequisites?.savedPlan)}`
+              : hasSavedPlan && hasPlanChanges
+                ? `当前修改未保存，请先更新计划。已保存计划：${platformSummary(prerequisites?.savedPlan)}`
+                : platformSummary(prerequisites?.savedPlan)}
           </p>
           {error && <p className="mt-4 text-sm text-red-500">{error}</p>}
           {notice && <p className="mt-4 text-sm text-accent">{notice}</p>}
@@ -765,7 +997,17 @@ export function TaskPlanningWorkbench() {
               onClick={() => (savedPlanReady ? void startGeneration() : void savePlan())}
             >
               {savedPlanReady ? <PlayCircle className="h-4 w-4" /> : <Save className="h-4 w-4" />}
-              {savedPlanReady ? (startingGeneration ? "启动中" : "开始生成") : saving ? "保存中" : "保存计划"}
+              {savedPlanReady
+                ? startingGeneration
+                  ? "启动中"
+                  : "开始生成"
+                : saving
+                  ? hasSavedPlan
+                    ? "更新中"
+                    : "保存中"
+                  : hasSavedPlan && hasPlanChanges
+                    ? "先更新计划"
+                    : "保存计划"}
             </button>
             <button
               type="button"
