@@ -630,6 +630,7 @@ function buildPlatformAccountProfileProbe(platform) {
     case "toutiao":
       return {
         displayNameSelectors: [
+          "span.name",
           ".user-name",
           ".header-user-name",
           ".user__name",
@@ -655,6 +656,7 @@ function buildPlatformAccountProfileProbe(platform) {
     case "douyin":
       return {
         displayNameSelectors: [
+          ".name-_lSSDc",
           ".semi-navigation-header .user-name",
           ".creator-header-user-name",
           ".account-info-name",
@@ -684,8 +686,178 @@ function buildPlatformAccountProfileProbe(platform) {
           "img[src*='byteimg.com']",
           "img[src*='pstatp.com']",
         ],
-        accountIdSelectors: [".account-id", "[data-e2e='account-id']", ".creator-header .user-id", "[class*='account-id']", "[class*='user-id']"],
+        accountIdSelectors: [".unique_id-EuH8eA", ".account-id", "[data-e2e='account-id']", ".creator-header .user-id", "[class*='account-id']", "[class*='user-id']"],
         idPatterns: ["抖音号[:：\\\\s]*([A-Za-z0-9._-]{4,})", "账号ID[:：\\\\s]*([A-Za-z0-9._-]{4,})", "ID[:：\\\\s]*([A-Za-z0-9._-]{4,})"],
+      };
+    case "baijiahao":
+      return {
+        displayNameSelectors: [
+          ".FeReactApp-_67642abe502443cd-userName",
+          "[class*='userName']",
+          "[class*='user-name']",
+          "[class*='account-name']",
+          ".user-name",
+          ".name",
+        ],
+        avatarSelectors: [
+          "[class*='avatar'] img",
+          ".avatar img",
+          "img[src*='bcebos.com']",
+          "img[src*='bdstatic.com']",
+        ],
+        accountIdSelectors: [
+          ".FeReactApp-_67642abe502443cd-bjhIdName",
+          "[class*='bjhIdName']",
+          "[class*='account-id']",
+          "[class*='user-id']",
+        ],
+        idPatterns: ["百家号ID[:：\\\\s]*([A-Za-z0-9_-]{4,})", "百家号[:：\\\\s]*([A-Za-z0-9_-]{4,})", "账号ID[:：\\\\s]*([A-Za-z0-9_-]{4,})"],
+      };
+    case "wechat":
+      return {
+        displayNameSelectors: [
+          "[data-v-f8205402]",
+          ".weui-desktop-account__info-name",
+          ".account_box .account_name",
+          ".account_box .nickname",
+          ".weui-desktop-layout__hd [class*='name']",
+          "[class*='account-name']",
+        ],
+        avatarSelectors: [
+          ".weui-desktop-account__info-avatar img",
+          ".account_box img",
+          "[class*='avatar'] img",
+          "img[src*='qlogo.cn']",
+          "img[src*='wx.qlogo.cn']",
+        ],
+        accountIdSelectors: [
+          "[data-v-f8205402]",
+          ".weui-desktop-account__info-id",
+          ".account_box .account_meta",
+          "[class*='account-id']",
+        ],
+        idPatterns: ["微信号[:：\\\\s]*([A-Za-z0-9_-]{4,})", "公众号[:：\\\\s]*([A-Za-z0-9_-]{4,})", "账号[:：\\\\s]*([A-Za-z0-9_-]{4,})"],
+      };
+    case "videohao":
+      return {
+        displayNameSelectors: [
+          "[class*='nickname']",
+          "[class*='account-name']",
+          "[class*='user-name']",
+          "[class*='creator-name']",
+          "[class*='profile-name']",
+          ".account-name",
+          ".user-name",
+          ".name",
+        ],
+        avatarSelectors: [
+          "[class*='avatar'] img",
+          "[class*='avatar']",
+          ".account-avatar img",
+          ".user-avatar img",
+          "img[src*='qlogo.cn']",
+          "img[src*='wx.qlogo.cn']",
+        ],
+        accountIdSelectors: [
+          "a[href*='channels.weixin.qq.com']",
+          "[class*='account-id']",
+          "[class*='user-id']",
+          "[class*='channel-id']",
+        ],
+        idPatterns: ["视频号[:：\\\\s]*([A-Za-z0-9_-]{4,})", "微信号[:：\\\\s]*([A-Za-z0-9_-]{4,})", "账号ID[:：\\\\s]*([A-Za-z0-9_-]{4,})"],
+      };
+    case "xiaohongshu":
+      return {
+        displayNameSelectors: [
+          "[class*='user-name']",
+          "[class*='nickname']",
+          "[class*='account-name']",
+          "[class*='creator-name']",
+          "[class*='profile-name']",
+          ".user-name",
+          ".nickname",
+          ".name",
+        ],
+        avatarSelectors: [
+          "[class*='avatar'] img",
+          "[class*='avatar']",
+          ".user-avatar img",
+          ".creator-avatar img",
+          "img[src*='xhscdn.com']",
+          "img[src*='xiaohongshu.com']",
+        ],
+        accountIdSelectors: [
+          "a[href*='/user/profile/']",
+          "a[href*='/explore/']",
+          "[class*='user-id']",
+          "[class*='account-id']",
+          "[class*='xhs-id']",
+        ],
+        idPatterns: ["小红书号[:：\\\\s]*([A-Za-z0-9_-]{4,})", "小红书ID[:：\\\\s]*([A-Za-z0-9_-]{4,})", "账号ID[:：\\\\s]*([A-Za-z0-9_-]{4,})"],
+      };
+    case "zhihu":
+      return {
+        displayNameSelectors: [
+          ".ProfileHeader-name",
+          ".AppHeader-profileEntry-name",
+          "[class*='ProfileHeader-name']",
+          "[class*='profileEntry'] [class*='name']",
+        ],
+        avatarSelectors: [
+          ".ProfileHeader-avatar img",
+          ".AppHeader-profile img",
+          "[class*='Avatar'] img",
+          "img[src*='zhimg.com']",
+        ],
+        accountIdSelectors: [
+          "a[href*='/people/']",
+          ".ProfileHeader-content a[href*='/people/']",
+        ],
+        idPatterns: ["知乎号[:：\\\\s]*([A-Za-z0-9_-]{4,})", "账号ID[:：\\\\s]*([A-Za-z0-9_-]{4,})"],
+      };
+    case "weibo":
+      return {
+        displayNameSelectors: [
+          "._name_1yc79_291",
+          "[class*='_name_']",
+          "[class*='profile-name']",
+          "[class*='user-name']",
+          "[class*='nickname']",
+        ],
+        avatarSelectors: [
+          "[class*='avatar'] img",
+          ".woo-avatar-img",
+          "img[src*='sinaimg.cn']",
+          "img[src*='weiboimg.com']",
+        ],
+        accountIdSelectors: [
+          "a[href*='/u/']",
+          "a[href*='/profile/']",
+          "[class*='user-id']",
+        ],
+        idPatterns: ["微博号[:：\\\\s]*([A-Za-z0-9_-]{4,})", "UID[:：\\\\s]*([A-Za-z0-9_-]{4,})", "账号ID[:：\\\\s]*([A-Za-z0-9_-]{4,})"],
+      };
+    case "csdn":
+      return {
+        displayNameSelectors: [
+          "[class*='toolbar-name']",
+          "[class*='profile-name']",
+          "[class*='user-name']",
+          ".toolbar-btn-name",
+          ".user-name",
+        ],
+        avatarSelectors: [
+          "[class*='avatar'] img",
+          ".toolbar-avatar img",
+          "img[src*='csdnimg.cn']",
+          "img[src*='csdn.net']",
+        ],
+        accountIdSelectors: [
+          "a[href*='blog.csdn.net/']",
+          "a[href*='/user/']",
+          "[class*='user-id']",
+        ],
+        idPatterns: ["CSDNID[:：\\\\s]*([A-Za-z0-9_-]{4,})", "账号ID[:：\\\\s]*([A-Za-z0-9_-]{4,})"],
       };
     default:
       return {
@@ -722,8 +894,10 @@ async function extractPlatformAccountProfile(windowInstance, input = {}) {
         const lower = text.toLowerCase();
         return Boolean(text) && !blockedNames.has(text) && !genericPlatformNames.has(text) && !invalidProfileValues.has(lower) && !blockedNamePattern.test(text) && text.length >= 2 && text.length <= 40;
       };
+      const stripPlatformIdPrefix = (value) =>
+        normalizeText(value).replace(/^(账号ID|ID|抖音号|头条号|百家号ID|百家号|知乎号|微博号|微信号|公众号|视频号|小红书号|小红书ID|CSDNID|UID)[:：\\s]*/i, "");
       const isMeaningfulPlatformId = (value) => {
-        const text = normalizeText(value).replace(/^(账号ID|ID|抖音号|头条号)[:：\\s]*/i, "");
+        const text = stripPlatformIdPrefix(value);
         const lower = text.toLowerCase();
         if (!text || invalidProfileValues.has(lower)) return false;
         if (text.length < 4 || text.length > 80) return false;
@@ -752,6 +926,40 @@ async function extractPlatformAccountProfile(windowInstance, input = {}) {
           for (const node of nodes) {
             const text = normalizeText(node?.textContent);
             if (isVisible(node) && validator(text)) return text;
+          }
+        }
+        return "";
+      };
+      const extractPlatformIdFromHref = (href) => {
+        const text = toAbsoluteUrl(href);
+        if (!/^https?:\\/\\//i.test(text)) return "";
+        try {
+          const url = new URL(text, window.location.href);
+          const pathname = url.pathname || "";
+          const matched =
+            pathname.match(/\\/people\\/([^/?#]+)/i) ||
+            pathname.match(/\\/u\\/([^/?#]+)/i) ||
+            pathname.match(/\\/user\\/profile\\/([^/?#]+)/i) ||
+            pathname.match(/\\/profile\\/([^/?#]+)/i) ||
+            pathname.match(/\\/platform\\/([^/?#]+)/i) ||
+            pathname.match(/blog\\.csdn\\.net\\/([^/?#]+)/i) ||
+            url.href.match(/blog\\.csdn\\.net\\/([^/?#]+)/i);
+          return matched?.[1] ? stripPlatformIdPrefix(matched[1]) : "";
+        } catch (_) {
+          return "";
+        }
+      };
+      const pickPlatformIdBySelectors = (selectors) => {
+        for (const selector of selectors || []) {
+          const nodes = Array.from(document.querySelectorAll(selector));
+          for (const node of nodes) {
+            if (!isVisible(node)) continue;
+            const text = stripPlatformIdPrefix(node?.textContent);
+            if (isMeaningfulPlatformId(text)) return text;
+            const hrefId = extractPlatformIdFromHref(node?.getAttribute?.("href") || "");
+            if (isMeaningfulPlatformId(hrefId)) return hrefId;
+            const dataHrefId = extractPlatformIdFromHref(node?.getAttribute?.("data-href") || "");
+            if (isMeaningfulPlatformId(dataHrefId)) return dataHrefId;
           }
         }
         return "";
@@ -854,7 +1062,7 @@ async function extractPlatformAccountProfile(windowInstance, input = {}) {
         .map((element) => toAbsoluteUrl(element.getAttribute("src") || element.getAttribute("data-src") || ""))
         .find((src) => /avatar|head|portrait|douyinpic|toutiaoimg|byteimg|pstatp/i.test(src)) || "";
       const pageText = normalizeText(document.body?.innerText || "");
-      let platformAccountId = pickTextBySelectors(probe.accountIdSelectors, isMeaningfulPlatformId).replace(/^(账号ID|ID|抖音号|头条号)[:：\\s]*/i, "")
+      let platformAccountId = pickPlatformIdBySelectors(probe.accountIdSelectors)
         || pickStorageValue(
           /uid|user_id|userid|sec_uid|secuid|account_id|accountid|profile_id|profileid|memberid|unique_id|short_id|douyin_id/i,
           isMeaningfulPlatformId,
@@ -865,7 +1073,7 @@ async function extractPlatformAccountProfile(windowInstance, input = {}) {
         for (const source of probe.idPatterns || []) {
           const matched = pageText.match(new RegExp(source, "i"));
           if (matched?.[1] && isMeaningfulPlatformId(matched[1])) {
-            platformAccountId = normalizeText(matched[1]);
+            platformAccountId = stripPlatformIdPrefix(matched[1]);
             break;
           }
         }
@@ -988,6 +1196,20 @@ function getPlatformAccountProfileProbeUrls(input = {}) {
         "https://creator.douyin.com/creator-micro/home",
         "https://creator.douyin.com/creator-micro/content/manage",
       ];
+    case "xiaohongshu":
+      return [
+        "https://creator.xiaohongshu.com/publish/publish?from=menu&target=article",
+        "https://creator.xiaohongshu.com/",
+      ];
+    case "wechat":
+      return ["https://mp.weixin.qq.com/cgi-bin/home?t=home/index"];
+    case "videohao":
+      return [
+        "https://channels.weixin.qq.com/platform",
+        "https://channels.weixin.qq.com/platform/post/list",
+      ];
+    case "zhihu":
+      return ["https://www.zhihu.com/people/self", "https://www.zhihu.com/creator"];
     default:
       return [];
   }
