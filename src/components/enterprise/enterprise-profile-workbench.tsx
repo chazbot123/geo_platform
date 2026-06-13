@@ -50,7 +50,7 @@ const fieldGroups: Array<{
     fields: [
       { key: "companyName", label: "公司名称", required: true, placeholder: "例如：杭州某某科技有限公司" },
       { key: "brandShortName", label: "品牌简称", required: true, placeholder: "例如：某某科技" },
-      { key: "productService", label: "产品服务", required: true, placeholder: "例如：企业级内容生产工具" },
+      { key: "productService", label: "产品/服务", required: true, placeholder: "例如：企业级内容生产工具" },
     ],
   },
   {
@@ -185,7 +185,7 @@ function fieldLabel(field: keyof EnterpriseProfileFields) {
     case "brandShortName":
       return "品牌简称";
     case "productService":
-      return "产品服务";
+      return "产品/服务";
     case "region":
       return "地区";
     default:
@@ -438,18 +438,35 @@ export function EnterpriseProfileWorkbench() {
                 <UploadCloud className="h-4 w-4 text-accent" />
                 <h3 className="text-sm font-semibold text-ink">企业资料</h3>
               </div>
-              <label className="mb-4 flex cursor-pointer flex-col items-center justify-center gap-2 rounded-md border border-dashed border-line px-3 py-5 text-center text-sm text-muted transition hover:border-accent hover:text-ink">
-                <span className="inline-flex items-center gap-2">
-                  <UploadCloud className="h-4 w-4" />
-                  上传企业文档或参考图片
-                </span>
-                <span className="text-xs text-muted">可读取文档会自动解析回填表格，图片会作为后续生成生图的参考素材</span>
+              <label
+                className={`mb-4 flex flex-col items-center justify-center gap-2 rounded-md border border-dashed px-3 py-8 text-center text-sm transition ${
+                  parsing
+                    ? "cursor-wait border-accent bg-accent/5 text-accent"
+                    : "cursor-pointer border-line text-muted hover:border-accent hover:text-ink"
+                }`}
+              >
+                {parsing ? (
+                  <>
+                    <Loader2 className="mb-1 h-8 w-8 animate-spin" />
+                    <span className="font-semibold">正在深度解析文档...</span>
+                    <span className="text-xs opacity-80">提取关键信息中，请稍候</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="inline-flex items-center gap-2 font-medium">
+                      <UploadCloud className="h-5 w-5" />
+                      上传企业文档或参考图片
+                    </span>
+                    <span className="text-xs text-muted">可读取文档会自动解析回填表格，图片会作为后续生成生图的参考素材</span>
+                  </>
+                )}
                 <input
                   type="file"
                   multiple
                   accept=".txt,.md,.csv,.json,.pdf,.docx,.png,.jpg,.jpeg,.webp"
                   className="hidden"
                   onChange={(event) => parseFiles(event.target.files)}
+                  disabled={parsing}
                 />
               </label>
               <p className="mb-4 text-xs leading-5 text-muted">

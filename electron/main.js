@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, session } = require("electron");
+const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, shell, session } = require("electron");
 const fs = require("node:fs");
 const http = require("node:http");
 const next = require("next");
@@ -9,8 +9,11 @@ const isDev = !app.isPackaged;
 const DEV_SERVER_URL = process.env.GEO_DEV_SERVER_URL || "http://localhost:3000";
 const PROD_SERVER_URL = "http://127.0.0.1:3131";
 let mainWindow;
+let appTray;
 let server;
 let localBridge;
+let isQuitting = false;
+let closeNoticeShown = false;
 const preloadPath = path.join(__dirname, "preload.js");
 const automationDirectory = path.join(__dirname, "publish-automation");
 const automationHelperFile = path.join(automationDirectory, "dom-helpers.js");
@@ -18,7 +21,11 @@ const publishProgressSessions = new Map();
 const PUBLISH_PROGRESS_TTL_MS = 10 * 60 * 1000;
 const AUTOMATION_SUCCESS_STATUSES = new Set(["published", "submitted", "verifying", "pending_review", "verification_failed"]);
 const AUTOMATION_TERMINAL_STATUSES = new Set([...AUTOMATION_SUCCESS_STATUSES, "failed", "unsupported"]);
+const GLOBAL_SESSION_AUDIT_INTERVAL_MS = 60 * 60 * 1000;
 let activeBridgeOperations = 0;
+let currentAppBaseUrl = "";
+let globalSessionAuditTimer = null;
+let globalSessionAuditRunning = false;
 
 const STAGE_LABELS = {
   init: "准备启动",
@@ -67,6 +74,97 @@ function formatStageLabel(stage) {
     return "未知阶段";
   }
   return STAGE_LABELS[normalized] || normalized.replace(/_/g, " ");
+}
+
+function loadDesktopIcon() {
+  const candidatePaths = [
+    path.join(__dirname, "assets", "ai-search.ico"),
+    path.join(__dirname, "assets", "ai-search.png"),
+    path.join(app.getAppPath(), "src", "img", "ai搜.png"),
+    path.join(app.getAppPath(), "src", "img", "ai搜索.png"),
+    path.join(app.getAppPath(), "src", "img", "ai搜索.svg"),
+    path.join(__dirname, "assets", "ai-search.svg"),
+    path.join(__dirname, "assets", "tray-icon.png"),
+  ];
+
+  for (const candidatePath of candidatePaths) {
+    try {
+      if (!fs.existsSync(candidatePath)) {
+        continue;
+      }
+      const image = nativeImage.createFromPath(candidatePath);
+      if (!image.isEmpty()) {
+        return image;
+      }
+    } catch (_) {
+      // Ignore invalid icon candidates and continue with fallbacks.
+    }
+  }
+
+  return nativeImage.createEmpty();
+}
+
+function restoreMainWindow() {
+  if (!mainWindow) {
+    return;
+  }
+  mainWindow.setSkipTaskbar(false);
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function ensureTray() {
+  if (appTray) {
+    return appTray;
+  }
+
+  const icon = loadDesktopIcon();
+  const trayIcon = icon.isEmpty() ? icon : icon.resize({ width: 16, height: 16 });
+  appTray = new Tray(trayIcon);
+  appTray.setToolTip("GEO桌面版");
+  appTray.setContextMenu(
+    Menu.buildFromTemplate([
+      {
+        label: "显示主窗口",
+        click: () => restoreMainWindow(),
+      },
+      {
+        label: "退出",
+        click: () => {
+          isQuitting = true;
+          app.quit();
+        },
+      },
+    ]),
+  );
+  appTray.on("click", () => restoreMainWindow());
+
+  return appTray;
+}
+
+function hideMainWindowToTray() {
+  if (!mainWindow) {
+    return;
+  }
+  ensureTray();
+  mainWindow.setSkipTaskbar(true);
+  mainWindow.hide();
+
+  if (process.platform === "win32" && appTray && !closeNoticeShown) {
+    closeNoticeShown = true;
+    try {
+      appTray.displayBalloon({
+        iconType: "info",
+        title: "GEO桌面版",
+        content: "程序已最小化到托盘，点击托盘图标可恢复窗口。",
+      });
+    } catch (_) {
+      // Ignore tray balloon errors.
+    }
+  }
 }
 
 function createProgressSnapshot(sessionToken, platform) {
@@ -265,6 +363,8 @@ async function startNextServer() {
 async function createWindow() {
   ensureDataDir();
   const appUrl = await startNextServer();
+  currentAppBaseUrl = appUrl;
+  const desktopIcon = loadDesktopIcon();
 
   mainWindow = new BrowserWindow({
     width: 1500,
@@ -273,6 +373,7 @@ async function createWindow() {
     minHeight: 760,
     backgroundColor: "#08101d",
     autoHideMenuBar: true,
+    icon: desktopIcon.isEmpty() ? undefined : desktopIcon,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -280,8 +381,19 @@ async function createWindow() {
     },
   });
   hideWindowMenu(mainWindow);
+  mainWindow.on("close", (event) => {
+    if (isQuitting) {
+      return;
+    }
+    event.preventDefault();
+    hideMainWindowToTray();
+  });
+  mainWindow.on("show", () => {
+    mainWindow?.setSkipTaskbar(false);
+  });
 
   await mainWindow.loadURL(appUrl);
+  startGlobalSessionAuditScheduler();
 }
 
 function createScopedWindow(input = {}) {
@@ -546,6 +658,7 @@ function getPlatformSessionSpec(platform, publishUrl) {
         publishUrl: publishUrl || "https://editor.csdn.net/md/",
         loginUrlHints: ["/login", "passport", "sso", "signin"],
         loginTextHints: ["扫码登录", "账号密码登录", "请输入手机号", "验证码登录"],
+        authenticatedSelectors: [".toolbar-btn-name", ".toolbar-avatar img", "a[href*='blog.csdn.net/']"],
       };
     default:
       return {
@@ -566,6 +679,97 @@ async function getSessionCookieCount(spec, partition) {
   }
 }
 
+async function getSessionCookiesForAuthPayload(input = {}, spec, partition) {
+  const partitionSession = partition ? session.fromPartition(partition) : session.defaultSession;
+  const targetUrls = getCookieTargetUrls(input.platform, spec.publishUrl);
+  const seen = new Set();
+  const collected = [];
+
+  for (const targetUrl of targetUrls) {
+    try {
+      const cookies = await partitionSession.cookies.get({ url: targetUrl });
+      for (const cookie of cookies) {
+        const cookieKey = `${cookie.name}|${cookie.domain || ""}|${cookie.path || "/"}`;
+        if (seen.has(cookieKey)) {
+          continue;
+        }
+        seen.add(cookieKey);
+        collected.push({
+          name: cookie.name,
+          value: cookie.value,
+          domain: cookie.domain || undefined,
+          path: cookie.path || "/",
+          secure: cookie.secure !== false,
+          httpOnly: typeof cookie.httpOnly === "boolean" ? cookie.httpOnly : undefined,
+          sameSite: typeof cookie.sameSite === "string" ? cookie.sameSite : undefined,
+          expirationDate: typeof cookie.expirationDate === "number" ? cookie.expirationDate : undefined,
+        });
+      }
+    } catch (_) {
+      // Ignore per-domain cookie read failures and continue collecting the rest.
+    }
+  }
+
+  return collected;
+}
+
+async function captureWindowStorage(windowInstance) {
+  if (!windowInstance || windowInstance.isDestroyed()) {
+    return { localStorage: {}, sessionStorage: {} };
+  }
+  try {
+    return await windowInstance.webContents.executeJavaScript(
+      `(() => {
+        const readStorage = (storage) => {
+          const entries = {};
+          try {
+            for (let index = 0; index < storage.length; index += 1) {
+              const key = storage.key(index);
+              if (!key) continue;
+              const value = storage.getItem(key);
+              if (typeof value === "string") {
+                entries[key] = value;
+              }
+            }
+          } catch (_) {
+            // Ignore storage read errors and keep other values.
+          }
+          return entries;
+        };
+        return {
+          localStorage: readStorage(window.localStorage),
+          sessionStorage: readStorage(window.sessionStorage),
+        };
+      })()`,
+      true,
+    );
+  } catch (_) {
+    return { localStorage: {}, sessionStorage: {} };
+  }
+}
+
+async function buildSessionAuthPayload(input = {}, windowInstance, spec, partition) {
+  const validatedAt = now();
+  const [cookies, storage] = await Promise.all([
+    getSessionCookiesForAuthPayload(input, spec, partition),
+    captureWindowStorage(windowInstance),
+  ]);
+  const localStorage = storage?.localStorage && typeof storage.localStorage === "object" ? storage.localStorage : {};
+  const sessionStorage = storage?.sessionStorage && typeof storage.sessionStorage === "object" ? storage.sessionStorage : {};
+  if (!cookies.length && !Object.keys(localStorage).length && !Object.keys(sessionStorage).length) {
+    return { validatedAt };
+  }
+  return {
+    authPayload: JSON.stringify({
+      cookies,
+      localStorage,
+      sessionStorage,
+    }),
+    authPayloadUpdatedAt: validatedAt,
+    validatedAt,
+  };
+}
+
 async function inspectLoadedPlatformPage(windowInstance, spec, cookieCount) {
   const inspection = await windowInstance.webContents.executeJavaScript(
     `(() => {
@@ -573,8 +777,16 @@ async function inspectLoadedPlatformPage(windowInstance, spec, cookieCount) {
       const pageText = String(document.body?.innerText || document.body?.textContent || "").replace(/\\s+/g, " ").trim();
       const loginUrlHints = ${JSON.stringify(spec.loginUrlHints)};
       const loginTextHints = ${JSON.stringify(spec.loginTextHints)};
+      const authenticatedSelectors = ${JSON.stringify(spec.authenticatedSelectors || [])};
       const lowerUrl = currentUrl.toLowerCase();
       const matchedUrlHint = loginUrlHints.find((hint) => lowerUrl.includes(String(hint).toLowerCase())) || "";
+      const hasAuthenticatedMarker = authenticatedSelectors.some((selector) =>
+        Array.from(document.querySelectorAll(selector)).some((element) => {
+          const style = window.getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
+        }),
+      );
       const visibleControls = Array.from(document.querySelectorAll("input, textarea, button, [role='button'], a"))
         .filter((element) => {
           const style = window.getComputedStyle(element);
@@ -601,10 +813,20 @@ async function inspectLoadedPlatformPage(windowInstance, spec, cookieCount) {
         currentUrl,
         matchedUrlHint,
         matchedTextHint,
+        hasAuthenticatedMarker,
       };
     })()`,
     true,
   );
+
+  if (inspection?.hasAuthenticatedMarker) {
+    return {
+      status: "authenticated",
+      reason: cookieCount > 0 ? `检测到 ${cookieCount} 个会话 Cookie，且命中平台已登录标记。` : "命中平台已登录标记，判定为已登录。",
+      currentUrl: inspection?.currentUrl || spec.publishUrl,
+      cookieCount,
+    };
+  }
 
   if (inspection?.matchedUrlHint || inspection?.matchedTextHint) {
     return {
@@ -630,25 +852,43 @@ function buildPlatformAccountProfileProbe(platform) {
     case "toutiao":
       return {
         displayNameSelectors: [
+          ".auth-avator-name",
           "span.name",
           ".user-name",
           ".header-user-name",
+          ".user-info-name",
           ".user__name",
           ".header-right .name",
           ".header-user-info .name",
+          ".header-user-info .user-name",
+          ".header-user-info [class*='name']",
+          ".topbar-user-name",
           ".avatar-name",
           "[class*='user-name']",
           "[class*='account-name']",
+          "[class*='nick-name']",
+          "[class*='nickname']",
           "[data-e2e='user-name']",
         ],
         avatarSelectors: [
+          ".auth-avator-img",
           ".header-avatar img",
+          ".header-avatar",
           ".user-avatar img",
+          ".user-avatar",
           ".avatar img",
+          ".avatar",
           "[class*='avatar'] img",
+          "[class*='avatar']",
           "[class*='user-avatar'] img",
+          "[class*='user-avatar']",
+          "img[alt*='头像']",
           "img[src*='toutiaoimg.com']",
           "img[src*='byteimg.com']",
+          "img[data-src*='toutiaoimg.com']",
+          "img[data-src*='byteimg.com']",
+          "img[srcset*='toutiaoimg.com']",
+          "img[srcset*='byteimg.com']",
         ],
         accountIdSelectors: [".user-id", ".account-id", "[data-e2e='user-id']", "[class*='user-id']", "[class*='account-id']"],
         idPatterns: ["头条号[:：\\\\s]*([A-Za-z0-9_-]{4,})", "账号ID[:：\\\\s]*([A-Za-z0-9_-]{4,})", "ID[:：\\\\s]*([A-Za-z0-9_-]{4,})"],
@@ -716,6 +956,7 @@ function buildPlatformAccountProfileProbe(platform) {
     case "wechat":
       return {
         displayNameSelectors: [
+          ".weui-desktop_name",
           "[data-v-f8205402]",
           ".weui-desktop-account__info-name",
           ".account_box .account_name",
@@ -724,6 +965,7 @@ function buildPlatformAccountProfileProbe(platform) {
           "[class*='account-name']",
         ],
         avatarSelectors: [
+          ".weui-desktop-account__img",
           ".weui-desktop-account__info-avatar img",
           ".account_box img",
           "[class*='avatar'] img",
@@ -741,6 +983,7 @@ function buildPlatformAccountProfileProbe(platform) {
     case "videohao":
       return {
         displayNameSelectors: [
+          ".finder-nickname",
           "[class*='nickname']",
           "[class*='account-name']",
           "[class*='user-name']",
@@ -751,6 +994,8 @@ function buildPlatformAccountProfileProbe(platform) {
           ".name",
         ],
         avatarSelectors: [
+          "img.avatar[alt*='视频号头像']",
+          "img.avatar",
           "[class*='avatar'] img",
           "[class*='avatar']",
           ".account-avatar img",
@@ -889,8 +1134,19 @@ async function extractPlatformAccountProfile(windowInstance, input = {}) {
           ? /nickname|nick_name|screen_name|display_name|displayname|remark_name|nick/i
           : /nickname|nick_name|screen_name|display_name|displayname|name|user_name|username|authorname/i;
       const normalizeText = (value) => String(value || "").replace(/\\s+/g, " ").trim();
-      const isMeaningfulName = (value) => {
+      const sanitizeDisplayNameByPlatform = (value) => {
         const text = normalizeText(value);
+        if (!text) return "";
+        if (platform === "baijiahao") {
+          const matched = text.match(/^(?:上午好|中午好|下午好|晚上好)[,，]\\s*(.+)$/);
+          if (matched?.[1]) {
+            return normalizeText(matched[1]);
+          }
+        }
+        return text;
+      };
+      const isMeaningfulName = (value) => {
+        const text = sanitizeDisplayNameByPlatform(value);
         const lower = text.toLowerCase();
         return Boolean(text) && !blockedNames.has(text) && !genericPlatformNames.has(text) && !invalidProfileValues.has(lower) && !blockedNamePattern.test(text) && text.length >= 2 && text.length <= 40;
       };
@@ -924,7 +1180,14 @@ async function extractPlatformAccountProfile(windowInstance, input = {}) {
         for (const selector of selectors || []) {
           const nodes = Array.from(document.querySelectorAll(selector));
           for (const node of nodes) {
-            const text = normalizeText(node?.textContent);
+            const text = sanitizeDisplayNameByPlatform(
+              node?.textContent ||
+                node?.getAttribute?.("title") ||
+                node?.getAttribute?.("aria-label") ||
+                node?.getAttribute?.("alt") ||
+                node?.getAttribute?.("data-name") ||
+                "",
+            );
             if (isVisible(node) && validator(text)) return text;
           }
         }
@@ -965,15 +1228,33 @@ async function extractPlatformAccountProfile(windowInstance, input = {}) {
         return "";
       };
       const pickAvatarBySelectors = (selectors) => {
+        const pickUrlFromSrcset = (value) => {
+          const raw = String(value || "").trim();
+          if (!raw) return "";
+          const firstCandidate = raw
+            .split(",")
+            .map((item) => item.trim().split(/\s+/)[0])
+            .find(Boolean);
+          return toAbsoluteUrl(firstCandidate || "");
+        };
         for (const selector of selectors || []) {
           const nodes = Array.from(document.querySelectorAll(selector));
           for (const node of nodes) {
             if (!node || !isVisible(node)) continue;
-            const src = toAbsoluteUrl(node.getAttribute("src") || node.getAttribute("data-src") || "");
+            const src = toAbsoluteUrl(
+              node.getAttribute("src") ||
+                node.getAttribute("data-src") ||
+                node.getAttribute("data-avatar") ||
+                node.getAttribute("poster") ||
+                "",
+            );
             if (src && /^https?:\\/\\//i.test(src)) return src;
+            const srcset = pickUrlFromSrcset(node.getAttribute("srcset") || node.getAttribute("data-srcset") || "");
+            if (srcset && /^https?:\\/\\//i.test(srcset)) return srcset;
             const backgroundImage = normalizeText(window.getComputedStyle(node).backgroundImage || "");
-            const matched = backgroundImage.match(/url\\(["']?(https?:[^"')]+)["']?\\)/i);
-            if (matched?.[1]) return matched[1];
+            const matched = backgroundImage.match(/url\\(["']?([^"')]+)["']?\\)/i);
+            const backgroundUrl = toAbsoluteUrl(matched?.[1] || "");
+            if (backgroundUrl && /^https?:\\/\\//i.test(backgroundUrl)) return backgroundUrl;
           }
         }
         return "";
@@ -1093,10 +1374,10 @@ async function extractPlatformAccountProfile(windowInstance, input = {}) {
         )
         || metaAvatar
         || fallbackAvatar;
-      const accountName = normalizeText(displayName || platformAccountId || "");
+      const accountName = sanitizeDisplayNameByPlatform(displayName || platformAccountId || "");
       return {
         accountName: accountName || undefined,
-        displayName: normalizeText(displayName) || undefined,
+        displayName: sanitizeDisplayNameByPlatform(displayName) || undefined,
         platformAccountId: normalizeText(platformAccountId) || undefined,
         avatarUrl: normalizeText(avatarUrl) || undefined,
         sourceUrl: normalizeText(window.location.href) || undefined,
@@ -1191,6 +1472,12 @@ function mergePlatformAccountProfiles(currentProfile = {}, nextProfile = {}) {
 
 function getPlatformAccountProfileProbeUrls(input = {}) {
   switch (String(input.platform || "").trim()) {
+    case "toutiao":
+      return [
+        "https://mp.toutiao.com/",
+        "https://mp.toutiao.com/profile_v4/",
+        "https://mp.toutiao.com/profile_v4/index",
+      ];
     case "douyin":
       return [
         "https://creator.douyin.com/creator-micro/home",
@@ -1310,13 +1597,30 @@ async function inspectPlatformSession(input = {}) {
       await validationWindow.loadURL(spec.publishUrl);
       await waitForWindowStable(validationWindow);
     }
-    return inspectLoadedPlatformPage(validationWindow, spec, cookieCount);
+    const inspection = await inspectLoadedPlatformPage(validationWindow, spec, cookieCount);
+    if (inspection.status === "authenticated") {
+      const sessionPayload = await buildSessionAuthPayload(
+        { ...input, publishUrl: spec.publishUrl },
+        validationWindow,
+        spec,
+        partition,
+      );
+      return {
+        ...inspection,
+        ...sessionPayload,
+      };
+    }
+    return {
+      ...inspection,
+      validatedAt: now(),
+    };
   } catch (error) {
     return {
       status: "unknown",
       reason: error instanceof Error ? error.message : "平台会话检测失败。",
       currentUrl: spec.publishUrl,
       cookieCount,
+      validatedAt: now(),
     };
   } finally {
     if (!validationWindow.isDestroyed()) {
@@ -1372,6 +1676,12 @@ function openPlatformLoginWindow(input = {}) {
         const sessionState = await inspectLoadedPlatformPage(loginWindow, spec, cookieCount);
         if (sessionState.status === "authenticated") {
           const profile = await resolvePlatformAccountProfile(loginWindow, input).catch(() => ({}));
+          const sessionPayload = await buildSessionAuthPayload(
+            { ...input, publishUrl: spec.publishUrl || loginUrl },
+            loginWindow,
+            spec,
+            partition,
+          ).catch(() => ({ validatedAt: now() }));
           // #region debug-point A:electron-profile
           emitDebug("A", "electron/main.js:openPlatformLoginWindow:profile", "Electron 提取账号资料", {
             platform: input.platform || null,
@@ -1389,6 +1699,9 @@ function openPlatformLoginWindow(input = {}) {
             status: "authenticated",
             reason: sessionState.reason,
             profile,
+            authPayload: sessionPayload.authPayload,
+            authPayloadUpdatedAt: sessionPayload.authPayloadUpdatedAt,
+            validatedAt: sessionPayload.validatedAt,
           });
           return;
         }
@@ -1408,6 +1721,9 @@ function openPlatformLoginWindow(input = {}) {
     loginWindow.webContents.setWindowOpenHandler(({ url }) => {
       shell.openExternal(url).catch(() => {});
       return { action: "deny" };
+    });
+    loginWindow.webContents.on("will-prevent-unload", (event) => {
+      event.preventDefault();
     });
 
     loginWindow.on("closed", () => {
@@ -1805,6 +2121,184 @@ async function fetchJsonWithTimeout(url, timeoutMs = 2500) {
     return await response.json();
   } finally {
     clearTimeout(timer);
+  }
+}
+
+async function requestJsonWithTimeout(url, init = {}, timeoutMs = 8000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      ...init,
+      signal: controller.signal,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const reason = typeof payload?.error === "string" && payload.error.trim() ? payload.error.trim() : `HTTP ${response.status}`;
+      throw new Error(reason);
+    }
+    return payload;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function buildSessionAuditFailureReason(status, reason) {
+  const normalizedReason = String(reason || "").trim();
+  if (normalizedReason) {
+    return normalizedReason;
+  }
+  switch (String(status || "").trim()) {
+    case "expired":
+      return "登录已失效，请重新登录";
+    case "missing_session":
+      return "未检测到登录信息，请重新登录";
+    case "unknown":
+      return "暂时无法确认当前平台登录状态，请重新登录后再发布。";
+    default:
+      return "桌面登录未完成。";
+  }
+}
+
+function isAuditablePlatformAccount(account) {
+  return (
+    account &&
+    account.loginStatus === "authenticated" &&
+    account.provider === "electron" &&
+    account.authType !== "manual" &&
+    typeof account.sessionPartition === "string" &&
+    account.sessionPartition.trim()
+  );
+}
+
+async function listAuditablePlatformAccounts() {
+  if (!currentAppBaseUrl) {
+    return [];
+  }
+  const payload = await requestJsonWithTimeout(`${currentAppBaseUrl}/api/publish/accounts`, undefined, 12000);
+  return Array.isArray(payload?.items) ? payload.items.filter(isAuditablePlatformAccount) : [];
+}
+
+function buildSessionAuditPatch(validation) {
+  const validatedAt = validation?.validatedAt || now();
+  if (validation?.status === "authenticated") {
+    const patch = {
+      action: "session_audit",
+      loginStatus: "authenticated",
+      status: "valid",
+      lastError: undefined,
+      lastValidatedAt: validatedAt,
+    };
+    if (typeof validation?.authPayload === "string" && validation.authPayload.trim()) {
+      patch.authPayload = validation.authPayload.trim();
+      patch.authPayloadUpdatedAt = validation.authPayloadUpdatedAt || validatedAt;
+    }
+    return patch;
+  }
+  const lastError = buildSessionAuditFailureReason(validation?.status, validation?.reason);
+  return {
+    action: "session_audit",
+    loginStatus: "failed",
+    status: "invalid",
+    lastError,
+    lastValidatedAt: validatedAt,
+  };
+}
+
+async function persistSessionAuditPatch(accountId, patch) {
+  if (!currentAppBaseUrl || !accountId) {
+    return null;
+  }
+  return requestJsonWithTimeout(
+    `${currentAppBaseUrl}/api/publish/accounts/${encodeURIComponent(accountId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    },
+    12000,
+  );
+}
+
+async function runGlobalSessionAudit(trigger = "interval") {
+  if (globalSessionAuditRunning || !currentAppBaseUrl) {
+    return;
+  }
+  globalSessionAuditRunning = true;
+  try {
+    const accounts = await listAuditablePlatformAccounts();
+    if (!accounts.length) {
+      return;
+    }
+
+    let verifiedCount = 0;
+    let downgradedCount = 0;
+
+    for (const account of accounts) {
+      const validation = await inspectPlatformSession({
+        platform: account.platform,
+        publishUrl: account.loginUrl,
+        sessionPartition: account.sessionPartition,
+        authPayload: account.authPayload,
+      });
+      if (validation?.status === "unsupported") {
+        continue;
+      }
+      await persistSessionAuditPatch(account.id, buildSessionAuditPatch(validation));
+      if (validation?.status === "authenticated") {
+        verifiedCount += 1;
+      } else {
+        downgradedCount += 1;
+      }
+    }
+
+    if (verifiedCount || downgradedCount) {
+      await notifyFrontendAccountsRefresh();
+      console.log(
+        `[GEO global session audit] trigger=${trigger} verified=${verifiedCount} downgraded=${downgradedCount}`,
+      );
+    }
+  } catch (error) {
+    console.warn(
+      `[GEO global session audit] trigger=${trigger} failed: ${error instanceof Error ? error.message : "unknown"}`,
+    );
+  } finally {
+    globalSessionAuditRunning = false;
+  }
+}
+
+function startGlobalSessionAuditScheduler() {
+  if (globalSessionAuditTimer || !currentAppBaseUrl) {
+    return;
+  }
+  void trackBridgeOperation(() => runGlobalSessionAudit("startup"));
+  globalSessionAuditTimer = setInterval(() => {
+    void trackBridgeOperation(() => runGlobalSessionAudit("interval"));
+  }, GLOBAL_SESSION_AUDIT_INTERVAL_MS);
+}
+
+function stopGlobalSessionAuditScheduler() {
+  if (!globalSessionAuditTimer) {
+    return;
+  }
+  clearInterval(globalSessionAuditTimer);
+  globalSessionAuditTimer = null;
+}
+
+async function notifyFrontendAccountsRefresh() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  try {
+    await mainWindow.webContents.executeJavaScript(
+      `(() => {
+        window.dispatchEvent(new Event("geo-platform-accounts-refresh"));
+        window.dispatchEvent(new Event("geo-workflow-status-refresh"));
+      })()`,
+      true,
+    );
+  } catch (_) {
+    // Ignore refresh notification failures when the page is reloading or unavailable.
   }
 }
 
@@ -2421,6 +2915,9 @@ async function runPlatformPublish(input = {}) {
 }
 
 app.whenReady().then(async () => {
+  if (process.platform === "win32") {
+    app.setAppUserModelId("com.geo.desktop");
+  }
   localBridge = createLocalBridge({
     isReady: () => app.isReady(),
     getVersion: () => app.getVersion(),
@@ -2437,6 +2934,11 @@ app.whenReady().then(async () => {
   }
 
   await createWindow();
+});
+
+app.on("before-quit", () => {
+  isQuitting = true;
+  stopGlobalSessionAuditScheduler();
 });
 
 ipcMain.handle("geo:open-platform-login", async (_, input) => openPlatformLoginWindow(input));
@@ -2463,6 +2965,10 @@ app.on("window-all-closed", () => {
 });
 
 app.on("activate", () => {
+  if (mainWindow) {
+    restoreMainWindow();
+    return;
+  }
   if (BrowserWindow.getAllWindows().length === 0) {
     createWindow();
   }

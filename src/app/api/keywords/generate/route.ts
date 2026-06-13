@@ -51,6 +51,18 @@ export async function POST(request: Request) {
         { status: 500 },
       );
     }
+    if (error instanceof Error && error.message.startsWith("STAGE1_OUTPUT_PARSE_FAILED@")) {
+      return NextResponse.json(
+        { error: "文字模型已返回结果，但结果格式不符合要求，请重试，或更换更稳定的文字模型。" },
+        { status: 500 },
+      );
+    }
+    if (error instanceof Error && error.message.startsWith("STAGE1_API_BAD_JSON@")) {
+      return NextResponse.json(
+        { error: "文字模型返回了不可解析的响应，请检查模型接口兼容性后重试。" },
+        { status: 500 },
+      );
+    }
     return NextResponse.json({ error: error instanceof Error ? error.message : "生成提问句失败。" }, { status: 500 });
   }
 }

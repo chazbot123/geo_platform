@@ -1,12 +1,30 @@
 import { NextResponse } from "next/server";
-import { markPlatformAccountLoginResult, removePlatformAccount, updatePlatformAccountRecord } from "@/lib/publish/accounts-service";
+import {
+  markPlatformAccountLoginResult,
+  markPlatformAccountSessionAuditResult,
+  removePlatformAccount,
+  updatePlatformAccountRecord,
+} from "@/lib/publish/accounts-service";
 import { resumePlatformAccount } from "@/lib/publish/publish-queue-service";
 import type { PlatformAccountLoginStatus, PlatformAccountStatus } from "@/lib/types";
 
 export async function PATCH(request: Request, context: { params: { accountId: string } }) {
   try {
-    const { action, remark, accountName, displayName, platformAccountId, avatarUrl, loginStatus, status, lastError } = (await request.json()) as {
-      action?: "manual_resume";
+    const {
+      action,
+      remark,
+      accountName,
+      displayName,
+      platformAccountId,
+      avatarUrl,
+      loginStatus,
+      status,
+      lastError,
+      authPayload,
+      authPayloadUpdatedAt,
+      lastValidatedAt,
+    } = (await request.json()) as {
+      action?: "manual_resume" | "session_audit";
       remark?: string;
       accountName?: string;
       displayName?: string;
@@ -15,9 +33,24 @@ export async function PATCH(request: Request, context: { params: { accountId: st
       loginStatus?: PlatformAccountLoginStatus;
       status?: PlatformAccountStatus;
       lastError?: string;
+      authPayload?: string;
+      authPayloadUpdatedAt?: string;
+      lastValidatedAt?: string;
     };
     if (action === "manual_resume") {
       return NextResponse.json({ account: await resumePlatformAccount(context.params.accountId) });
+    }
+    if (action === "session_audit") {
+      return NextResponse.json({
+        account: await markPlatformAccountSessionAuditResult(context.params.accountId, {
+          loginStatus: loginStatus ?? "failed",
+          status,
+          lastError,
+          authPayload,
+          authPayloadUpdatedAt,
+          lastValidatedAt,
+        }),
+      });
     }
     const account = loginStatus
       ? await markPlatformAccountLoginResult(context.params.accountId, {
@@ -28,6 +61,9 @@ export async function PATCH(request: Request, context: { params: { accountId: st
           displayName,
           platformAccountId,
           avatarUrl,
+          authPayload,
+          authPayloadUpdatedAt,
+          lastValidatedAt,
         })
       : await updatePlatformAccountRecord(context.params.accountId, {
           remark,
@@ -37,6 +73,9 @@ export async function PATCH(request: Request, context: { params: { accountId: st
           avatarUrl,
           status,
           lastError,
+          authPayload,
+          authPayloadUpdatedAt,
+          lastValidatedAt,
         });
     return NextResponse.json({ account });
   } catch (error) {

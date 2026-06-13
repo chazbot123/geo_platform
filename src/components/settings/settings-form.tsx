@@ -1,14 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { CheckCircle, ImageIcon, LoaderCircle, Save, Type, XCircle } from "lucide-react";
-import {
-  getModelOptionsForProvider,
-  hydrateModelConfigWithProviderDefaults,
-  modelProviderOptions,
-  resolveModelConfigForProviderChange,
-  type ModelSection,
-} from "@/lib/config/model-providers";
+import { CheckCircle, Eye, EyeOff, ImageIcon, LoaderCircle, Save, Type, XCircle } from "lucide-react";
+import { hydrateModelConfigWithProviderDefaults, modelProviderOptions, resolveModelConfigForProviderChange, type ModelSection } from "@/lib/config/model-providers";
 import type { AppConfig, ModelApiConfig } from "@/lib/types";
 
 interface ProbeOutcome {
@@ -47,8 +41,6 @@ const fieldLabels: Record<keyof ModelApiConfig, string> = {
 };
 
 const editableFields: Array<keyof ModelApiConfig> = ["provider", "baseUrl", "modelName", "apiKey"];
-const CUSTOM_MODEL_VALUE = "__custom__";
-
 function getModelConfig(config: AppConfig, section: ModelSection) {
   return section === "text" ? config.contentModelApiConfig : config.imageModelApiConfig;
 }
@@ -68,6 +60,10 @@ export function SettingsForm({ initialConfig }: { initialConfig: AppConfig }) {
   const [message, setMessage] = useState("");
   const [probing, setProbing] = useState(false);
   const [probeResult, setProbeResult] = useState<ProbeResult | null>(null);
+  const [apiKeyVisibility, setApiKeyVisibility] = useState<Record<ModelSection, boolean>>({
+    text: false,
+    image: false,
+  });
 
   function updateModel(section: ModelSection, field: keyof ModelApiConfig, value: string) {
     setConfig((currentConfig) => {
@@ -134,14 +130,6 @@ export function SettingsForm({ initialConfig }: { initialConfig: AppConfig }) {
         {(["text", "image"] as const).map((section) => {
           const modelConfig = getModelConfig(config, section);
           const Icon = modelLabels[section].icon;
-          const modelOptions = getModelOptionsForProvider(section, modelConfig.provider);
-          const showsModelSelect = modelConfig.provider !== "openai" && modelOptions.length > 0;
-          const usesCustomModel = showsModelSelect && !modelOptions.some((option) => option.value === modelConfig.modelName.trim());
-          const selectedModelValue = showsModelSelect
-            ? usesCustomModel
-              ? CUSTOM_MODEL_VALUE
-              : modelConfig.modelName.trim()
-            : modelConfig.modelName;
 
           return (
             <section key={section} className="rounded-lg border border-stroke bg-panel/70 p-5 shadow-panel">
@@ -171,37 +159,36 @@ export function SettingsForm({ initialConfig }: { initialConfig: AppConfig }) {
                           </option>
                         ))}
                       </select>
-                    ) : field === "modelName" && showsModelSelect ? (
-                      <div className="space-y-2">
-                        <select
-                          className="input-base"
-                          value={selectedModelValue || CUSTOM_MODEL_VALUE}
-                          onChange={(event) => updateModel(section, field, event.target.value === CUSTOM_MODEL_VALUE ? "" : event.target.value)}
+                    ) : field === "apiKey" ? (
+                      <div className="relative">
+                        <input
+                          className="input-base pr-11"
+                          type={apiKeyVisibility[section] ? "text" : "password"}
+                          value={String(modelConfig[field] ?? "")}
+                          onChange={(event) => updateModel(section, field, event.target.value)}
+                          autoComplete="off"
+                        />
+                        <button
+                          type="button"
+                          className="absolute inset-y-0 right-0 inline-flex w-11 items-center justify-center text-muted transition-colors hover:text-ink"
+                          onClick={() =>
+                            setApiKeyVisibility((currentVisibility) => ({
+                              ...currentVisibility,
+                              [section]: !currentVisibility[section],
+                            }))
+                          }
+                          aria-label={apiKeyVisibility[section] ? "隐藏 API Key" : "显示 API Key"}
+                          aria-pressed={apiKeyVisibility[section]}
                         >
-                          {modelOptions.map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                          <option value={CUSTOM_MODEL_VALUE}>自定义输入</option>
-                        </select>
-                        {usesCustomModel || !modelConfig.modelName.trim() ? (
-                          <input
-                            className="input-base"
-                            type="text"
-                            value={modelConfig.modelName}
-                            placeholder="请输入自定义模型名称"
-                            onChange={(event) => updateModel(section, field, event.target.value)}
-                          />
-                        ) : null}
+                          {apiKeyVisibility[section] ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                        </button>
                       </div>
                     ) : (
                       <input
                         className="input-base"
-                        type={field === "apiKey" ? "password" : "text"}
+                        type="text"
                         value={String(modelConfig[field] ?? "")}
                         onChange={(event) => updateModel(section, field, event.target.value)}
-                        autoComplete={field === "apiKey" ? "off" : undefined}
                       />
                     )}
                   </label>

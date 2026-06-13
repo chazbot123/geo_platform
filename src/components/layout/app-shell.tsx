@@ -22,7 +22,7 @@ import type { WorkflowStatus, WorkflowStepKey } from "@/lib/workflow/status-serv
 const workflowItems = [
   { key: "enterprise", href: "/enterprise", label: "企业信息", icon: Building2 },
   { key: "customerKeywords", href: "/customer-keywords", label: "客户关键词", icon: FileQuestion },
-  { key: "taskCreate", href: "/tasks/create", label: "创建任务", icon: PenLine },
+  { key: "taskCreate", href: "/tasks/create", label: "登录账号", icon: PenLine },
   { key: "contentPool", href: "/content-pool", label: "生成结果", icon: FolderKanban },
   { key: "publishExecution", href: "/publish-execution", label: "执行发布", icon: Rocket },
 ] satisfies Array<{ key: WorkflowStepKey; href: string; label: string; icon: typeof Building2 }>;

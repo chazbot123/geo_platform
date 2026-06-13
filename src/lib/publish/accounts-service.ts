@@ -112,6 +112,9 @@ function buildLoginResultPatch(
     displayName?: string;
     platformAccountId?: string;
     avatarUrl?: string;
+    authPayload?: string;
+    authPayloadUpdatedAt?: string;
+    lastValidatedAt?: string;
   },
 ): Partial<PlatformAccountRecord> {
   const hasProfileUpdate =
@@ -137,7 +140,7 @@ function buildLoginResultPatch(
     cooldownUntil: undefined,
     lastError: result.lastError,
     lastLoginCompletedAt: now(),
-    lastValidatedAt: now(),
+    lastValidatedAt: result.lastValidatedAt ?? now(),
     sessionPartition: current.sessionPartition,
     loginUrl: current.loginUrl,
     lastLoginStartedAt: current.lastLoginStartedAt,
@@ -149,6 +152,39 @@ function buildLoginResultPatch(
   }
   if (typeof result.avatarUrl === "string") {
     patch.avatarUrl = result.avatarUrl.trim() || undefined;
+  }
+  if (typeof result.authPayload === "string" && result.authPayload.trim()) {
+    patch.authPayload = result.authPayload.trim();
+    patch.authPayloadUpdatedAt = result.authPayloadUpdatedAt ?? patch.lastValidatedAt;
+  }
+  return patch;
+}
+
+function buildSessionAuditPatch(
+  current: PlatformAccountRecord,
+  result: {
+    loginStatus: PlatformAccountLoginStatus;
+    status?: PlatformAccountStatus;
+    lastError?: string;
+    authPayload?: string;
+    authPayloadUpdatedAt?: string;
+    lastValidatedAt?: string;
+  },
+): Partial<PlatformAccountRecord> {
+  const patch: Partial<PlatformAccountRecord> = {
+    loginStatus: result.loginStatus,
+    status: result.status ?? (result.loginStatus === "authenticated" ? "valid" : "invalid"),
+    riskState: result.loginStatus === "authenticated" ? "active" : "needs_login",
+    riskReason: result.loginStatus === "authenticated" ? undefined : result.lastError,
+    cooldownUntil: undefined,
+    lastError: result.lastError,
+    lastValidatedAt: result.lastValidatedAt ?? now(),
+    sessionPartition: current.sessionPartition,
+    loginUrl: current.loginUrl,
+  };
+  if (typeof result.authPayload === "string" && result.authPayload.trim()) {
+    patch.authPayload = result.authPayload.trim();
+    patch.authPayloadUpdatedAt = result.authPayloadUpdatedAt ?? patch.lastValidatedAt;
   }
   return patch;
 }
@@ -695,6 +731,9 @@ export async function markPlatformAccountLoginResult(
     displayName?: string;
     platformAccountId?: string;
     avatarUrl?: string;
+    authPayload?: string;
+    authPayloadUpdatedAt?: string;
+    lastValidatedAt?: string;
   },
 ) {
   const current = await getPlatformAccount(accountId);
@@ -731,6 +770,24 @@ export async function markPlatformAccountLoginResult(
   });
   // #endregion
   return mergeDuplicateAccounts(current, patch);
+}
+
+export async function markPlatformAccountSessionAuditResult(
+  accountId: string,
+  result: {
+    loginStatus: PlatformAccountLoginStatus;
+    status?: PlatformAccountStatus;
+    lastError?: string;
+    authPayload?: string;
+    authPayloadUpdatedAt?: string;
+    lastValidatedAt?: string;
+  },
+) {
+  const current = await getPlatformAccount(accountId);
+  if (!current) {
+    throw new Error("账号不存在");
+  }
+  return updatePlatformAccountRecord(accountId, buildSessionAuditPatch(current, result));
 }
 
 export async function deduplicateHistoricalPlatformAccounts(platform?: SocialPlatform) {

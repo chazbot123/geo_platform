@@ -15,7 +15,7 @@ export async function PUT(request: Request) {
     const message = error instanceof Error ? error.message : "企业信息保存失败。";
 
     if (message.startsWith("ENTERPRISE_REQUIRED_FIELDS:")) {
-      return NextResponse.json({ error: "请先填写公司名称、品牌简称、产品服务和地区。" }, { status: 400 });
+      return NextResponse.json({ error: "请先填写公司名称、品牌简称、产品/服务和地区。" }, { status: 400 });
     }
 
     return NextResponse.json({ error: message }, { status: 500 });

@@ -7,9 +7,9 @@ export interface ProviderPublishBundle {
 }
 
 const fallbackPlatformOrder: SocialPlatform[] = [
-  "toutiao",
-  "baijiahao",
   "douyin",
+  "baijiahao",
+  "toutiao",
   "xiaohongshu",
   "wechat",
   "videohao",
@@ -22,7 +22,7 @@ export const providerPublishMatrix: Record<SearchProvider, ProviderPublishBundle
   doubao: {
     searchProvider: "doubao",
     label: "豆包",
-    platforms: ["toutiao", "baijiahao", "douyin"],
+    platforms: ["douyin", "baijiahao", "toutiao"],
   },
   deepseek: {
     searchProvider: "deepseek",
@@ -37,7 +37,7 @@ export const providerPublishMatrix: Record<SearchProvider, ProviderPublishBundle
   tongyi: {
     searchProvider: "tongyi",
     label: "通义千问",
-    platforms: ["zhihu", "weibo", "xiaohongshu"],
+    platforms: ["weibo", "xiaohongshu"],
   },
 };
 

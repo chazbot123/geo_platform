@@ -27,6 +27,9 @@ export interface ElectronPlatformLoginResult {
   status: "closed" | "opened" | "authenticated" | "unsupported";
   reason?: string;
   profile?: ElectronPlatformAccountProfile;
+  authPayload?: string;
+  authPayloadUpdatedAt?: string;
+  validatedAt?: string;
 }
 
 export interface ElectronPlatformSessionValidationRequest {
@@ -41,6 +44,9 @@ export interface ElectronPlatformSessionValidationResult {
   reason?: string;
   currentUrl?: string;
   cookieCount?: number;
+  authPayload?: string;
+  authPayloadUpdatedAt?: string;
+  validatedAt?: string;
 }
 
 export interface ElectronPlatformPublishRequest {

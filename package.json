@@ -53,6 +53,7 @@
       "postcss.config.js"
     ],
     "win": {
+      "icon": "electron/assets/ai-search.ico",
       "target": [
         {
           "target": "dir",

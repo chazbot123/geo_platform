@@ -1,12 +1,17 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, ExternalLink, FileImage, LoaderCircle, LogIn, RefreshCcw, Trash2, UserCircle2, XCircle } from "lucide-react";
 import { openPlatformLoginWindow, validatePlatformSessionWindow } from "@/lib/publish/electron-login-client";
 import { toDisplayImageItems } from "@/lib/publish/image-display";
 import { detectDesktopBridge, hasElectronDesktopBridge, type DesktopBridgeAvailability } from "@/lib/publish/local-bridge-client";
 import { formatAccountDisplayLabel, resolveAccountIdentifier } from "@/lib/publish/account-label";
-import { auditPlatformAccountSession, buildDesktopSessionFailureReason, describeAccountPublishability } from "@/lib/publish/account-session-validator";
+import {
+  auditPlatformAccountSession,
+  buildDesktopSessionFailureReason,
+  describeAccountPublishability,
+  PLATFORM_SESSION_AUDIT_INTERVAL_MS,
+} from "@/lib/publish/account-session-validator";
 import { requireLicensedAction } from "@/lib/license/guard";
 import { publishPlatformDescriptors } from "@/lib/publish/platforms";
 import type { AccountPublishedJobsGroup, PlatformAccountRecord, PublishingJobRecord, SocialPlatform } from "@/lib/types";
@@ -54,6 +59,17 @@ function platformDescriptor(platform: string) {
   return publishPlatformDescriptors.find((item) => item.key === platform);
 }
 
+function formatAuditTime(value?: string) {
+  if (!value) {
+    return "--";
+  }
+  return new Date(value).toLocaleString();
+}
+
+function getRecentValidationTime(account: PlatformAccountRecord) {
+  return account.lastValidatedAt ?? account.lastLoginCompletedAt;
+}
+
 function statusText(account: PlatformAccountRecord) {
   if (account.loginStatus === "authenticated") return "已登录";
   if (account.loginStatus === "pending") return "待确认";
@@ -92,7 +108,7 @@ function accountPublishabilityText(account: PlatformAccountRecord, isBridgeReady
 }
 
 function buildLoginSuccessPatch(loginResult: Awaited<ReturnType<typeof openPlatformLoginWindow>>) {
-  return {
+  const patch: Record<string, unknown> = {
     loginStatus: "authenticated" as const,
     status: "valid" as const,
     lastError: undefined,
@@ -101,6 +117,30 @@ function buildLoginSuccessPatch(loginResult: Awaited<ReturnType<typeof openPlatf
     platformAccountId: loginResult.profile?.platformAccountId,
     avatarUrl: loginResult.profile?.avatarUrl,
   };
+  if (typeof loginResult.authPayload === "string" && loginResult.authPayload.trim()) {
+    patch.authPayload = loginResult.authPayload.trim();
+    patch.authPayloadUpdatedAt = loginResult.authPayloadUpdatedAt ?? loginResult.validatedAt;
+  }
+  if (loginResult.validatedAt) {
+    patch.lastValidatedAt = loginResult.validatedAt;
+  }
+  return patch;
+}
+
+function buildValidatedSessionPatch(result: Awaited<ReturnType<typeof validatePlatformSessionWindow>>) {
+  const patch: Record<string, unknown> = {
+    loginStatus: "authenticated" as const,
+    status: "valid" as const,
+    lastError: undefined,
+  };
+  if (typeof result.authPayload === "string" && result.authPayload.trim()) {
+    patch.authPayload = result.authPayload.trim();
+    patch.authPayloadUpdatedAt = result.authPayloadUpdatedAt ?? result.validatedAt;
+  }
+  if (result.validatedAt) {
+    patch.lastValidatedAt = result.validatedAt;
+  }
+  return patch;
 }
 
 function buildPublishedJobsMap(groups: AccountPublishedJobsGroup[]) {
@@ -162,6 +202,8 @@ export function PlatformAccountCenter({
     label: hasElectronDesktopBridge() ? "已连接 Electron 注入桥" : "未检测到可用桌面桥",
   }));
   const isBridgeReady = bridgeAvailability.mode === "electron_bridge" || bridgeAvailability.mode === "local_bridge";
+  const accountsRef = useRef(initialAccounts);
+  const sessionAuditRunningRef = useRef(false);
 
   useEffect(() => {
     let alive = true;
@@ -175,6 +217,10 @@ export function PlatformAccountCenter({
       alive = false;
     };
   }, []);
+
+  useEffect(() => {
+    accountsRef.current = accounts;
+  }, [accounts]);
 
   async function refreshAccounts() {
     const response = await fetch("/api/publish/accounts");
@@ -253,11 +299,7 @@ export function PlatformAccountCenter({
     }
 
     if (result.status === "authenticated") {
-      await sendAccountPatch(accountId, {
-        loginStatus: "authenticated",
-        status: "valid",
-        lastError: undefined,
-      });
+      await sendAccountPatch(accountId, buildValidatedSessionPatch(result));
       await refreshAccounts();
       setMessage(`${platformLabel(platform)}登录状态已通过桌面会话校验并保存。`);
       return;
@@ -474,61 +516,68 @@ export function PlatformAccountCenter({
   }
 
   async function runAutoSessionAudit() {
+    if (sessionAuditRunningRef.current) {
+      return;
+    }
     if (!isBridgeReady) {
       setSessionAuditSummary("当前未连接桌面桥，暂时无法自动复核账号真实登录态。");
       setHasAutoAudited(true);
       return;
     }
 
-    if (authenticatedAccounts.length === 0) {
+    const currentAccounts = accountsRef.current.filter((item) => {
+      const descriptor = platformDescriptor(item.platform);
+      return descriptor?.loginSupported && item.loginStatus === "authenticated";
+    });
+
+    if (currentAccounts.length === 0) {
       setSessionAuditSummary("当前没有需要自动复核的已登录账号。");
       setHasAutoAudited(true);
       return;
     }
 
+    sessionAuditRunningRef.current = true;
     let verifiedCount = 0;
     let downgradedCount = 0;
-    let changed = false;
+    let skippedSummary = "";
 
-    for (const account of authenticatedAccounts) {
-      const audit = await auditPlatformAccountSession(account);
-      if (!audit.canAutoValidate) {
-        setSessionAuditSummary(audit.summary);
-        continue;
-      }
-      const nextLoginStatus = audit.nextLoginStatus ?? account.loginStatus;
-      const nextStatus = audit.nextStatus ?? account.status;
-      const nextError = audit.lastError;
-      if (
-        nextLoginStatus !== account.loginStatus ||
-        nextStatus !== account.status ||
-        (nextError ?? "") !== (account.lastError ?? "")
-      ) {
+    try {
+      for (const account of currentAccounts) {
+        const audit = await auditPlatformAccountSession(account);
+        if (!audit.canAutoValidate || !audit.patch) {
+          skippedSummary = skippedSummary || audit.summary;
+          continue;
+        }
         await sendAccountPatch(account.id, {
-          loginStatus: nextLoginStatus,
-          status: nextStatus,
-          lastError: nextError,
+          action: "session_audit",
+          ...audit.patch,
         });
-        changed = true;
+        if (audit.validationStatus === "authenticated") {
+          verifiedCount += 1;
+        } else {
+          downgradedCount += 1;
+        }
       }
 
-      if (audit.validationStatus === "authenticated") {
-        verifiedCount += 1;
-      } else {
-        downgradedCount += 1;
+      if (verifiedCount || downgradedCount) {
+        await refreshAccounts();
       }
-    }
 
-    if (changed) {
-      await refreshAccounts();
-    }
+      if (!verifiedCount && !downgradedCount) {
+        setSessionAuditSummary(skippedSummary || "当前账号暂时无法自动复核真实登录态。");
+        setHasAutoAudited(true);
+        return;
+      }
 
-    setSessionAuditSummary(
-      downgradedCount > 0
-        ? `系统已自动复核桌面登录态：${verifiedCount} 个账号仍可发布，${downgradedCount} 个账号因真实会话失效已被降级，请重新登录。`
-        : `系统已自动复核桌面登录态：${verifiedCount} 个账号可继续用于发布。`,
-    );
-    setHasAutoAudited(true);
+      setSessionAuditSummary(
+        downgradedCount > 0
+          ? `系统已自动复核桌面登录态：${verifiedCount} 个账号仍可发布，${downgradedCount} 个账号已掉线，请重新登录。`
+          : `系统已自动复核桌面登录态：${verifiedCount} 个账号可继续用于发布，会话时间已同步。`,
+      );
+      setHasAutoAudited(true);
+    } finally {
+      sessionAuditRunningRef.current = false;
+    }
   }
 
   useEffect(() => {
@@ -540,6 +589,28 @@ export function PlatformAccountCenter({
     }
     void runAutoSessionAudit();
   }, [bridgeChecked, hasAutoAudited, isBridgeReady, authenticatedAccounts]);
+
+  useEffect(() => {
+    if (!bridgeChecked) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void runAutoSessionAudit();
+    }, PLATFORM_SESSION_AUDIT_INTERVAL_MS);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [bridgeChecked, isBridgeReady]);
+
+  useEffect(() => {
+    const refreshAccountCenter = () => {
+      void refreshAccounts();
+    };
+    window.addEventListener("geo-platform-accounts-refresh", refreshAccountCenter);
+    return () => {
+      window.removeEventListener("geo-platform-accounts-refresh", refreshAccountCenter);
+    };
+  }, []);
 
   return (
     <div className="grid gap-6">
@@ -714,7 +785,8 @@ export function PlatformAccountCenter({
                       <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted">
                         <span className="break-all font-mono">平台ID：{account.platformAccountId || "--"}</span>
                         <span className="break-all font-mono">账号名：{resolveAccountIdentifier(account, "--")}</span>
-                        <span>更新：{new Date(account.updatedAt).toLocaleString()}</span>
+                        <span>最近校验时间：{formatAuditTime(getRecentValidationTime(account))}</span>
+                        <span>更新：{formatAuditTime(account.updatedAt)}</span>
                       </div>
                       <p className="mt-1 line-clamp-2 max-w-3xl text-xs leading-5 text-muted">
                         {accountPublishabilityText(account, isBridgeReady)}

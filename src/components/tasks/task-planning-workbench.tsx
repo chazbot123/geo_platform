@@ -1,12 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CalendarDays, CheckCircle2, LoaderCircle, LogIn, PlayCircle, RefreshCw, Save, Settings2, ShieldCheck, Trash2 } from "lucide-react";
 import { dispatchWorkflowStatusRefresh } from "@/components/layout/app-shell";
 import { requireLicensedAction } from "@/lib/license/guard";
 import { formatAccountDisplayLabel, resolveAccountIdentifier } from "@/lib/publish/account-label";
+import {
+  auditPlatformAccountSession,
+  buildDesktopSessionFailureReason,
+  PLATFORM_SESSION_AUDIT_INTERVAL_MS,
+} from "@/lib/publish/account-session-validator";
 import { openPlatformLoginWindow, validatePlatformSessionWindow } from "@/lib/publish/electron-login-client";
 import { getPlatformsBySearchProvider, providerPublishMatrix } from "@/lib/publish/provider-platform-matrix";
 import { getSearchProviderIcon, getSocialPlatformIcon } from "@/lib/platform-icons";
@@ -20,7 +24,7 @@ import type {
   ThemeSet,
 } from "@/lib/types";
 
-const providerOrder: SearchProvider[] = ["doubao", "deepseek", "yuanbao", "tongyi"];
+const providerOrder: SearchProvider[] = ["doubao", "yuanbao", "deepseek", "tongyi"];
 
 const providerLabels: Record<SearchProvider, string> = {
   doubao: "豆包",
@@ -100,6 +104,10 @@ function formatTime(value?: string) {
   }).format(new Date(value));
 }
 
+function getRecentValidationTime(account: PlatformAccountRecord) {
+  return account.lastValidatedAt ?? account.lastLoginCompletedAt;
+}
+
 function normalizePositiveInteger(value: string, fallback: number, min = 1) {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed)) {
@@ -149,15 +157,12 @@ function areSamePlatformSelections(left: SocialPlatform[], right: SocialPlatform
 }
 
 function validationFailureText(status: string, reason?: string) {
-  if (reason?.trim()) return reason;
-  if (status === "expired") return "平台会话已过期，请重新登录。";
-  if (status === "missing_session") return "未检测到有效平台会话，请重新登录。";
   if (status === "unsupported") return "当前环境无法打开桌面登录，请启动 GEO 桌面版。";
-  return "登录状态检查未通过，请重新登录。";
+  return buildDesktopSessionFailureReason(status, reason);
 }
 
 function buildLoginSuccessPatch(loginResult: Awaited<ReturnType<typeof openPlatformLoginWindow>>) {
-  return {
+  const patch: Record<string, unknown> = {
     loginStatus: "authenticated" as const,
     status: "valid" as const,
     lastError: undefined,
@@ -166,6 +171,30 @@ function buildLoginSuccessPatch(loginResult: Awaited<ReturnType<typeof openPlatf
     platformAccountId: loginResult.profile?.platformAccountId,
     avatarUrl: loginResult.profile?.avatarUrl,
   };
+  if (typeof loginResult.authPayload === "string" && loginResult.authPayload.trim()) {
+    patch.authPayload = loginResult.authPayload.trim();
+    patch.authPayloadUpdatedAt = loginResult.authPayloadUpdatedAt ?? loginResult.validatedAt;
+  }
+  if (loginResult.validatedAt) {
+    patch.lastValidatedAt = loginResult.validatedAt;
+  }
+  return patch;
+}
+
+function buildValidatedSessionPatch(result: Awaited<ReturnType<typeof validatePlatformSessionWindow>>) {
+  const patch: Record<string, unknown> = {
+    loginStatus: "authenticated" as const,
+    status: "valid" as const,
+    lastError: undefined,
+  };
+  if (typeof result.authPayload === "string" && result.authPayload.trim()) {
+    patch.authPayload = result.authPayload.trim();
+    patch.authPayloadUpdatedAt = result.authPayloadUpdatedAt ?? result.validatedAt;
+  }
+  if (result.validatedAt) {
+    patch.lastValidatedAt = result.validatedAt;
+  }
+  return patch;
 }
 
 function AccountAvatar({ account, platform }: { account: PlatformAccountRecord; platform: SocialPlatform }) {
@@ -212,6 +241,9 @@ export function TaskPlanningWorkbench() {
   const [publishEndTime, setPublishEndTime] = useState("18:00");
   const [detectionItems, setDetectionItems] = useState<PlatformAccountDetectionItem[]>([]);
   const [accounts, setAccounts] = useState<PlatformAccountRecord[]>([]);
+  const accountsRef = useRef<PlatformAccountRecord[]>([]);
+  const sessionAuditRunningRef = useRef(false);
+  const initialSessionAuditDoneRef = useRef(false);
 
   const mappedPlatforms = useMemo(() => getPlatformsBySearchProvider(searchProvider), [searchProvider]);
   const detectionByPlatform = useMemo(() => new Map(detectionItems.map((item) => [item.platform, item])), [detectionItems]);
@@ -286,6 +318,17 @@ export function TaskPlanningWorkbench() {
   const hasSavedPlan = Boolean(prerequisites?.savedPlan);
   const enterpriseReady = Boolean(prerequisites?.enterpriseReady);
   const keywordReady = Boolean(prerequisites?.keywordReady);
+  const auditableAccounts = useMemo(
+    () =>
+      accounts.filter(
+        (account) =>
+          account.loginStatus === "authenticated" &&
+          account.provider === "electron" &&
+          account.authType !== "manual" &&
+          Boolean(account.sessionPartition),
+      ),
+    [accounts],
+  );
 
   async function loadAccounts() {
     const response = await fetch("/api/publish/accounts", { cache: "no-store" });
@@ -375,6 +418,64 @@ export function TaskPlanningWorkbench() {
     // #endregion
   }
 
+  async function runSilentSessionAudit(trigger: "initial" | "interval") {
+    if (sessionAuditRunningRef.current) {
+      return;
+    }
+    const currentAccounts = accountsRef.current.filter(
+      (account) =>
+        account.loginStatus === "authenticated" &&
+        account.provider === "electron" &&
+        account.authType !== "manual" &&
+        Boolean(account.sessionPartition),
+    );
+    if (!currentAccounts.length) {
+      return;
+    }
+
+    sessionAuditRunningRef.current = true;
+    try {
+      let verifiedCount = 0;
+      let downgradedCount = 0;
+
+      for (const account of currentAccounts) {
+        const audit = await auditPlatformAccountSession(account);
+        if (!audit.canAutoValidate || !audit.patch) {
+          continue;
+        }
+        await patchAccountStatus(account.id, {
+          action: "session_audit",
+          ...audit.patch,
+        });
+        if (audit.validationStatus === "authenticated") {
+          verifiedCount += 1;
+        } else {
+          downgradedCount += 1;
+        }
+      }
+
+      if (!verifiedCount && !downgradedCount) {
+        return;
+      }
+
+      await loadAccounts();
+      dispatchWorkflowStatusRefresh();
+      if (downgradedCount > 0) {
+        setNotice(`已静默检查账号状态：${verifiedCount} 个仍在线，${downgradedCount} 个已掉线，请重新登录。`);
+        return;
+      }
+      if (trigger === "initial") {
+        setNotice(`已静默检查账号状态：${verifiedCount} 个账号仍在线，会话时间已同步。`);
+      }
+    } catch (currentError) {
+      if (trigger === "initial") {
+        setError(currentError instanceof Error ? currentError.message : "静默检查账号状态失败。");
+      }
+    } finally {
+      sessionAuditRunningRef.current = false;
+    }
+  }
+
   async function startLogin(platform: SocialPlatform, accountId?: string) {
     setLoginKey(accountId ?? platform);
     setError("");
@@ -430,11 +531,7 @@ export function TaskPlanningWorkbench() {
         });
 
         if (validation.status === "authenticated") {
-          await patchAccountStatus(payload.account.id, {
-            loginStatus: "authenticated",
-            status: "valid",
-            lastError: undefined,
-          });
+          await patchAccountStatus(payload.account.id, buildValidatedSessionPatch(validation));
           setNotice(`${platformLabels[platform]}账号已登录，可用于发布。`);
           loginSucceeded = true;
         } else {
@@ -566,45 +663,45 @@ export function TaskPlanningWorkbench() {
     void detectAccounts(false);
   }, [searchProvider]);
 
+  useEffect(() => {
+    accountsRef.current = accounts;
+  }, [accounts]);
+
+  useEffect(() => {
+    if (initialSessionAuditDoneRef.current || loading) {
+      return;
+    }
+    initialSessionAuditDoneRef.current = true;
+    if (auditableAccounts.length) {
+      void runSilentSessionAudit("initial");
+    }
+  }, [auditableAccounts.length, loading]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void runSilentSessionAudit("interval");
+    }, PLATFORM_SESSION_AUDIT_INTERVAL_MS);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    const refreshAccountsView = () => {
+      void detectAccounts(true);
+    };
+    window.addEventListener("geo-platform-accounts-refresh", refreshAccountsView);
+    return () => {
+      window.removeEventListener("geo-platform-accounts-refresh", refreshAccountsView);
+    };
+  }, [searchProvider]);
+
   if (loading) {
     return <div className="section-card text-sm text-muted">正在读取企业信息和客户问题。</div>;
   }
 
   return (
     <div className="space-y-5">
-      <section className="section-card">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted">第 3 步</p>
-            <h2 className="page-section-title mt-2">创建任务</h2>
-            <p className="page-section-desc">先选 GEO AI 平台，再确认映射发布平台、账号登录状态和文章总量。</p>
-          </div>
-          <div className="flex flex-wrap gap-2 text-xs">
-            <span className={enterpriseReady ? "status-pill" : "status-pill opacity-60"}>企业信息</span>
-            <span className={keywordReady ? "status-pill" : "status-pill opacity-60"}>5 个客户问题</span>
-            <span className="status-pill">{formatTimeWindow(publishStartTime, publishEndTime)}</span>
-            <span className="status-pill">间隔 3 小时</span>
-          </div>
-        </div>
-
-        {(!enterpriseReady || !keywordReady) && (
-          <div className="mt-5 grid gap-3 md:grid-cols-2">
-            {!enterpriseReady && (
-              <Link className="subtle-card block border-dashed" href="/enterprise">
-                <p className="text-sm font-medium text-ink">先保存企业信息</p>
-                <p className="mt-2 text-xs leading-5 text-muted">公司名称、品牌简称、产品服务和地区完整后才能创建任务。</p>
-              </Link>
-            )}
-            {!keywordReady && (
-              <Link className="subtle-card block border-dashed" href="/customer-keywords">
-                <p className="text-sm font-medium text-ink">先保存 5 个客户问题</p>
-                <p className="mt-2 text-xs leading-5 text-muted">任务需要已确认的 5 个核心问题作为内容生产输入。</p>
-              </Link>
-            )}
-          </div>
-        )}
-      </section>
-
       <section className="section-card">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-2">
@@ -689,10 +786,6 @@ export function TaskPlanningWorkbench() {
                 <img className="h-9 w-9 shrink-0 object-contain" src={getSocialPlatformIcon(selectedPlatform)} alt="" />
                 <div className="min-w-0">
                   <h4 className="text-base font-semibold text-ink">{platformLabels[selectedPlatform]}账号</h4>
-                  <p className="mt-1 text-xs leading-5 text-muted">
-                    最近检查：{formatTime(selectedDetection?.detectedAt)}
-                    {selectedDetection?.fromCache ? "（30 分钟内结果）" : ""}
-                  </p>
                 </div>
               </div>
               <label className="inline-flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm text-ink">
@@ -738,8 +831,8 @@ export function TaskPlanningWorkbench() {
                           {account.accountName || account.platformAccountId ? (
                             <p className="mt-1 break-all text-xs text-muted">登录账号：{resolveAccountIdentifier(account, account.id)}</p>
                           ) : null}
-                          {account.lastLoginCompletedAt ? (
-                            <p className="mt-1 text-xs text-muted">最近登录时间：{formatTime(account.lastLoginCompletedAt)}</p>
+                          {getRecentValidationTime(account) ? (
+                            <p className="mt-1 text-xs text-muted">最近校验时间：{formatTime(getRecentValidationTime(account))}</p>
                           ) : null}
                           {account.lastError ? <p className="mt-2 text-xs leading-5 text-red-500">{account.lastError}</p> : null}
                         </div>
@@ -752,7 +845,7 @@ export function TaskPlanningWorkbench() {
                           onClick={() => void startLogin(account.platform, account.id)}
                         >
                           {loginKey === account.id ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <ShieldCheck className="h-3.5 w-3.5" />}
-                          {account.loginStatus === "authenticated" ? "重新登录" : "登录"}
+                          {account.loginStatus === "idle" ? "登录" : "重新登录"}
                         </button>
                         <button
                           type="button"
@@ -788,120 +881,122 @@ export function TaskPlanningWorkbench() {
         </div>
       </section>
 
-      <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
-        <div className="section-card">
-          <div className="flex items-center gap-2">
-            <CalendarDays className="h-4 w-4 text-accent" />
-            <h3 className="page-section-title">发布节奏</h3>
-          </div>
-          <div className="mt-4 grid gap-4 sm:grid-cols-4">
-            <label className="block">
-              <span className="text-xs text-muted">发布天数</span>
-              <input
-                className="mt-2 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent"
-                min={1}
-                type="number"
-                inputMode="numeric"
-                value={daysInput}
-                onChange={(event) => setDaysInput(sanitizePositiveIntegerInput(event.target.value))}
-                onBlur={() => setDaysInput(String(normalizedDays))}
-              />
-            </label>
-            <label className="block">
-              <span className="text-xs text-muted">每账号每天</span>
-              <input
-                className="mt-2 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent"
-                min={1}
-                type="number"
-                inputMode="numeric"
-                value={articlesPerAccountPerDayInput}
-                onChange={(event) => setArticlesPerAccountPerDayInput(sanitizePositiveIntegerInput(event.target.value))}
-                onBlur={() => setArticlesPerAccountPerDayInput(String(normalizedArticlesPerAccountPerDay))}
-              />
-            </label>
-            <label className="block">
-              <span className="text-xs text-muted">开始时间</span>
-              <input
-                className="mt-2 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent"
-                type="time"
-                value={publishStartTime}
-                onChange={(event) => setPublishStartTime(event.target.value)}
-              />
-            </label>
-            <label className="block">
-              <span className="text-xs text-muted">结束时间</span>
-              <input
-                className="mt-2 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent"
-                type="time"
-                value={publishEndTime}
-                onChange={(event) => setPublishEndTime(event.target.value)}
-              />
-            </label>
-          </div>
-          <p className="mt-3 text-xs text-muted">默认发布时间为 {formatTimeWindow("09:00", "18:00")}，你也可以按任务节奏自行调整。</p>
-          {!isTimeWindowValid ? <p className="mt-2 text-xs text-red-500">结束时间必须晚于开始时间。</p> : null}
+      <section className="section-card">
+        <div className="flex items-center gap-2">
+          <CalendarDays className="h-4 w-4 text-accent" />
+          <h3 className="page-section-title">发布节奏与文章总量</h3>
         </div>
+        <div className="mt-4 grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
+          <div>
+            <div className="mt-4 grid gap-4 sm:grid-cols-4">
+              <label className="block">
+                <span className="text-xs text-muted">发布天数</span>
+                <input
+                  className="mt-2 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent"
+                  min={1}
+                  type="number"
+                  inputMode="numeric"
+                  value={daysInput}
+                  onChange={(event) => setDaysInput(sanitizePositiveIntegerInput(event.target.value))}
+                  onBlur={() => setDaysInput(String(normalizedDays))}
+                />
+              </label>
+              <label className="block">
+                <span className="text-xs text-muted">每账号每天</span>
+                <input
+                  className="mt-2 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent"
+                  min={1}
+                  type="number"
+                  inputMode="numeric"
+                  value={articlesPerAccountPerDayInput}
+                  onChange={(event) => setArticlesPerAccountPerDayInput(sanitizePositiveIntegerInput(event.target.value))}
+                  onBlur={() => setArticlesPerAccountPerDayInput(String(normalizedArticlesPerAccountPerDay))}
+                />
+              </label>
+              <label className="block">
+                <span className="text-xs text-muted">开始时间</span>
+                <input
+                  className="mt-2 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent"
+                  type="time"
+                  value={publishStartTime}
+                  onChange={(event) => setPublishStartTime(event.target.value)}
+                />
+              </label>
+              <label className="block">
+                <span className="text-xs text-muted">结束时间</span>
+                <input
+                  className="mt-2 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent"
+                  type="time"
+                  value={publishEndTime}
+                  onChange={(event) => setPublishEndTime(event.target.value)}
+                />
+              </label>
+            </div>
+            <p className="mt-3 text-xs text-muted">默认发布时间为 {formatTimeWindow("09:00", "18:00")}，你也可以按任务节奏自行调整。</p>
+            {!isTimeWindowValid ? <p className="mt-2 text-xs text-red-500">结束时间必须晚于开始时间。</p> : null}
+          </div>
 
-        <aside className="section-card">
-          <h3 className="page-section-title">任务总量</h3>
-          <div className="mt-4 grid grid-cols-3 gap-2 text-center">
-            <div>
-              <p className="text-2xl font-semibold text-ink">{totalAccounts}</p>
-              <p className="mt-1 text-xs text-muted">可用账号</p>
+          <aside className="rounded-md border border-line bg-panel p-4">
+            <h4 className="text-sm font-semibold text-ink">文章总量</h4>
+            <div className="mt-4 grid grid-cols-3 gap-2 text-center">
+              <div>
+                <p className="text-2xl font-semibold text-ink">{totalAccounts}</p>
+                <p className="mt-1 text-xs text-muted">可用账号</p>
+              </div>
+              <div>
+                <p className="text-2xl font-semibold text-ink">{normalizedDays}</p>
+                <p className="mt-1 text-xs text-muted">天</p>
+              </div>
+              <div>
+                <p className="text-2xl font-semibold text-accent">{totalArticles}</p>
+                <p className="mt-1 text-xs text-muted">篇</p>
+              </div>
             </div>
-            <div>
-              <p className="text-2xl font-semibold text-ink">{normalizedDays}</p>
-              <p className="mt-1 text-xs text-muted">天</p>
-            </div>
-            <div>
-              <p className="text-2xl font-semibold text-accent">{totalArticles}</p>
-              <p className="mt-1 text-xs text-muted">篇</p>
-            </div>
-          </div>
-          <p className="mt-4 text-xs leading-5 text-muted">预计总篇数 = 全部已登录可发布账号数 x 发布天数 x 每个账号每天篇数。</p>
-          <p className="mt-2 text-xs leading-5 text-muted">
-            当前全局已登录可发布账号 {totalAccounts} 个；其中当前 AI 平台可自动加入任务的账号 {taskScopedAccountCount} 个，当前 AI 平台预计 {taskScopedArticles} 篇。
-          </p>
-          <p className="mt-2 text-xs leading-5 text-muted">
-            {savedPlanReady
-              ? `计划已保存：${platformSummary(prerequisites?.savedPlan)}`
-              : hasSavedPlan && hasPlanChanges
-                ? `当前修改未保存，请先更新计划。已保存计划：${platformSummary(prerequisites?.savedPlan)}`
-                : platformSummary(prerequisites?.savedPlan)}
-          </p>
-          {error && <p className="mt-4 text-sm text-red-500">{error}</p>}
-          {notice && <p className="mt-4 text-sm text-accent">{notice}</p>}
-          <div className="mt-5 flex flex-col gap-2">
-            <button
-              type="button"
-              className="inline-flex items-center justify-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={savedPlanReady ? startingGeneration : !canSave || saving}
-              onClick={() => (savedPlanReady ? void startGeneration() : void savePlan())}
-            >
-              {savedPlanReady ? <PlayCircle className="h-4 w-4" /> : <Save className="h-4 w-4" />}
+            <p className="mt-4 text-xs leading-5 text-muted">预计总篇数 = 全部已登录可发布账号数 x 发布天数 x 每个账号每天篇数。</p>
+            <p className="mt-2 text-xs leading-5 text-muted">
+              当前全局已登录可发布账号 {totalAccounts} 个；其中当前 AI 平台可自动加入任务的账号 {taskScopedAccountCount} 个，当前 AI 平台预计 {taskScopedArticles} 篇。
+            </p>
+            <p className="mt-2 text-xs leading-5 text-muted">
               {savedPlanReady
-                ? startingGeneration
-                  ? "启动中"
-                  : "开始生成"
-                : saving
-                  ? hasSavedPlan
-                    ? "更新中"
-                    : "保存中"
-                  : hasSavedPlan && hasPlanChanges
-                    ? "先更新计划"
-                    : "保存计划"}
-            </button>
-            <button
-              type="button"
-              className="inline-flex items-center justify-center gap-2 rounded-md border border-line px-4 py-2 text-sm font-medium text-ink transition hover:border-accent disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={!canSave || saving || startingGeneration}
-              onClick={() => void savePlan()}
-            >
-              <Save className="h-4 w-4" />
-              {prerequisites?.savedPlan ? "更新计划" : "仅保存计划"}
-            </button>
-          </div>
-        </aside>
+                ? `计划已保存：${platformSummary(prerequisites?.savedPlan)}`
+                : hasSavedPlan && hasPlanChanges
+                  ? `当前修改未保存，请先更新计划。已保存计划：${platformSummary(prerequisites?.savedPlan)}`
+                  : platformSummary(prerequisites?.savedPlan)}
+            </p>
+            {error && <p className="mt-4 text-sm text-red-500">{error}</p>}
+            {notice && <p className="mt-4 text-sm text-accent">{notice}</p>}
+            <div className="mt-5 flex flex-col gap-2">
+              <button
+                type="button"
+                className="inline-flex items-center justify-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={savedPlanReady ? startingGeneration : !canSave || saving}
+                onClick={() => (savedPlanReady ? void startGeneration() : void savePlan())}
+              >
+                {savedPlanReady ? <PlayCircle className="h-4 w-4" /> : <Save className="h-4 w-4" />}
+                {savedPlanReady
+                  ? startingGeneration
+                    ? "启动中"
+                    : "开始生成"
+                  : saving
+                    ? hasSavedPlan
+                      ? "更新中"
+                      : "保存中"
+                    : hasSavedPlan && hasPlanChanges
+                      ? "先更新计划"
+                      : "保存计划"}
+              </button>
+              <button
+                type="button"
+                className="inline-flex items-center justify-center gap-2 rounded-md border border-line px-4 py-2 text-sm font-medium text-ink transition hover:border-accent disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={!canSave || saving || startingGeneration}
+                onClick={() => void savePlan()}
+              >
+                <Save className="h-4 w-4" />
+                {prerequisites?.savedPlan ? "更新计划" : "仅保存计划"}
+              </button>
+            </div>
+          </aside>
+        </div>
       </section>
     </div>
   );

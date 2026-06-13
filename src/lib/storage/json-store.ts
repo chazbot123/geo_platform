@@ -1,5 +1,6 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
+import { randomUUID } from "node:crypto";
 
 export async function ensureDir(dirPath: string) {
   await fs.mkdir(dirPath, { recursive: true });
@@ -143,7 +144,7 @@ async function replaceFileFromTemp(tempFilePath: string, filePath: string, nextC
 export async function writeJsonFile<T>(filePath: string, value: T) {
   await ensureDir(path.dirname(filePath));
   const nextContent = JSON.stringify(value, null, 2);
-  const tempFilePath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const tempFilePath = `${filePath}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
   await fs.writeFile(tempFilePath, nextContent, "utf8");
   try {
     await replaceFileFromTemp(tempFilePath, filePath, nextContent);

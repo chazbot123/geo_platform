@@ -59,6 +59,7 @@ export function CustomerKeywordWorkbench() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
+  const [generatingStepIndex, setGeneratingStepIndex] = useState(0);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -67,6 +68,19 @@ export function CustomerKeywordWorkbench() {
     () => (data.keywordSet ? Object.values(data.keywordSet.candidates).flat() : []),
     [data.keywordSet],
   );
+  const generatingSteps = useMemo(() => {
+    const productService = data.enterprise?.productService?.trim() || "产品/服务";
+    const region = data.enterprise?.region?.trim() || "地区";
+    return [
+      `正在结合“${productService}”生成真实客户提问`,
+      `正在低权重参考“${region}”的地域场景`,
+      "正在过滤占位化、营销化和不自然的问题",
+      "正在整理高热度、中热度、低热度候选",
+      "正在让问题更像客户会直接问 AI 的表达",
+    ];
+  }, [data.enterprise]);
+  const currentGeneratingStep = generatingSteps[generatingStepIndex] ?? "正在生成客户关键词";
+  const generatingProgress = Math.round(((generatingStepIndex + 1) / generatingSteps.length) * 100);
   const selectedCount = selectedIds.length;
   const hasExactSelection = selectedCount === 5;
 
@@ -89,6 +103,19 @@ export function CustomerKeywordWorkbench() {
   useEffect(() => {
     void loadData();
   }, []);
+
+  useEffect(() => {
+    if (!generating) {
+      setGeneratingStepIndex(0);
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      setGeneratingStepIndex((current) => (current + 1) % generatingSteps.length);
+    }, 1400);
+
+    return () => window.clearInterval(timer);
+  }, [generating, generatingSteps.length]);
 
   function toggleCandidate(candidate: CustomerKeywordCandidate) {
     setMessage("");
@@ -229,13 +256,51 @@ export function CustomerKeywordWorkbench() {
 
         {!data.canGenerate ? (
           <div className="mt-5 rounded-md border border-warning/40 bg-warning/10 p-4 text-sm text-ink">
-            请先在企业信息页保存公司名称、品牌简称、产品服务和地区。
+            请先在企业信息页保存公司名称、品牌简称、产品/服务和地区。
             <Link className="ml-2 font-medium text-accent" href="/enterprise">
               去填写
             </Link>
           </div>
         ) : null}
 
+        {generating ? (
+          <div className="mt-4 rounded-xl border border-accent/30 bg-accent/5 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-ink">正在调用文字模型生成客户关键词...</p>
+                <p className="mt-1 text-sm text-accent transition-opacity duration-300">{currentGeneratingStep}</p>
+              </div>
+              <span className="shrink-0 text-xs font-semibold text-accent">{generatingProgress}%</span>
+            </div>
+            <div className="mt-3 h-2 overflow-hidden rounded-full bg-accent/10">
+              <div
+                className="h-full rounded-full bg-accent transition-all duration-700 ease-out"
+                style={{ width: `${generatingProgress}%` }}
+                aria-hidden="true"
+              />
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {generatingSteps.map((step, index) => {
+                const isActive = index === generatingStepIndex;
+                const isCompleted = index < generatingStepIndex;
+                return (
+                  <span
+                    key={step}
+                    className={`rounded-full px-2.5 py-1 text-xs transition-colors ${
+                      isActive
+                        ? "bg-accent text-white"
+                        : isCompleted
+                          ? "bg-accent/15 text-accent"
+                          : "bg-surface text-muted"
+                    }`}
+                  >
+                    {index + 1}. {step.replace(/^正在/, "")}
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
         {message ? <p className="mt-4 text-sm text-emerald-500">{message}</p> : null}
         {error ? <p className="mt-4 text-sm text-danger">{error}</p> : null}
       </section>
