@@ -57,6 +57,12 @@ export async function POST(request: Request) {
         { status: 500 },
       );
     }
+    if (error instanceof Error && error.message.startsWith("CUSTOMER_KEYWORD_INVALID_GROUP@")) {
+      return NextResponse.json({ error: "客户关键词生成结果缺少 high、medium、low 分组，请重试。" }, { status: 500 });
+    }
+    if (error instanceof Error && error.message.startsWith("CUSTOMER_KEYWORD_INVALID_COUNT@")) {
+      return NextResponse.json({ error: "客户关键词生成结果数量不符合要求，请重试。" }, { status: 500 });
+    }
     if (error instanceof Error && error.message.startsWith("STAGE1_API_BAD_JSON@")) {
       return NextResponse.json(
         { error: "文字模型返回了不可解析的响应，请检查模型接口兼容性后重试。" },

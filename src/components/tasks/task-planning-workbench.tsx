@@ -610,6 +610,7 @@ export function TaskPlanningWorkbench() {
       setPrerequisites((current) => (current ? { ...current, savedPlan: data.publishPlan } : current));
       dispatchWorkflowStatusRefresh();
       setNotice("计划已保存，可以开始生成。");
+      router.push(`/content-pool?taskId=${encodeURIComponent(prerequisites.taskId)}`);
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "保存任务规划失败。");
     } finally {
@@ -984,15 +985,6 @@ export function TaskPlanningWorkbench() {
                     : hasSavedPlan && hasPlanChanges
                       ? "先更新计划"
                       : "保存计划"}
-              </button>
-              <button
-                type="button"
-                className="inline-flex items-center justify-center gap-2 rounded-md border border-line px-4 py-2 text-sm font-medium text-ink transition hover:border-accent disabled:cursor-not-allowed disabled:opacity-60"
-                disabled={!canSave || saving || startingGeneration}
-                onClick={() => void savePlan()}
-              >
-                <Save className="h-4 w-4" />
-                {prerequisites?.savedPlan ? "更新计划" : "仅保存计划"}
               </button>
             </div>
           </aside>

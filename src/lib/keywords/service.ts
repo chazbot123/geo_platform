@@ -2,6 +2,15 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { getAppConfig } from "@/lib/config/service";
+import {
+  callConfiguredTextModel,
+  classifyOpenAICompatibleHttpStatus,
+  NewAPIProbeError,
+  OpenAICompatibleHttpError,
+  type OpenAICompatibleMessage,
+  OpenAICompatibleResponseParseError,
+  parseJsonFromModelText,
+} from "@/lib/integrations/openai-compatible";
 import { runStage1Model } from "@/lib/integrations/stage1/client";
 import { dataRoot } from "@/lib/paths";
 import { ensureDir, readJsonFile, writeJsonFile } from "@/lib/storage/json-store";
@@ -64,6 +73,12 @@ const REQUIRED_ENTERPRISE_FIELDS: Array<keyof SavedEnterpriseProfile> = [
   "region",
 ];
 
+interface CustomerKeywordModelPayload {
+  high?: unknown;
+  medium?: unknown;
+  low?: unknown;
+}
+
 function compactText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -107,11 +122,6 @@ export async function getCustomerKeywordSet() {
   return readJsonFile<CustomerKeywordSet | null>(CUSTOMER_KEYWORD_PATH, null);
 }
 
-function pickFirst(value: string | undefined, fallback: string) {
-  const normalized = value?.split(/[，,。；;\n]/).map((item) => item.trim()).find(Boolean);
-  return normalized || fallback;
-}
-
 function makeQuestion(id: string, heat: CustomerKeywordHeat, question: string): CustomerKeywordCandidate {
   return { id, heat, question };
 }
@@ -126,74 +136,118 @@ function uniqueQuestions(items: CustomerKeywordCandidate[]) {
   });
 }
 
-function buildCandidateGroup(
-  heat: CustomerKeywordHeat,
-  profile: SavedEnterpriseProfile,
-  templates: Array<(context: Record<string, string>) => string>,
-) {
-  const context = {
-    company: profile.companyName,
-    brand: profile.brandShortName,
-    product: profile.productService,
-    region: profile.region,
-    audience: pickFirst(profile.audience, "目标客户"),
-    feature: pickFirst(profile.productFeatures, "核心优势"),
-    painPoint: pickFirst(profile.painPoints, "实际需求"),
-    proof: pickFirst(profile.trustProof || profile.customerCases, "案例和服务能力"),
-  };
-
-  return uniqueQuestions(templates.map((template, index) => makeQuestion(`${heat}-${index + 1}`, heat, template(context)))).slice(0, 15);
+function normalizeCustomerQuestion(value: unknown) {
+  if (typeof value !== "string") return "";
+  const normalized = value
+    .trim()
+    .replace(/^[\d\-*.、()\s]+/, "")
+    .replace(/\s+/g, " ")
+    .replace(/[。.!！]+$/g, "");
+  if (!normalized) return "";
+  return /[？?]$/.test(normalized) ? normalized : `${normalized}？`;
 }
 
-function buildMockCustomerCandidates(profile: SavedEnterpriseProfile): CustomerKeywordSet["candidates"] {
-  const highTemplates: Array<(ctx: Record<string, string>) => string> = [
-    (ctx) => `${ctx.region}${ctx.audience}选择${ctx.product}时，应该先问 AI 哪些关键问题？`,
-    (ctx) => `${ctx.brand}的${ctx.product}适合解决${ctx.painPoint}吗？`,
-    (ctx) => `${ctx.region}做${ctx.product}服务哪家公司更值得了解？`,
-    (ctx) => `${ctx.product}和同类方案相比，用户最应该关注哪些差异？`,
-    (ctx) => `${ctx.audience}第一次了解${ctx.product}，怎么向 AI 问才不容易被营销话术带偏？`,
-    (ctx) => `${ctx.product}一般多少钱，价格差异主要由哪些因素决定？`,
-    (ctx) => `${ctx.brand}在${ctx.region}服务${ctx.audience}有哪些真实案例可以参考？`,
-    (ctx) => `${ctx.product}能不能解决${ctx.painPoint}，判断标准是什么？`,
-    (ctx) => `${ctx.region}${ctx.audience}采购${ctx.product}前需要避开哪些坑？`,
-    (ctx) => `${ctx.product}从咨询到交付通常有哪些步骤？`,
-    (ctx) => `${ctx.brand}的${ctx.feature}对${ctx.audience}有什么实际价值？`,
-    (ctx) => `${ctx.audience}用 AI 搜${ctx.product}时，最常追问哪些细节？`,
-  ];
-  const mediumTemplates: Array<(ctx: Record<string, string>) => string> = [
-    (ctx) => `${ctx.product}适合哪些业务场景，不适合哪些场景？`,
-    (ctx) => `${ctx.brand}的服务能力怎么验证才比较可靠？`,
-    (ctx) => `${ctx.region}${ctx.product}服务有没有本地交付优势？`,
-    (ctx) => `${ctx.audience}想提升效率，${ctx.product}应该从哪里开始用？`,
-    (ctx) => `${ctx.product}常见交付周期多长，过程中需要客户配合什么？`,
-    (ctx) => `${ctx.brand}的${ctx.proof}能说明哪些问题？`,
-    (ctx) => `${ctx.product}落地后如何判断效果是否达标？`,
-    (ctx) => `${ctx.audience}选择${ctx.product}时，需要准备哪些企业资料？`,
-    (ctx) => `${ctx.product}能和现有业务流程怎么衔接？`,
-    (ctx) => `${ctx.region}用户搜索${ctx.brand}时通常会关心哪些口碑问题？`,
-    (ctx) => `${ctx.product}如果效果不明显，常见原因是什么？`,
-    (ctx) => `${ctx.audience}比较多个${ctx.product}供应商时应该问 AI 什么？`,
-  ];
-  const lowTemplates: Array<(ctx: Record<string, string>) => string> = [
-    (ctx) => `${ctx.product}有哪些容易被忽略的服务边界？`,
-    (ctx) => `${ctx.brand}适合长期合作还是短期项目？`,
-    (ctx) => `${ctx.audience}在${ctx.region}使用${ctx.product}有什么地域差异？`,
-    (ctx) => `${ctx.product}上线前有哪些准备工作会影响交付质量？`,
-    (ctx) => `${ctx.product}后续维护通常包含哪些内容？`,
-    (ctx) => `${ctx.brand}的客户案例适合参考哪些指标？`,
-    (ctx) => `${ctx.product}如果预算有限，哪些功能应该优先做？`,
-    (ctx) => `${ctx.audience}向 AI 询问${ctx.product}时，怎么描述需求更清楚？`,
-    (ctx) => `${ctx.product}有哪些问题适合先做小范围试点？`,
-    (ctx) => `${ctx.brand}能否支持${ctx.audience}的特殊场景需求？`,
-    (ctx) => `${ctx.product}交付完成后需要持续跟踪哪些数据？`,
-    (ctx) => `${ctx.region}${ctx.audience}了解${ctx.product}时还有哪些长尾问题？`,
+function buildCustomerKeywordMessages(profile: SavedEnterpriseProfile): OpenAICompatibleMessage[] {
+  const contextLines = [
+    `产品/服务：${profile.productService}`,
+    `地区：${profile.region}`,
   ];
 
+  return [
+    {
+      role: "system",
+      content: [
+        "你是客户提问句生成助手。",
+        "你要为企业生成真实客户会直接向 AI 提问的问题。",
+        "生成时只参考两个输入：产品/服务、地区。",
+        "其中产品/服务是绝对主轴，所有问题都必须围绕产品/服务展开。",
+        "地区是次要参考，但权重稍高于普通弱提示，可以适度影响部分问题的表达方向。",
+        "不能每条都强行带地区，但可以比之前稍多一些自然地带入本地、当地、区域差异、区域服务这类表达。",
+        "地区权重仍然低于产品/服务，不能喧宾夺主，更不能把问题生成成纯地域词。",
+        "high、medium、low 只按用户提问频次高低区分，不按决策阶段、购买意图、问题复杂度区分。",
+        "high 表示用户问得最多、出现频次最高的问题。",
+        "medium 表示用户问得适中、出现频次中等的问题。",
+        "low 表示用户问得最少、出现频次最低的问题。",
+        "不要把 high、medium、low 理解成强决策、流程方案、边界问题等分类。",
+        "所有内容都必须是中文、完整问题句、自然口语化、适合用户直接复制给 AI。",
+        "禁止输出模板味、营销话术、品牌自夸、标题、短语、陈述句、占位符。",
+        "high、medium、low 每组输出 6 到 8 条，组内和组间都不能重复。",
+        '只返回 JSON，不要输出解释。格式：{"high":["问题1"],"medium":["问题2"],"low":["问题3"]}',
+      ].join("\n"),
+    },
+    {
+      role: "user",
+      content: ["请基于以下企业资料生成客户关键词候选：", ...contextLines].join("\n"),
+    },
+  ];
+}
+
+function mapCustomerKeywordGroup(
+  heat: CustomerKeywordHeat,
+  rawItems: unknown,
+  seenQuestions: Set<string>,
+) {
+  if (!Array.isArray(rawItems)) {
+    throw new Error(`CUSTOMER_KEYWORD_INVALID_GROUP@${heat}`);
+  }
+  const normalizedItems = rawItems
+    .map((item) => normalizeCustomerQuestion(item))
+    .filter(Boolean)
+    .filter((question) => {
+      const key = question.replace(/\s+/g, "");
+      if (seenQuestions.has(key)) return false;
+      seenQuestions.add(key);
+      return true;
+    });
+
+  if (normalizedItems.length < 6 || normalizedItems.length > 8) {
+    throw new Error(`CUSTOMER_KEYWORD_INVALID_COUNT@${heat}`);
+  }
+
+  return uniqueQuestions(normalizedItems.map((question, index) => makeQuestion(`${heat}-${index + 1}`, heat, question)));
+}
+
+function mapCustomerKeywordPayload(payload: CustomerKeywordModelPayload): CustomerKeywordSet["candidates"] {
+  const seenQuestions = new Set<string>();
   return {
-    high: buildCandidateGroup("high", profile, highTemplates),
-    medium: buildCandidateGroup("medium", profile, mediumTemplates),
-    low: buildCandidateGroup("low", profile, lowTemplates),
+    high: mapCustomerKeywordGroup("high", payload.high, seenQuestions),
+    medium: mapCustomerKeywordGroup("medium", payload.medium, seenQuestions),
+    low: mapCustomerKeywordGroup("low", payload.low, seenQuestions),
   };
+}
+
+function mapCustomerKeywordModelError(error: unknown): Error {
+  if (error instanceof NewAPIProbeError) {
+    return new Error(`STAGE1_API_PROBE_FAILED@${JSON.stringify(error.attempts)}`);
+  }
+  if (error instanceof OpenAICompatibleHttpError) {
+    return new Error(`STAGE1_API_${classifyOpenAICompatibleHttpStatus(error.status)}@${error.endpoint}`);
+  }
+  if (error instanceof OpenAICompatibleResponseParseError) {
+    return new Error(`STAGE1_API_BAD_JSON@${error.endpoint}`);
+  }
+  if (error instanceof Error && error.message === "REQUEST_TIMEOUT") {
+    return new Error("STAGE1_API_TIMEOUT");
+  }
+  return error instanceof Error ? error : new Error("CUSTOMER_KEYWORD_AI_UNKNOWN");
+}
+
+async function generateCustomerKeywordCandidates(profile: SavedEnterpriseProfile) {
+  const config = (await getAppConfig()).stage1ModelApiConfig;
+  if (!config.baseUrl || config.provider.startsWith("mock")) {
+    throw new Error("请先在设置页配置可用的文字模型，再生成客户关键词。");
+  }
+
+  try {
+    const result = await callConfiguredTextModel(config, buildCustomerKeywordMessages(profile));
+    const payload = parseJsonFromModelText<CustomerKeywordModelPayload>(result.rawText);
+    if (!payload) {
+      throw new Error(`STAGE1_OUTPUT_PARSE_FAILED@${result.endpoint}`);
+    }
+    return mapCustomerKeywordPayload(payload);
+  } catch (error) {
+    throw mapCustomerKeywordModelError(error);
+  }
 }
 
 export async function generateCustomerKeywords() {
@@ -211,7 +265,7 @@ export async function generateCustomerKeywords() {
     brandShortName: enterprise.brandShortName,
     productService: enterprise.productService,
     region: enterprise.region,
-    candidates: buildMockCustomerCandidates(enterprise),
+    candidates: await generateCustomerKeywordCandidates(enterprise),
     selectedQuestions: [],
     generatedAt: now,
     savedAt: undefined,

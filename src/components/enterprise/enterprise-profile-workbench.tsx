@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2, FileText, ImageIcon, Loader2, MapPinned, Save, Trash2, UploadCloud } from "lucide-react";
 import { dispatchWorkflowStatusRefresh } from "@/components/layout/app-shell";
@@ -152,20 +152,20 @@ function AssetList({
   onRemove: (assetId: string) => void;
 }) {
   if (!assets.length) {
-    return <p className="text-sm text-muted">{emptyText}</p>;
+    return <p className="text-xs text-muted">{emptyText}</p>;
   }
 
   return (
-    <ul className="space-y-2">
+    <ul className="space-y-1.5">
       {assets.map((asset) => (
-        <li key={asset.id} className="flex items-center justify-between gap-3 rounded-md border border-line bg-surface-soft px-3 py-2 text-sm">
+        <li key={asset.id} className="flex items-center justify-between gap-2 rounded-md border border-line bg-surface-soft px-3 py-1.5 text-sm">
           <span className="min-w-0 truncate text-ink">{asset.name}</span>
           <div className="flex items-center gap-2">
             <span className="shrink-0 text-xs text-muted">{Math.max(1, Math.round(asset.size / 1024))} KB</span>
             <button
               type="button"
               onClick={() => onRemove(asset.id)}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-line bg-surface text-muted transition hover:border-red-300 hover:text-red-500"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-line bg-surface text-muted transition hover:border-red-300 hover:text-red-500"
               aria-label={`删除${asset.name}`}
               title="删除"
             >
@@ -178,22 +178,8 @@ function AssetList({
   );
 }
 
-function fieldLabel(field: keyof EnterpriseProfileFields) {
-  switch (field) {
-    case "companyName":
-      return "公司名称";
-    case "brandShortName":
-      return "品牌简称";
-    case "productService":
-      return "产品/服务";
-    case "region":
-      return "地区";
-    default:
-      return field;
-  }
-}
-
 export function EnterpriseProfileWorkbench() {
+  const router = useRouter();
   const [fields, setFields] = useState<EnterpriseProfileFields>(emptyFields);
   const [regionSelection, setRegionSelection] = useState<RegionSelection>(emptyRegionSelection);
   const [materialFiles, setMaterialFiles] = useState<EnterpriseAsset[]>([]);
@@ -220,7 +206,6 @@ export function EnterpriseProfileWorkbench() {
   }, [regionSelection.province, regionSelection.city]);
 
   const missingFields = useMemo(() => requiredFields.filter((field) => !fields[field].trim()), [fields]);
-  const canContinue = missingFields.length === 0 && Boolean(lastSavedAt) && !dirty;
 
   useEffect(() => {
     let active = true;
@@ -407,6 +392,7 @@ export function EnterpriseProfileWorkbench() {
       setDirty(false);
       setStatusMessage("企业信息已保存。");
       dispatchWorkflowStatusRefresh();
+      router.push("/customer-keywords");
     } catch (error) {
       const message = error instanceof Error ? error.message : "企业信息保存失败。";
       setErrorMessage(message);
@@ -416,7 +402,7 @@ export function EnterpriseProfileWorkbench() {
   }
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+    <div>
       <section className="section-card">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
@@ -433,13 +419,13 @@ export function EnterpriseProfileWorkbench() {
           </div>
         ) : (
           <div className="mt-6 space-y-7">
-            <div className="rounded-lg border border-line bg-surface p-4">
-              <div className="mb-4 flex items-center gap-2">
+            <div className="rounded-lg border border-line bg-surface p-3">
+              <div className="mb-3 flex items-center gap-2">
                 <UploadCloud className="h-4 w-4 text-accent" />
                 <h3 className="text-sm font-semibold text-ink">企业资料</h3>
               </div>
               <label
-                className={`mb-4 flex flex-col items-center justify-center gap-2 rounded-md border border-dashed px-3 py-8 text-center text-sm transition ${
+                className={`mb-3 flex flex-col items-center justify-center gap-1.5 rounded-md border border-dashed px-3 py-5 text-center text-sm transition ${
                   parsing
                     ? "cursor-wait border-accent bg-accent/5 text-accent"
                     : "cursor-pointer border-line text-muted hover:border-accent hover:text-ink"
@@ -447,14 +433,14 @@ export function EnterpriseProfileWorkbench() {
               >
                 {parsing ? (
                   <>
-                    <Loader2 className="mb-1 h-8 w-8 animate-spin" />
+                    <Loader2 className="mb-0.5 h-7 w-7 animate-spin" />
                     <span className="font-semibold">正在深度解析文档...</span>
                     <span className="text-xs opacity-80">提取关键信息中，请稍候</span>
                   </>
                 ) : (
                   <>
                     <span className="inline-flex items-center gap-2 font-medium">
-                      <UploadCloud className="h-5 w-5" />
+                      <UploadCloud className="h-4 w-4" />
                       上传企业文档或参考图片
                     </span>
                     <span className="text-xs text-muted">可读取文档会自动解析回填表格，图片会作为后续生成生图的参考素材</span>
@@ -469,19 +455,19 @@ export function EnterpriseProfileWorkbench() {
                   disabled={parsing}
                 />
               </label>
-              <p className="mb-4 text-xs leading-5 text-muted">
+              <p className="mb-3 text-xs leading-5 text-muted">
                 上传后会自动解析可读取文档内容并回填下方表格。图片不会写入表单，只会保留为后续生成图片时的参考。
               </p>
-              <div className="grid gap-4 md:grid-cols-2">
+              <div className="grid gap-3 md:grid-cols-2">
                 <div>
-                  <div className="mb-2 flex items-center gap-2 text-sm font-medium text-ink">
+                  <div className="mb-1.5 flex items-center gap-2 text-sm font-medium text-ink">
                     <FileText className="h-4 w-4 text-accent" />
                     企业文档
                   </div>
                   <AssetList assets={materialFiles} emptyText="暂无文档资料" onRemove={(assetId) => removeAsset("material", assetId)} />
                 </div>
                 <div>
-                  <div className="mb-2 flex items-center gap-2 text-sm font-medium text-ink">
+                  <div className="mb-1.5 flex items-center gap-2 text-sm font-medium text-ink">
                     <ImageIcon className="h-4 w-4 text-accent" />
                     参考图片
                   </div>
@@ -515,7 +501,7 @@ export function EnterpriseProfileWorkbench() {
               <div className="grid gap-4 sm:grid-cols-2">
                 <label>
                   <span className="mb-2 block text-sm font-medium text-ink">
-                    产品服务<span className="ml-1 text-red-500">*</span>
+                    产品/服务<span className="ml-1 text-red-500">*</span>
                   </span>
                   <input
                     value={fields.productService}
@@ -621,7 +607,7 @@ export function EnterpriseProfileWorkbench() {
                     {statusMessage}
                   </span>
                 ) : parseMessage ? (
-                  <span className="text-muted">{dirty ? "有未保存更改，请保存后进入下一步。" : parseMessage}</span>
+                  <span className="text-muted">{dirty ? "有未保存更改，请先保存。" : parseMessage}</span>
                 ) : (
                   <span className="text-muted">解析只回填表单，保存后才会写入本地。</span>
                 )}
@@ -640,32 +626,6 @@ export function EnterpriseProfileWorkbench() {
           </div>
         )}
       </section>
-
-      <aside className="section-card">
-        <h2 className="page-section-title">下一步</h2>
-        <p className="page-section-desc">保存必填信息后进入客户关键词。</p>
-
-        <div className="mt-5 space-y-3 text-sm">
-          {requiredFields.map((field) => (
-            <div key={field} className="flex items-center justify-between gap-3 border-b border-line pb-2 last:border-b-0">
-              <span className="text-muted">{fieldLabel(field)}</span>
-              <span className={fields[field].trim() ? "text-emerald-600" : "text-red-500"}>
-                {fields[field].trim() ? "已填写" : "待填写"}
-              </span>
-            </div>
-          ))}
-        </div>
-
-        <Link
-          className={`mt-6 inline-flex h-10 w-full items-center justify-center rounded-md px-4 text-sm font-medium ${
-            canContinue ? "bg-accent text-white" : "pointer-events-none bg-surface-soft text-muted"
-          }`}
-          href="/customer-keywords"
-          aria-disabled={!canContinue}
-        >
-          {dirty ? "请先保存" : "客户关键词"}
-        </Link>
-      </aside>
     </div>
   );
 }

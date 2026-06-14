@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import pdfParse from "pdf-parse";
 import { strFromU8, unzipSync } from "fflate";
 import { getAppConfig } from "@/lib/config/service";
 import type { EnterpriseAsset, EnterpriseParseResult, EnterpriseProfileFields } from "@/lib/enterprise/types";
@@ -6,6 +7,7 @@ import { callConfiguredTextModel, parseJsonFromModelText } from "@/lib/integrati
 import type { ModelApiConfig } from "@/lib/types";
 
 const textExtensions = new Set(["txt", "md", "csv", "json"]);
+const pdfExtensions = new Set(["pdf"]);
 const docxExtensions = new Set(["docx"]);
 const imageExtensions = new Set(["png", "jpg", "jpeg", "webp"]);
 const maxTextBytes = 1024 * 1024;
@@ -83,6 +85,20 @@ async function readDocxText(file: File) {
       .filter(Boolean)
       .join("\n\n")
       .trim();
+  } catch {
+    return "";
+  }
+}
+
+async function readPdfText(file: File) {
+  if (file.size > maxTextBytes * 10) {
+    return "";
+  }
+
+  try {
+    const buffer = Buffer.from(await file.arrayBuffer());
+    const result = await pdfParse(buffer);
+    return result.text.replace(/\u0000/g, "").replace(/\n{3,}/g, "\n\n").trim();
   } catch {
     return "";
   }
@@ -215,6 +231,17 @@ export async function POST(request: Request) {
       if (docxExtensions.has(extension)) {
         materialFiles.push(makeAsset(file, "material"));
         const text = await readDocxText(file);
+        if (text) {
+          textParts.push(text);
+        } else {
+          skipped.push(file.name);
+        }
+        continue;
+      }
+
+      if (pdfExtensions.has(extension)) {
+        materialFiles.push(makeAsset(file, "material"));
+        const text = await readPdfText(file);
         if (text) {
           textParts.push(text);
         } else {

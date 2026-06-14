@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { ArrowRight, Check, Loader2, RefreshCw, Save } from "lucide-react";
 import { dispatchWorkflowStatusRefresh } from "@/components/layout/app-shell";
@@ -23,12 +24,6 @@ const HEAT_LABELS: Record<CustomerKeywordHeat, string> = {
   high: "高热度",
   medium: "中热度",
   low: "低热度",
-};
-
-const HEAT_DESC: Record<CustomerKeywordHeat, string> = {
-  high: "优先覆盖高频选择、价格、避坑和本地服务问题。",
-  medium: "补充场景、流程、交付和验证类问题。",
-  low: "保留长尾问题，用于后续内容差异化。",
 };
 
 function formatTime(value?: string) {
@@ -55,6 +50,7 @@ function emptyData(): WorkbenchData {
 }
 
 export function CustomerKeywordWorkbench() {
+  const router = useRouter();
   const [data, setData] = useState<WorkbenchData>(emptyData);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -73,7 +69,7 @@ export function CustomerKeywordWorkbench() {
     const region = data.enterprise?.region?.trim() || "地区";
     return [
       `正在结合“${productService}”生成真实客户提问`,
-      `正在低权重参考“${region}”的地域场景`,
+      `正在适度参考“${region}”的地域场景`,
       "正在过滤占位化、营销化和不自然的问题",
       "正在整理高热度、中热度、低热度候选",
       "正在让问题更像客户会直接问 AI 的表达",
@@ -111,7 +107,7 @@ export function CustomerKeywordWorkbench() {
     }
 
     const timer = window.setInterval(() => {
-      setGeneratingStepIndex((current) => (current + 1) % generatingSteps.length);
+      setGeneratingStepIndex((current) => (current < generatingSteps.length - 1 ? current + 1 : current));
     }, 1400);
 
     return () => window.clearInterval(timer);
@@ -140,6 +136,7 @@ export function CustomerKeywordWorkbench() {
     }
 
     setGenerating(true);
+    setGeneratingStepIndex(0);
     setMessage("");
     setError("");
     try {
@@ -190,6 +187,7 @@ export function CustomerKeywordWorkbench() {
       setSelectedIds(payload.keywordSet.selectedQuestions.map((item) => item.id));
       setMessage("5 个核心问题已保存。");
       dispatchWorkflowStatusRefresh();
+      router.push("/tasks/create");
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "保存核心问题失败。");
     } finally {
@@ -313,7 +311,6 @@ export function CustomerKeywordWorkbench() {
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0 flex-1">
                   <h3 className="text-base font-semibold text-ink">{HEAT_LABELS[heat]}</h3>
-                  <p className="mt-1 text-xs leading-5 text-muted">{HEAT_DESC[heat]}</p>
                 </div>
                 <span className="status-pill">{candidates.length || 0} 条</span>
               </div>
