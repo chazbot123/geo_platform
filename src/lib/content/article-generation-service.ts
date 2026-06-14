@@ -1,5 +1,5 @@
 import { getAppConfig } from "@/lib/config/service";
-import { loadPlatformStrategy, loadRiskWords, type PlatformStrategy } from "@/lib/content/prompt-loader";
+import { loadPlatformStrategy, loadRiskWords } from "@/lib/content/prompt-loader";
 import { materializeScopedImageAssetToLocal } from "@/lib/images/local-image-store";
 import { reviewContent, type ReviewResult } from "@/lib/content/review-service";
 import { runImageModel } from "@/lib/integrations/images/client";
@@ -29,6 +29,7 @@ import type {
   SocialPlatform,
   ThemeSet,
 } from "@/lib/types";
+import { normalizeExpectedImageCount } from "@/lib/tasks/service";
 
 const platformLabels: Record<SocialPlatform, string> = {
   toutiao: "今日头条",
@@ -78,6 +79,7 @@ export interface ArticleGenerationContext {
   taskId: string;
   contentItemId: string;
   sequence: number;
+  expectedImageCount?: number;
   product: ProductProfile;
   theme: ThemeSet;
   searchProvider: SearchProvider;
@@ -134,7 +136,7 @@ function buildDevArticle(context: ArticlePromptContext, stage: ArticleInternalSt
   const body = [
     `很多企业做${platformLabel}内容时，真正卡住的不是写不出文章，而是账号多、主题多、审核标准不一致，最后很难稳定产出。围绕“${context.keyword}”，先看一个核心判断：内容流程要先把任务、账号、问题和发布时间固定下来，再让系统生成最终稿。`,
     `判断标准有三点。一是文章必须回答真实客户问题，不能只是堆产品卖点。二是同一批内容要在标题、开头、结构和行动建议上有明显差异。三是风险语言要提前处理，避免把不可核验的承诺写进正文。`,
-    `适用场景主要是本地服务、连锁门店、企业获客和多平台矩阵运营。${product.productName}的价值在于把${product.sellingPoints}放进同一条链路，运营人员看到的是生成进度和最终结果，而不是手动处理每个工序。`,
+    `适用场景主要是本地服务、连锁门店、企业获客和多平台矩阵运营。${product.productName} 的价值在于把 ${product.sellingPoints} 放进同一条链路，运营人员看到的是生成进度和最终结果，而不是手动处理每个工序。`,
     `落地时建议先用少量账号验证节奏，再逐步扩展到更多平台。每篇文章都保留生成、改写、降重和复检记录；相似度过高或风险未处理的内容不进入发布准备。`,
     `下一步可以把当前关键词拆成不同账号的发布计划，查看生成结果后再进入发布执行，这样既保留效率，也能控制内容质量边界。`,
   ].join("\n\n");
@@ -398,6 +400,8 @@ function buildPipeline(input: {
   imageGenerationMessage?: string;
   timestamp: string;
 }): ContentPoolPipelineState {
+  const generatedCount = input.images.filter((image) => image.status === "generated").length;
+  const failedCount = input.images.filter((image) => image.status === "failed").length;
   return {
     negativeCheck: {
       status: input.publishable ? "passed" : "blocked",
@@ -426,7 +430,7 @@ function buildPipeline(input: {
       message: "已完成标题、开头、结构、CTA 和图片提示的差异化改写。",
     },
     imageGeneration: {
-      status: input.images.length ? "passed" : input.imageGenerationMessage ? "needs_action" : "pending",
+      status: failedCount > 0 ? "needs_action" : generatedCount > 0 ? "passed" : input.imageGenerationMessage ? "needs_action" : "pending",
       prompt: input.imagePrompt,
       images: input.images,
     },
@@ -439,7 +443,8 @@ function toContentPoolImages(images: NonNullable<Awaited<ReturnType<typeof runIm
     prompt: image.prompt,
     url: image.publicUrl ?? image.url,
     localPath: image.localPath,
-    status: "generated",
+    errorMessage: image.errorMessage,
+    status: image.reviewStatus === "failed" ? "failed" : "generated",
   }));
 }
 
@@ -453,6 +458,12 @@ function formatImageGenerationError(error: unknown) {
   if (normalized.startsWith("image_api_403")) {
     return "图片模型无权限访问：当前 API Key 没有调用图片生成接口的权限，请检查图片模型账号权限或更换可用 Key。";
   }
+  if (normalized.startsWith("image_api_429") || normalized.startsWith("image_rate_limit_429")) {
+    return "图片模型接口限流（HTTP 429），系统已自动重试但仍未成功，请稍后再试或更换模型供应商。";
+  }
+  if (/^image_output_empty@/.test(normalized)) {
+    return "图片模型返回空内容（响应正常但未生成图片），可能是 API Key 没有图片配额、模型名不正确，或上游中转网关静默失败。请在模型设置中确认图片模型名（建议尝试 dall-e-3 或 gpt-image-1）和 API Key 配额。";
+  }
   if (
     message === "REQUEST_TIMEOUT" ||
     error.name === "AbortError" ||
@@ -462,6 +473,33 @@ function formatImageGenerationError(error: unknown) {
     return "图片模型请求超时或被中断，请检查图片模型接口是否可用，或在模型设置中适当调高图片生成超时时间。";
   }
   return message || "图片生成失败。";
+}
+
+export function formatArticleGenerationError(error: unknown): string {
+  if (!(error instanceof Error)) return "文章生成失败。";
+  const message = error.message.trim();
+  if (message === "CONTENT_API_TIMEOUT" || message === "REQUEST_TIMEOUT" || error.name === "AbortError" || message.toLowerCase().includes("aborted")) {
+    return "模型请求超时，请在模型设置中调高超时时间，或稍后再试。";
+  }
+  if (/^CONTENT_API_RATE_LIMIT@/.test(message) || /^HTTP_429@/.test(message) || message.includes("RATE_LIMIT")) {
+    return "上游模型接口当前限流（HTTP 429），系统已自动重试但仍未成功，请稍后再试或更换模型供应商。";
+  }
+  if (/^CONTENT_API_(UNAUTHORIZED|FORBIDDEN)@/.test(message) || /^HTTP_(401|403)@/.test(message)) {
+    return "模型接口认证失败，请在模型设置中重新配置可用的 API Key。";
+  }
+  if (/^CONTENT_API_(SERVER_ERROR|BAD_GATEWAY|SERVICE_UNAVAILABLE)@/.test(message) || /^HTTP_5\d\d@/.test(message)) {
+    return "上游模型服务暂时不可用，请稍后再试。";
+  }
+  if (/^CONTENT_API_BAD_JSON@/.test(message) || /^CONTENT_OUTPUT_PARSE_FAILED@/.test(message)) {
+    return "模型返回内容解析失败，可能是上游服务异常或模型回包格式被截断，请稍后再试或检查模型配置。";
+  }
+  if (/^IMAGE_OUTPUT_EMPTY@/i.test(message)) {
+    return "图片模型返回空内容（响应正常但未生成图片），可能是 API Key 没有图片配额、模型名不正确，或上游中转网关静默失败。请在模型设置中确认图片模型名（建议 dall-e-3 或 gpt-image-1）与 Key 配额。";
+  }
+  if (/^IMAGE_(API|RATE_LIMIT)_\d{3}/i.test(message)) {
+    return "图片模型接口异常，可能是 API Key 无效、限流或上游服务暂时不可用，请稍后再试或更换模型供应商。";
+  }
+  return message || "文章生成失败。";
 }
 
 export async function generateArticleForContentPool(context: ArticleGenerationContext): Promise<ArticleGenerationResult> {
@@ -539,6 +577,7 @@ export async function generateArticleForContentPool(context: ArticleGenerationCo
       prompt: buildQualityReviewPrompt({ ...promptContext, previousBody: finalizedPayload.body }),
     });
   }
+
   const reviewDraft = toReviewDraft(context, finalizedPayload, timestamp);
   const reviewResult = await reviewContent(
     reviewDraft,
@@ -558,12 +597,19 @@ export async function generateArticleForContentPool(context: ArticleGenerationCo
   log.push(stageLog("finalizing", "正在写入最终成稿。"));
 
   const publishable = reviewResult.blockingIssues.length === 0;
+  const expectedImageCount = normalizeExpectedImageCount(context.expectedImageCount);
   let imageList: ContentPoolImageItem[] = [];
   let imagePrompt = finalizedPayload.imagePrompt;
   let imageGenerationMessage: string | undefined;
   if (publishable) {
     try {
-      const imageAsset = await runImageModel(context.product, context.theme, reviewDraft, appConfig.imageModelApiConfig);
+      const imageAsset = await runImageModel(
+        context.product,
+        context.theme,
+        reviewDraft,
+        appConfig.imageModelApiConfig,
+        expectedImageCount,
+      );
       const localizedAsset = await materializeScopedImageAssetToLocal(context.contentItemId, imageAsset);
       imagePrompt = localizedAsset.images?.[0]?.prompt || imagePrompt;
       imageList = localizedAsset.images?.length ? toContentPoolImages(localizedAsset.images) : [];
@@ -573,6 +619,7 @@ export async function generateArticleForContentPool(context: ArticleGenerationCo
       log.push(stageLog("finalizing", `图片生成已跳过：${imageGenerationMessage}`));
     }
   }
+
   const pipeline = buildPipeline({
     platform: context.platform,
     publishable,
@@ -583,6 +630,7 @@ export async function generateArticleForContentPool(context: ArticleGenerationCo
     imageGenerationMessage,
     timestamp,
   });
+
   const item: ContentPoolItem = {
     id: context.contentItemId,
     sequence: context.sequence,
@@ -600,6 +648,7 @@ export async function generateArticleForContentPool(context: ArticleGenerationCo
     summary: finalizedPayload.summary,
     body: finalizedPayload.body,
     imagePrompt,
+    expectedImageCount,
     imageList,
     riskLevel: risk.level,
     status: publishable ? "pending_publish" : "failed",

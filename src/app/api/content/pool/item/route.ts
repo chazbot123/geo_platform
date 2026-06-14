@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import {
   confirmMediumRiskContentPoolItem,
   disperseContentPoolItem,
+  retryContentPoolItemImage,
+  updateContentPoolItemImageCount,
   rewriteContentPoolItem,
 } from "@/lib/content/service";
 import { getContentPool, listContentPools } from "@/lib/storage/data-store";
@@ -33,14 +35,20 @@ export async function POST(request: Request) {
     const body = (await request.json()) as {
       taskId?: string;
       itemId?: string;
-      action?: "rewrite" | "confirm_medium" | "disperse";
+      action?: "rewrite" | "confirm_medium" | "disperse" | "update_image_count" | "retry_image";
+      expectedImageCount?: number;
+      imageId?: string;
     };
     if (!body.taskId || !body.itemId || !body.action) {
       return NextResponse.json({ error: "缺少内容项或操作类型。" }, { status: 400 });
     }
 
     const record =
-      body.action === "rewrite"
+      body.action === "retry_image"
+        ? await retryContentPoolItemImage(body.taskId, body.itemId, body.imageId || "")
+        : body.action === "update_image_count"
+        ? await updateContentPoolItemImageCount(body.taskId, body.itemId, body.expectedImageCount)
+        : body.action === "rewrite"
         ? await rewriteContentPoolItem(body.taskId, body.itemId)
         : body.action === "confirm_medium"
           ? await confirmMediumRiskContentPoolItem(body.taskId, body.itemId)

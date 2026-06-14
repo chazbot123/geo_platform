@@ -27,7 +27,7 @@ const modelLabels: Record<ModelSection, { title: string; description: string; ic
   },
   image: {
     title: "图片模型",
-    description: "用于内容配图生成。GPT 服务商默认使用 gpt-image-2。",
+    description: "用于内容配图生成。GPT 服务商默认使用 gpt-image-2；无参考图时走文生图，有参考图时会走 OpenAI 兼容图生图编辑接口。",
     icon: ImageIcon,
   },
 };
@@ -200,7 +200,10 @@ export function SettingsForm({ initialConfig }: { initialConfig: AppConfig }) {
       </div>
 
       <div className="flex flex-col gap-3 sm:flex-row">
-        <button className="inline-flex items-center justify-center gap-2 rounded-lg bg-accent px-5 py-3 text-sm font-semibold text-surface transition-colors hover:bg-accent-soft" onClick={save}>
+        <button
+          className="inline-flex items-center justify-center gap-2 rounded-lg bg-accent px-5 py-3 text-sm font-semibold text-surface transition-colors hover:bg-accent-soft"
+          onClick={save}
+        >
           <Save className="h-4 w-4" />
           保存配置
         </button>

@@ -1,4 +1,13 @@
 import path from "node:path";
+export * from "./constants";
+import {
+  MIN_PUBLISH_DAYS,
+  DEFAULT_ARTICLES_PER_ACCOUNT_PER_DAY,
+  DEFAULT_TIME_WINDOW,
+  MIN_SAME_ACCOUNT_INTERVAL_HOURS,
+  DEFAULT_EXPECTED_IMAGE_COUNT,
+  normalizeExpectedImageCount,
+} from "./constants";
 import { getEnterpriseProfile } from "@/lib/enterprise/service";
 import { dataRoot } from "@/lib/paths";
 import { detectPublishablePlatformAccounts } from "@/lib/publish/accounts-service";
@@ -31,12 +40,6 @@ import type {
   ThemeSet,
 } from "@/lib/types";
 import type { EnterpriseProfile } from "@/lib/enterprise/types";
-
-export const MIN_PUBLISH_DAYS = 1;
-export const DEFAULT_ARTICLES_PER_ACCOUNT_PER_DAY = 2;
-export const ARTICLES_PER_ACCOUNT_PER_DAY = DEFAULT_ARTICLES_PER_ACCOUNT_PER_DAY;
-export const DEFAULT_TIME_WINDOW = { start: "09:00", end: "18:00" } as const;
-export const MIN_SAME_ACCOUNT_INTERVAL_HOURS = 3;
 
 function now() {
   return new Date().toISOString();
@@ -211,6 +214,7 @@ export async function createTask(input: TaskCreateInput) {
     productId,
     status: "created",
     searchProvider: searchProvider || undefined,
+    expectedImageCount: DEFAULT_EXPECTED_IMAGE_COUNT,
     createdAt: now(),
     updatedAt: now(),
   };
@@ -243,10 +247,14 @@ export async function getTaskBundle(taskId: string): Promise<TaskBundle | null> 
   const normalizedTask: TaskRecord = task.publishPlan
     ? {
         ...task,
+        expectedImageCount: normalizeExpectedImageCount(task.expectedImageCount),
         searchProvider: task.publishPlan.searchProvider,
         publishPlan: normalizePublishTaskPlan(task.publishPlan),
       }
-    : task;
+    : {
+        ...task,
+        expectedImageCount: normalizeExpectedImageCount(task.expectedImageCount),
+      };
 
   return {
     task: normalizedTask,

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { generateContentForTask } from "@/lib/content/service";
+import { formatArticleGenerationError } from "@/lib/content/article-generation-service";
 
 function formatProbeDetails(message: string) {
   const raw = message.replace("CONTENT_API_PROBE_FAILED@", "");
@@ -31,6 +32,6 @@ export async function POST(request: Request) {
     if (error instanceof Error && error.message.startsWith("CONTENT_API_PROBE_FAILED@")) {
       return NextResponse.json({ error: `内容模型自动探测失败。已尝试：${formatProbeDetails(error.message)}` }, { status: 500 });
     }
-    return NextResponse.json({ error: error instanceof Error ? error.message : "内容生成失败" }, { status: 500 });
+    return NextResponse.json({ error: formatArticleGenerationError(error) }, { status: 500 });
   }
 }

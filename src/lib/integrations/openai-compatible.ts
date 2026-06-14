@@ -134,8 +134,10 @@ interface ProbeCacheEntry {
 }
 
 const probeCache = new Map<string, ProbeCacheEntry>();
-const RETRYABLE_HTTP_STATUS = new Set([502, 503]);
+const RETRYABLE_HTTP_STATUS = new Set([502, 503, 504]);
 const OPENAI_COMPATIBLE_RETRY_DELAYS_MS = [500, 1500];
+const RATE_LIMITED_HTTP_STATUS = new Set([429]);
+const RATE_LIMITED_RETRY_DELAYS_MS = [1500, 4000, 8000];
 
 export function normalizeOpenAICompatibleProviderName(provider: string) {
   const normalized = provider.trim().toLowerCase();
@@ -519,10 +521,14 @@ function parseResponsePayload(endpoint: string, rawBody: string) {
 
 function isRetryableOpenAICompatibleFailure(error: unknown) {
   if (error instanceof OpenAICompatibleHttpError) {
-    return RETRYABLE_HTTP_STATUS.has(error.status);
+    return RETRYABLE_HTTP_STATUS.has(error.status) || RATE_LIMITED_HTTP_STATUS.has(error.status);
   }
 
   return error instanceof Error && error.message === "REQUEST_TIMEOUT";
+}
+
+function applyJitter(ms: number) {
+  return Math.round(ms * (0.85 + Math.random() * 0.3));
 }
 
 function sleep(ms: number) {
@@ -619,18 +625,32 @@ async function performTextRequest(
   messages: OpenAICompatibleMessage[],
 ) {
   let lastError: unknown;
+  let rateLimitAttempt = 0;
 
   for (let attempt = 0; attempt <= OPENAI_COMPATIBLE_RETRY_DELAYS_MS.length; attempt += 1) {
     try {
       return await performSingleTextRequest(endpoint, headers, config, messages);
     } catch (error) {
       lastError = error;
+
+      const isRateLimited = error instanceof OpenAICompatibleHttpError && RATE_LIMITED_HTTP_STATUS.has(error.status);
+
+      if (isRateLimited && rateLimitAttempt < RATE_LIMITED_RETRY_DELAYS_MS.length) {
+        const delay = applyJitter(RATE_LIMITED_RETRY_DELAYS_MS[rateLimitAttempt]!);
+        console.warn(`[openai-compatible] retrying after 429, delay=${delay}ms, attempt=${rateLimitAttempt + 1}/${RATE_LIMITED_RETRY_DELAYS_MS.length}`);
+        rateLimitAttempt += 1;
+        await sleep(delay);
+        // Don't increment attempt so 429 retries don't consume non-429 retry budget
+        attempt -= 1;
+        continue;
+      }
+
       if (!isRetryableOpenAICompatibleFailure(error) || attempt >= OPENAI_COMPATIBLE_RETRY_DELAYS_MS.length) {
         break;
       }
 
       // Upstream overloads and transient timeouts often recover on a short retry.
-      await sleep(OPENAI_COMPATIBLE_RETRY_DELAYS_MS[attempt]);
+      await sleep(applyJitter(OPENAI_COMPATIBLE_RETRY_DELAYS_MS[attempt]!));
     }
   }
 

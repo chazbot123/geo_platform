@@ -3,8 +3,10 @@ import { getPromptVersion, normalizeAiScenario, normalizePlatform } from "@/lib/
 import { reviewContent, type ReviewResult } from "@/lib/content/review-service";
 import { planDispersion } from "@/lib/content/dispersion-service";
 import { buildGeoContentExecutionPackage } from "@/lib/content/execution-package";
-import { generateArticleForContentPool } from "@/lib/content/article-generation-service";
+import { generateArticleForContentPool, formatArticleGenerationError } from "@/lib/content/article-generation-service";
 import { runContentModel } from "@/lib/integrations/content/client";
+import { runSingleImageModel } from "@/lib/integrations/images/client";
+import { materializeScopedArticleImageItem } from "@/lib/images/local-image-store";
 import {
   getContentPool,
   getPlatformAccount,
@@ -28,6 +30,7 @@ import type {
   TaskBundle,
   TaskRecord,
 } from "@/lib/types";
+import { DEFAULT_EXPECTED_IMAGE_COUNT, normalizeExpectedImageCount } from "@/lib/tasks/service";
 
 const activeGenerationTasks = new Set<string>();
 const activeRetryTasks = new Set<string>();
@@ -383,6 +386,7 @@ function buildPendingContentPoolItem(input: {
   accountKeywordOffset: number;
   plannedPublishTime: string;
   timestamp: string;
+  expectedImageCount: number;
 }): ContentPoolItem {
   const imagePrompt = `${platformLabelMap[input.platform]}配图：${input.keyword.text.replace(/[？?。，,！!]+$/, "")}，真实产品服务场景，清晰、克制、适合图文发布`;
   return {
@@ -402,6 +406,7 @@ function buildPendingContentPoolItem(input: {
     summary: "",
     body: "",
     imagePrompt,
+    expectedImageCount: input.expectedImageCount,
     imageList: [],
     riskLevel: "low",
     status: "pending_generation",
@@ -548,6 +553,7 @@ async function buildPendingContentPoolRecord(bundle: TaskBundle, plan: PublishTa
   const planned = new Date(plan.createdAt);
   planned.setSeconds(0, 0);
   const questions = getSelectedQuestions(bundle);
+  const defaultExpectedImageCount = normalizeExpectedImageCount(bundle.task.expectedImageCount ?? DEFAULT_EXPECTED_IMAGE_COUNT);
   if (questions.length !== 5) {
     throw new Error("请先保存 5 个客户问题。");
   }
@@ -581,18 +587,19 @@ async function buildPendingContentPoolRecord(bundle: TaskBundle, plan: PublishTa
           const keyword = questions[keywordIndex];
           const plannedPublishTime = plannedTimeFor(plan, dayIndex, slotIndex, globalAccountIndex + 1);
           items.push(
-            buildPendingContentPoolItem({
-              plan,
-              sequence,
-              platform: platformPlan.platform,
-              accountId,
-              accountName: accountNameMap.get(accountId),
-              keyword,
-              accountKeywordOffset,
-              plannedPublishTime,
-              timestamp,
-            }),
-          );
+              buildPendingContentPoolItem({
+                plan,
+                sequence,
+                platform: platformPlan.platform,
+                accountId,
+                accountName: accountNameMap.get(accountId),
+                keyword,
+                accountKeywordOffset,
+                plannedPublishTime,
+                timestamp,
+                expectedImageCount: defaultExpectedImageCount,
+              }),
+            );
           accountArticleIndex += 1;
         }
       }
@@ -621,8 +628,9 @@ function buildFailedContentPoolItem(input: {
   plannedPublishTime: string;
   error: unknown;
   timestamp: string;
+  expectedImageCount?: number;
 }): ContentPoolItem {
-  const failedReason = input.error instanceof Error ? input.error.message : "文章生成失败。";
+  const failedReason = formatArticleGenerationError(input.error);
   const imagePrompt = `${platformLabelMap[input.platform]}配图：${input.keyword.text.replace(/[？?。，,！!]+$/, "")}，真实产品服务场景，清晰、克制、适合图文发布`;
   return {
     id: `${input.plan.taskId}-${String(input.sequence).padStart(4, "0")}`,
@@ -641,6 +649,7 @@ function buildFailedContentPoolItem(input: {
     summary: "",
     body: "",
     imagePrompt,
+    expectedImageCount: normalizeExpectedImageCount(input.expectedImageCount),
     imageList: [],
     riskLevel: "high",
     status: "failed",
@@ -759,6 +768,7 @@ async function runContentGenerationBatch(bundle: TaskBundle, initialRecord: Cont
         taskId: pendingItem.taskId,
         contentItemId: pendingItem.id,
         sequence: pendingItem.sequence,
+        expectedImageCount: pendingItem.expectedImageCount,
         product: bundle.product,
         theme: bundle.theme!,
         searchProvider: pendingItem.aiPlatform,
@@ -798,6 +808,7 @@ async function runContentGenerationBatch(bundle: TaskBundle, initialRecord: Cont
           plannedPublishTime: pendingItem.plannedPublishTime,
           error,
           timestamp: new Date().toISOString(),
+          expectedImageCount: pendingItem.expectedImageCount,
         }),
       );
     }
@@ -984,6 +995,7 @@ export async function rewriteContentPoolItem(taskId: string, itemId: string) {
     taskId,
     contentItemId: currentItem.id,
     sequence: currentItem.sequence,
+    expectedImageCount: currentItem.expectedImageCount,
     product: bundle.product,
     theme: bundle.theme,
     searchProvider: currentItem.aiPlatform,
@@ -1047,6 +1059,82 @@ export async function disperseContentPoolItem(taskId: string, itemId: string) {
   const record = await getContentPool(taskId);
   if (!record) throw new Error("内容池不存在。");
   return rewriteContentPoolItem(taskId, itemId);
+}
+
+export async function updateContentPoolItemImageCount(taskId: string, itemId: string, expectedImageCount?: number) {
+  const record = await getContentPool(taskId);
+  if (!record) throw new Error("内容池不存在。");
+  const timestamp = new Date().toISOString();
+  const normalizedCount = normalizeExpectedImageCount(expectedImageCount);
+  const next = mapItems(record, (item) => {
+    if (item.id !== itemId) return item;
+    return {
+      ...item,
+      expectedImageCount: normalizedCount,
+      updatedAt: timestamp,
+      stageLog: [...(item.stageLog ?? []), { stage: "brief_ready", message: `已将本篇文章图片数量更新为 ${normalizedCount} 张。`, at: timestamp }],
+    };
+  });
+  return saveContentPool(next);
+}
+
+export async function retryContentPoolItemImage(taskId: string, itemId: string, imageId: string) {
+  const record = await getContentPool(taskId);
+  if (!record) throw new Error("内容池不存在。");
+  const bundle = await getTaskBundle(taskId);
+  if (!bundle?.theme) {
+    throw new Error("任务主题不存在。");
+  }
+  const currentItem = record.items.find((item) => item.id === itemId);
+  if (!currentItem) {
+    throw new Error("内容项不存在。");
+  }
+  const imageIndex = currentItem.imageList.findIndex((image) => image.id === imageId);
+  if (imageIndex < 0) {
+    throw new Error("图片项不存在。");
+  }
+  const currentImage = currentItem.imageList[imageIndex];
+  const appConfig = await getAppConfig();
+  const regeneratedImage = await runSingleImageModel(bundle.product, appConfig.imageModelApiConfig, {
+    prompt: currentImage.prompt,
+    imageIndex: imageIndex + 1,
+    imageCount: currentItem.expectedImageCount ?? currentItem.imageList.length ?? 1,
+    paragraphIndex: imageIndex,
+    alt: `文章配图 ${imageIndex + 1}`,
+  });
+  const localizedImage = await materializeScopedArticleImageItem(itemId, regeneratedImage, imageIndex);
+  const nextImageList = currentItem.imageList.map((image, index) =>
+    index === imageIndex
+      ? {
+          id: localizedImage.id,
+          prompt: localizedImage.prompt,
+          url: localizedImage.publicUrl ?? localizedImage.url,
+          localPath: localizedImage.localPath,
+          errorMessage: localizedImage.errorMessage,
+          status: localizedImage.reviewStatus === "failed" ? "failed" : "generated",
+        }
+      : image,
+  );
+  const failedCount = nextImageList.filter((image) => image.status === "failed").length;
+  const timestamp = new Date().toISOString();
+  const next = mapItems(record, (item) => {
+    if (item.id !== itemId) return item;
+    return {
+      ...item,
+      imageList: nextImageList,
+      pipeline: {
+        ...item.pipeline,
+        imageGeneration: {
+          ...item.pipeline.imageGeneration,
+          status: failedCount > 0 ? "needs_action" : nextImageList.length ? "passed" : "pending",
+          images: nextImageList,
+        },
+      },
+      stageLog: [...(item.stageLog ?? []), { stage: "finalizing", message: `已重试图片 ${imageIndex + 1}。`, at: timestamp }],
+      updatedAt: timestamp,
+    };
+  });
+  return saveContentPool(next);
 }
 
 async function runRetryFailedContentPoolItems(taskId: string) {

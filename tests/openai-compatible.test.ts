@@ -27,6 +27,13 @@ describe("openai-compatible transient retry", () => {
     vi.unstubAllGlobals();
   });
 
+  // jitter multiplier range: [0.85, 1.15], so base×0.85 ≤ actual ≤ base×1.15
+  function expectDelayNear(delays: number[], base: number) {
+    const lo = Math.floor(base * 0.84);
+    const hi = Math.ceil(base * 1.16);
+    expect(delays.some((d) => d >= lo && d <= hi)).toBe(true);
+  }
+
   it("retries 502 responses with backoff before succeeding", async () => {
     const fetchMock = vi
       .fn()
@@ -39,7 +46,7 @@ describe("openai-compatible transient retry", () => {
 
     expect(result.rawText).toBe("ok");
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(setTimeoutSpy.mock.calls.map((call) => Number(call[1]))).toContain(500);
+    expectDelayNear(setTimeoutSpy.mock.calls.map((call) => Number(call[1])), 500);
   });
 
   it("retries 503 responses with backoff before succeeding", async () => {
@@ -54,7 +61,7 @@ describe("openai-compatible transient retry", () => {
 
     expect(result.rawText).toBe("ok");
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(setTimeoutSpy.mock.calls.map((call) => Number(call[1]))).toContain(500);
+    expectDelayNear(setTimeoutSpy.mock.calls.map((call) => Number(call[1])), 500);
   });
 
   it("retries request timeout errors with backoff before succeeding", async () => {
@@ -69,7 +76,7 @@ describe("openai-compatible transient retry", () => {
 
     expect(result.rawText).toBe("ok");
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(setTimeoutSpy.mock.calls.map((call) => Number(call[1]))).toContain(500);
+    expectDelayNear(setTimeoutSpy.mock.calls.map((call) => Number(call[1])), 500);
   });
 
   it("surfaces the last 502 after retry exhaustion", async () => {
@@ -89,7 +96,7 @@ describe("openai-compatible transient retry", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(3);
     const scheduledDelays = setTimeoutSpy.mock.calls.map((call) => Number(call[1]));
-    expect(scheduledDelays).toContain(500);
-    expect(scheduledDelays).toContain(1500);
+    expectDelayNear(scheduledDelays, 500);
+    expectDelayNear(scheduledDelays, 1500);
   });
 });

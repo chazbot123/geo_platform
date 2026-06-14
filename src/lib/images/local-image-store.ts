@@ -15,6 +15,12 @@ function guessExtension(url: string, mimeType = "") {
   if (normalizedMimeType.includes("webp")) return ".webp";
   if (normalizedMimeType.includes("gif")) return ".gif";
 
+  // Extract mime from data URI: data:image/jpeg;base64,...
+  const dataUriMatch = url.match(/^data:(image\/[a-z0-9.+-]+);base64,/i);
+  if (dataUriMatch) {
+    return guessExtension("", dataUriMatch[1]);
+  }
+
   try {
     const parsed = new URL(url);
     const ext = path.extname(parsed.pathname || "").toLowerCase();
@@ -62,19 +68,56 @@ async function materializeArticleImageItems(taskDir: string, taskId: string, ite
 
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index];
+    if (item.reviewStatus === "failed") {
+      nextItems.push({
+        ...item,
+        localPath: undefined,
+        publicUrl: undefined,
+      });
+      continue;
+    }
     const fileBaseName = buildStableFileBaseName(index);
     const extension = guessExtension(item.url, item.generationMode === "reference" ? "image/png" : "");
     const localPath = path.join(taskDir, `${fileBaseName}${extension}`);
     const publicUrl = `/generated-images/${taskId}/${fileBaseName}${extension}`;
     await downloadRemoteImageToLocal(item.url, localPath);
+    // Replace data URI in item.url so the JSON record stays small
+    const resolvedItemUrl = /^data:/i.test(item.url) ? publicUrl : item.url;
     nextItems.push({
       ...item,
+      url: resolvedItemUrl,
       localPath,
       publicUrl,
     });
   }
 
   return nextItems;
+}
+
+export async function materializeScopedArticleImageItem(scopeId: string, item: ArticleImageItem, index: number) {
+  const taskDir = generatedImageTaskDir(scopeId);
+  await ensureDir(taskDir);
+
+  if (item.reviewStatus === "failed") {
+    return {
+      ...item,
+      localPath: undefined,
+      publicUrl: undefined,
+    };
+  }
+
+  const fileBaseName = buildStableFileBaseName(index);
+  const extension = guessExtension(item.url, item.generationMode === "reference" ? "image/png" : "");
+  const localPath = path.join(taskDir, `${fileBaseName}${extension}`);
+  const publicUrl = `/generated-images/${scopeId}/${fileBaseName}${extension}`;
+  await downloadRemoteImageToLocal(item.url, localPath);
+  const resolvedItemUrl = /^data:/i.test(item.url) ? publicUrl : item.url;
+  return {
+    ...item,
+    url: resolvedItemUrl,
+    localPath,
+    publicUrl,
+  };
 }
 
 export function generatedImageTaskDir(taskId: string) {
@@ -88,8 +131,15 @@ async function materializeImageAssetToLocalInScope(scopeId: string, asset: Image
   const items = await materializeArticleImageItems(taskDir, scopeId, asset.images ?? []);
   const coverSource = items[0];
 
+  // Replace the top-level url if it is still a data URI; prefer the materialized publicUrl.
+  const resolvedUrl =
+    coverSource?.publicUrl && /^data:/i.test(asset.url ?? "")
+      ? coverSource.publicUrl
+      : asset.url;
+
   return {
     ...asset,
+    url: resolvedUrl,
     localImageDir: taskDir,
     localCoverPath: coverSource?.localPath,
     images: items,

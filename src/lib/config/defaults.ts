@@ -20,7 +20,7 @@ export const defaultAppConfig: AppConfig = {
     baseUrl: "",
     apiKey: "",
     modelName: "gpt-image-2",
-    timeout: 15000,
+    timeout: 150000,
   },
   publishApiConfig: {
     provider: "social-workbench",

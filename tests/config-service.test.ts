@@ -108,4 +108,12 @@ describe("config service model defaults", () => {
     expect(config.stage1ModelApiConfig.modelName).toBe("gpt-5.5");
     expect(config.contentModelApiConfig.modelName).toBe("gpt-5.5");
   });
+
+  it("uses 150000ms as the default image timeout", async () => {
+    await resetDataDir();
+    const { getAppConfig } = await import("@/lib/config/service");
+
+    const config = await getAppConfig();
+    expect(config.imageModelApiConfig.timeout).toBe(150000);
+  });
 });

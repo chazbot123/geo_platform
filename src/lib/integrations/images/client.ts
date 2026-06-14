@@ -14,6 +14,64 @@ const MIME_TYPES: Record<string, string> = {
 const MAX_REFERENCE_IMAGE_BYTES = 7 * 1024 * 1024;
 const MAX_REFERENCE_TOTAL_BYTES = 14 * 1024 * 1024;
 const IMAGE_PROMPT_TEMPLATE_PATH = path.join(process.cwd(), "src", "lib", "integrations", "images", "image-generation-prompt.md");
+const DEFAULT_IMAGE_TIMEOUT_MS = 150000;
+
+const IMAGE_RETRY_RATE_LIMIT_DELAYS_MS = [1500, 4000, 8000];
+const IMAGE_RETRY_TRANSIENT_DELAYS_MS = [500, 1500, 3000];
+const IMAGE_RETRYABLE_HTTP_STATUSES = new Set([429, 502, 503, 504]);
+
+function imageRetryJitter(ms: number) {
+  return Math.round(ms * (0.85 + Math.random() * 0.3));
+}
+
+function isImageRetryable(error: unknown): boolean {
+  if (error instanceof Error) {
+    if (error.name === "AbortError") return true;
+    if (error.message === "REQUEST_TIMEOUT") return true;
+    // Upstream silent failure: 200 OK but empty url/b64_json. Retry as it's often transient.
+    if (/^IMAGE_OUTPUT_EMPTY@/.test(error.message)) return true;
+    // IMAGE_API_429 or IMAGE_RATE_LIMIT_429
+    const statusMatch = error.message.match(/^IMAGE(?:_API|_RATE_LIMIT)?_(\d{3})/);
+    if (statusMatch) {
+      return IMAGE_RETRYABLE_HTTP_STATUSES.has(Number(statusMatch[1]));
+    }
+  }
+  return false;
+}
+
+function isImageRateLimitError(error: unknown): boolean {
+  return error instanceof Error && /^IMAGE_(?:API_429|RATE_LIMIT_429)/.test(error.message);
+}
+
+async function withImageRetry<T>(
+  fn: () => Promise<T>,
+  label: string,
+  opts?: { maxAttempts?: number },
+): Promise<T> {
+  const maxAttempts = opts?.maxAttempts ?? 3;
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      const isLast = attempt >= maxAttempts - 1;
+      if (!isImageRetryable(error) || isLast) {
+        break;
+      }
+      const delayTable = isImageRateLimitError(error) ? IMAGE_RETRY_RATE_LIMIT_DELAYS_MS : IMAGE_RETRY_TRANSIENT_DELAYS_MS;
+      const baseDelay = delayTable[attempt] ?? delayTable.at(-1) ?? 1500;
+      const delay = imageRetryJitter(baseDelay);
+      console.warn(`[image-client] ${label} retry after error, delay=${delay}ms, attempt=${attempt + 1}/${maxAttempts - 1}`);
+      await new Promise<void>((r) => setTimeout(r, delay));
+    }
+  }
+
+  throw lastError;
+}
+
+export type GenericImageRequestExecutor = (url: string, init: RequestInit) => Promise<Response>;
 
 interface ArticleImagePlanItem {
   imageIndex: number;
@@ -25,7 +83,17 @@ interface ArticleImagePlanItem {
   sectionHeading?: string;
 }
 
-const REQUIRED_IMAGE_COUNT = 5;
+const DEFAULT_IMAGE_COUNT = 5;
+
+export interface SingleImageRequestInput {
+  prompt: string;
+  imageIndex?: number;
+  imageCount?: number;
+  paragraphIndex?: number;
+  alt?: string;
+  question?: string;
+  sectionHeading?: string;
+}
 
 function formatRegion(product: ProductProfile) {
   return [product.province, product.city, product.district].filter(Boolean).join("");
@@ -79,6 +147,14 @@ function pickKeyword(theme: ThemeSet) {
   return theme.selectedKeywordTheme ?? theme.selectedKeyword ?? theme.mainKeyword;
 }
 
+function normalizeRequestedImageCount(imageCount?: number) {
+  const parsed = Math.floor(Number(imageCount));
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return DEFAULT_IMAGE_COUNT;
+  }
+  return Math.min(10, parsed);
+}
+
 function extractArticleParagraphs(content?: ContentDraft) {
   if (!content?.content?.trim()) {
     return [] as string[];
@@ -90,14 +166,11 @@ function extractArticleParagraphs(content?: ContentDraft) {
     .filter((paragraph) => paragraph.length >= 18);
 }
 
-function buildArticleImagePlan(content: ContentDraft | undefined, keyword: string): ArticleImagePlanItem[] {
+function buildArticleImagePlan(content: ContentDraft | undefined, keyword: string, requestedImageCount?: number): ArticleImagePlanItem[] {
   const reportSections = content?.reportSections?.length ? content.reportSections : [];
-  const imageCount = REQUIRED_IMAGE_COUNT;
+  const imageCount = normalizeRequestedImageCount(requestedImageCount);
 
   if (reportSections.length) {
-    const earlySection = reportSections[0];
-    const middleSection = reportSections[Math.floor((reportSections.length - 1) / 2)];
-    const lateSection = reportSections[Math.max(0, reportSections.length - 1)];
     const candidates = [
       {
         sectionHeading: "报告总述",
@@ -105,24 +178,12 @@ function buildArticleImagePlan(content: ContentDraft | undefined, keyword: strin
         sectionExcerpt: [content?.summary, content?.reportIntroduction].filter(Boolean).join(" "),
         paragraphIndex: 0,
       },
-      {
-        sectionHeading: earlySection?.heading || "核心问题一",
-        question: earlySection?.question || keyword,
-        sectionExcerpt: [earlySection?.summary, earlySection?.body].filter(Boolean).join(" "),
-        paragraphIndex: 2,
-      },
-      {
-        sectionHeading: middleSection?.heading || "核心问题分析",
-        question: middleSection?.question || keyword,
-        sectionExcerpt: [middleSection?.summary, middleSection?.body].filter(Boolean).join(" "),
-        paragraphIndex: 2 + Math.floor((reportSections.length - 1) / 2),
-      },
-      {
-        sectionHeading: lateSection?.heading || "核心问题延展",
-        question: lateSection?.question || keyword,
-        sectionExcerpt: [lateSection?.summary, lateSection?.body].filter(Boolean).join(" "),
-        paragraphIndex: 1 + reportSections.length,
-      },
+      ...reportSections.map((section, index) => ({
+        sectionHeading: section.heading || `核心问题 ${index + 1}`,
+        question: section.question || keyword,
+        sectionExcerpt: [section.summary, section.body].filter(Boolean).join(" "),
+        paragraphIndex: 2 + index,
+      })),
       {
         sectionHeading: "报告结论",
         question: "最终判断与行动建议",
@@ -131,7 +192,15 @@ function buildArticleImagePlan(content: ContentDraft | undefined, keyword: strin
       },
     ];
 
-    return candidates.map((item, index) => ({
+    const scaledCandidates = Array.from({ length: imageCount }, (_, index) => {
+      const candidateIndex = Math.min(
+        candidates.length - 1,
+        Math.floor((index * candidates.length) / imageCount),
+      );
+      return candidates[candidateIndex] ?? candidates[candidates.length - 1];
+    });
+
+    return scaledCandidates.map((item, index) => ({
       imageIndex: index + 1,
       imageCount,
       paragraphIndex: item.paragraphIndex,
@@ -143,7 +212,12 @@ function buildArticleImagePlan(content: ContentDraft | undefined, keyword: strin
   }
 
   const paragraphs = extractArticleParagraphs(content);
-  const fallbackParagraphs = [0, 1, 2, 3, 4].map((index) => paragraphs[index] || paragraphs[paragraphs.length - 1] || keyword);
+  const fallbackParagraphs = Array.from({ length: imageCount }, (_, index) => {
+    const paragraphIndex = paragraphs.length
+      ? Math.min(paragraphs.length - 1, Math.floor((index * paragraphs.length) / imageCount))
+      : 0;
+    return paragraphs[paragraphIndex] || paragraphs[paragraphs.length - 1] || keyword;
+  });
   return fallbackParagraphs.map((paragraph, index) => ({
     imageIndex: index + 1,
     imageCount,
@@ -253,6 +327,20 @@ function resolveOpenAIImageEndpoint(baseUrl: string) {
   return `${trimmed}/images/generations`;
 }
 
+function resolveOpenAIImageEditEndpoint(baseUrl: string) {
+  const trimmed = baseUrl.trim().replace(/\/+$/g, "").replace(/\/chat\/completions$/i, "");
+  if (!trimmed) {
+    throw new Error("未配置图片模型 API 地址");
+  }
+  if (/\/images\/edits$/i.test(trimmed)) {
+    return trimmed;
+  }
+  if (/\/images\/generations$/i.test(trimmed)) {
+    return trimmed.replace(/\/images\/generations$/i, "/images/edits");
+  }
+  return `${trimmed}/images/edits`;
+}
+
 function resolveViduBaseUrl(baseUrl: string) {
   const trimmed = baseUrl.trim();
   if (!trimmed) {
@@ -290,7 +378,7 @@ function sleep(ms: number) {
 }
 
 function resolveTimeoutMs(timeout: number) {
-  return Math.max(5000, Number(timeout) || 60000);
+  return Math.max(5000, Number(timeout) || DEFAULT_IMAGE_TIMEOUT_MS);
 }
 
 function isAbortLikeError(error: unknown) {
@@ -346,6 +434,17 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: numbe
   } finally {
     clearTimeout(timeoutHandle);
   }
+}
+
+const defaultGenericImageRequestExecutor: GenericImageRequestExecutor = (url, init) => fetch(url, init);
+let genericImageRequestExecutor: GenericImageRequestExecutor = defaultGenericImageRequestExecutor;
+
+export function setGenericImageRequestExecutorForTest(executor?: GenericImageRequestExecutor | null) {
+  genericImageRequestExecutor = executor ?? defaultGenericImageRequestExecutor;
+}
+
+export async function executeGenericImageRequest(url: string, init: RequestInit) {
+  return genericImageRequestExecutor(url, init);
 }
 
 function extractRemoteError(payload: Record<string, unknown> | null, rawText: string) {
@@ -428,9 +527,50 @@ async function resolveReferenceImages(product: ProductProfile) {
   return results;
 }
 
-function ensureFiveImageAsset(taskId: string, asset: ImageAsset) {
+async function resolveReferenceImageFiles(product: ProductProfile) {
+  const results: Array<{ bytes: number; fileName: string; mimeType: string; buffer: Buffer }> = [];
+  let totalBytes = 0;
+
+  for (const filePath of uniqueImagePaths(product)) {
+    try {
+      const extension = path.extname(filePath).toLowerCase();
+      if (!IMAGE_EXTENSIONS.has(extension)) {
+        continue;
+      }
+
+      const stat = await fs.stat(filePath);
+      if (!stat.isFile() || stat.size > MAX_REFERENCE_IMAGE_BYTES) {
+        continue;
+      }
+
+      const mimeType = MIME_TYPES[extension];
+      if (!mimeType) {
+        continue;
+      }
+
+      if (totalBytes + stat.size > MAX_REFERENCE_TOTAL_BYTES) {
+        continue;
+      }
+
+      const buffer = await fs.readFile(filePath);
+      totalBytes += buffer.byteLength;
+      results.push({
+        bytes: buffer.byteLength,
+        fileName: path.basename(filePath),
+        mimeType,
+        buffer,
+      });
+    } catch {
+      // Reference images are best-effort only; unreadable local files degrade to prompt-only generation.
+    }
+  }
+
+  return results;
+}
+
+function ensureImageAssetCount(taskId: string, asset: ImageAsset, expectedImageCount: number) {
   const images = asset.images ?? [];
-  if (images.length !== REQUIRED_IMAGE_COUNT) {
+  if (images.length !== expectedImageCount) {
     throw new Error(`图片结果数量异常：任务 ${taskId} 仅生成 ${images.length} 张图。`);
   }
   return asset;
@@ -487,7 +627,7 @@ async function createViduTask(product: ProductProfile, prompt: string, config: M
         payload: product.taskId,
       }),
     },
-    Math.min(resolveTimeoutMs(config.timeout), 60000),
+    resolveTimeoutMs(config.timeout),
   );
 
   const { payload, rawText } = await readJsonResponse(response);
@@ -562,35 +702,37 @@ async function runViduImageModel(
   const referenceImages = await resolveReferenceImages(product);
   const hasReferenceImages = referenceImages.length > 0;
   const items: ArticleImageItem[] = await Promise.all(
-    prompts.map(async (entry) => {
-      const createdTask = await createViduTask(product, entry.prompt, config, referenceImages);
-      const imageUrl = await pollViduImageUrl(createdTask.taskId, config);
-      return {
-        id: `${product.taskId}-${randomUUID()}`,
-        url: imageUrl,
-        prompt: entry.prompt,
-        alt: entry.planItem.alt,
-        question: entry.planItem.question,
-        sectionHeading: entry.planItem.sectionHeading,
-        referenceMode: hasReferenceImages ? "reference_enhanced" : "article_only",
-        reviewStatus: "pending",
-        provider: "vidu",
-        providerTaskId: createdTask.taskId,
-        generationMode: createdTask.generationMode,
-        placement: {
-          paragraphIndex: entry.planItem.paragraphIndex,
-          caption: `配图 ${entry.planItem.imageIndex}`,
-        },
-      };
-    }),
+    prompts.map((entry) =>
+      withImageRetry(async () => {
+        const createdTask = await createViduTask(product, entry.prompt, config, referenceImages);
+        const imageUrl = await pollViduImageUrl(createdTask.taskId, config);
+        return {
+          id: `${product.taskId}-${randomUUID()}`,
+          url: imageUrl,
+          prompt: entry.prompt,
+          alt: entry.planItem.alt,
+          question: entry.planItem.question,
+          sectionHeading: entry.planItem.sectionHeading,
+          referenceMode: hasReferenceImages ? "reference_enhanced" : "article_only",
+          reviewStatus: "pending",
+          provider: "vidu",
+          providerTaskId: createdTask.taskId,
+          generationMode: createdTask.generationMode,
+          placement: {
+            paragraphIndex: entry.planItem.paragraphIndex,
+            caption: `配图 ${entry.planItem.imageIndex}`,
+          },
+        };
+      }, `vidu[${entry.planItem.imageIndex}]`),
+    ),
   );
 
-  if (items.length !== REQUIRED_IMAGE_COUNT) {
+  if (items.length !== prompts.length) {
     throw new Error(`Vidu 图片生成数量不足，当前仅成功返回 ${items.length} 张。`);
   }
 
   const cover = items[0];
-  return ensureFiveImageAsset(product.taskId, {
+  return ensureImageAssetCount(product.taskId, {
     taskId: product.taskId,
     assetType: "cover",
     url: cover?.url || buildPromptUrl(prompts[0]?.prompt || product.productName),
@@ -601,7 +743,7 @@ async function runViduImageModel(
     generationMode: cover?.generationMode ?? "prompt",
     images: items,
     updatedAt: new Date().toISOString(),
-  });
+  }, prompts.length);
 }
 
 async function runGenericImageModel(
@@ -612,69 +754,90 @@ async function runGenericImageModel(
 ) {
   const referenceImages = await resolveReferenceImages(product);
   const hasReferenceImages = referenceImages.length > 0;
-  const results: Array<{ fallback: true; item?: undefined } | { fallback: false; item: ArticleImageItem }> = await Promise.all(
+  const results: Array<{ item: ArticleImageItem; failed: boolean }> = await Promise.all(
     prompts.map(async (entry) => {
-      const response = await fetch(config.baseUrl, {
-        method: "POST",
-        headers: buildJsonAuthHeaders(config.apiKey),
-        body: JSON.stringify({ product, modelName: config.modelName, prompt: entry.prompt }),
-      });
-
-      if (!response.ok) {
-        if (response.status === 404) {
-          return { fallback: true as const };
-        }
-        throw new Error(`IMAGE_API_${response.status}`);
-      }
-
-      const contentType = response.headers.get("content-type") ?? "";
-      if (!contentType.toLowerCase().includes("application/json")) {
-        await response.text().catch(() => "");
-        return { fallback: true as const };
-      }
-
-      let payload: Partial<ImageAsset> = {};
       try {
-        payload = (await response.json()) as Partial<ImageAsset>;
-      } catch {
-        return { fallback: true as const };
-      }
-
-      return {
-        fallback: false as const,
-        item: {
-          id: `${product.taskId}-${randomUUID()}`,
-          url: payload.url ?? buildPromptUrl(entry.prompt),
-          prompt: entry.prompt,
-          alt: entry.planItem.alt,
-          question: entry.planItem.question,
-          sectionHeading: entry.planItem.sectionHeading,
-          referenceMode: hasReferenceImages ? "reference_enhanced" : "article_only",
-          reviewStatus: payload.reviewStatus ?? "pending",
-          provider: payload.provider ?? "generic",
-          providerTaskId: payload.providerTaskId,
-          generationMode: payload.generationMode ?? "prompt",
-          placement: {
-            paragraphIndex: entry.planItem.paragraphIndex,
-            caption: `配图 ${entry.planItem.imageIndex}`,
+        const response = await withImageRetry(
+          async () => {
+            const res = await executeGenericImageRequest(config.baseUrl, {
+              method: "POST",
+              headers: buildJsonAuthHeaders(config.apiKey),
+              body: JSON.stringify({ product, modelName: config.modelName, prompt: entry.prompt }),
+            });
+            if (!res.ok) {
+              const errPrefix = res.status === 429
+                ? `IMAGE_RATE_LIMIT_${res.status}@${config.baseUrl}`
+                : `IMAGE_API_${res.status}`;
+              throw new Error(errPrefix);
+            }
+            return res;
           },
-        },
-      };
+          `generic[${entry.planItem.imageIndex}]`,
+        );
+
+        if (!response.ok) {
+          const errPrefix = response.status === 429 ? `IMAGE_RATE_LIMIT_${response.status}@${config.baseUrl}` : `IMAGE_API_${response.status}`;
+          throw new Error(errPrefix);
+        }
+
+        const contentType = response.headers.get("content-type") ?? "";
+        let payload: Partial<ImageAsset> = {};
+        let rawTextSnapshot = "";
+        try {
+          rawTextSnapshot = await response.clone().text();
+        } catch {
+          rawTextSnapshot = "(clone failed)";
+        }
+        console.info(
+          `[image-debug] provider=generic endpoint=${config.baseUrl} status=${response.status} content-type=${contentType} raw-prefix=${rawTextSnapshot.slice(0, 500)}`,
+        );
+        if (!contentType.toLowerCase().includes("application/json")) {
+          throw new Error("IMAGE_API_BAD_CONTENT_TYPE");
+        }
+        try {
+          payload = (await response.json()) as Partial<ImageAsset>;
+        } catch {
+          throw new Error("IMAGE_API_BAD_JSON");
+        }
+
+        const resolvedUrl = typeof payload.url === "string" && payload.url.trim() ? payload.url.trim() : buildPromptUrl(entry.prompt);
+        return {
+          failed: false,
+          item: {
+            id: `${product.taskId}-${randomUUID()}`,
+            url: resolvedUrl,
+            prompt: entry.prompt,
+            alt: entry.planItem.alt,
+            question: entry.planItem.question,
+            sectionHeading: entry.planItem.sectionHeading,
+            referenceMode: hasReferenceImages ? "reference_enhanced" : "article_only",
+            reviewStatus: payload.reviewStatus ?? "pending",
+            provider: payload.provider ?? "generic",
+            providerTaskId: payload.providerTaskId,
+            generationMode: payload.generationMode ?? "prompt",
+            placement: {
+              paragraphIndex: entry.planItem.paragraphIndex,
+              caption: `配图 ${entry.planItem.imageIndex}`,
+            },
+          },
+        };
+      } catch (error) {
+        return {
+          failed: true,
+          item: createFallbackImageItem(product.taskId, entry.prompt, entry.planItem, {
+            url: "",
+            reviewStatus: "failed",
+            provider: "generic",
+            errorMessage: error instanceof Error ? error.message : "图片生成失败",
+          }),
+        };
+      }
     }),
   );
-
-  if (results.some((result) => result.fallback)) {
-    return fallbackAsset;
-  }
-
-  const items: ArticleImageItem[] = results.flatMap((result) => (result.item ? [result.item] : []));
-
-  if (items.length !== REQUIRED_IMAGE_COUNT) {
-    throw new Error(`图片生成数量不足，当前仅成功返回 ${items.length} 张。`);
-  }
+  const items: ArticleImageItem[] = results.map((result) => result.item);
 
   const cover = items[0];
-  return ensureFiveImageAsset(product.taskId, {
+  return ensureImageAssetCount(product.taskId, {
     taskId: product.taskId,
     assetType: "cover",
     url: cover?.url ?? fallbackAsset.url,
@@ -685,7 +848,7 @@ async function runGenericImageModel(
     generationMode: cover?.generationMode ?? "prompt",
     images: items,
     updatedAt: new Date().toISOString(),
-  } satisfies ImageAsset);
+  } satisfies ImageAsset, prompts.length);
 }
 
 async function runOpenAICompatibleImageModel(
@@ -693,25 +856,61 @@ async function runOpenAICompatibleImageModel(
   prompts: Array<{ prompt: string; planItem: ArticleImagePlanItem }>,
   config: ModelApiConfig,
 ): Promise<ImageAsset> {
-  const endpoint = resolveOpenAIImageEndpoint(config.baseUrl);
+  const generationEndpoint = resolveOpenAIImageEndpoint(config.baseUrl);
+  const editEndpoint = resolveOpenAIImageEditEndpoint(config.baseUrl);
+  const normalizedApiKey = normalizeApiKey(config.apiKey);
+  const referenceImageFiles = await resolveReferenceImageFiles(product);
+  const hasReferenceImages = referenceImageFiles.length > 0;
   const items: ArticleImageItem[] = await Promise.all(
-    prompts.map(async (entry) => {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), (config.timeout ?? 300000));
-      let response: Response;
+    prompts.map((entry) =>
+      withImageRetry(async () => {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), resolveTimeoutMs(config.timeout));
+        let response: Response;
       try {
-        response = await fetch(endpoint, {
-          method: "POST",
-          headers: buildJsonAuthHeaders(config.apiKey),
-          body: JSON.stringify({
-            model: config.modelName,
-            prompt: entry.prompt,
-            n: 1,
-            size: "1024x1024",
-            response_format: "url",
-          }),
-          signal: controller.signal,
-        });
+        if (hasReferenceImages) {
+          const form = new FormData();
+          form.set("model", config.modelName);
+          form.set("prompt", entry.prompt);
+          form.set("size", "1024x1024");
+
+          for (const [index, file] of referenceImageFiles.entries()) {
+            const blob = new Blob([file.buffer], { type: file.mimeType });
+            form.append("image", blob, file.fileName || `reference-${index + 1}.png`);
+          }
+
+          const headers: Record<string, string> = {};
+          if (normalizedApiKey) {
+            headers.Authorization = `Bearer ${normalizedApiKey}`;
+          }
+
+          response = await fetch(editEndpoint, {
+            method: "POST",
+            headers,
+            body: form,
+            signal: controller.signal,
+          });
+        } else {
+          const headers: Record<string, string> = {
+            "Content-Type": "application/json",
+          };
+          if (normalizedApiKey) {
+            headers.Authorization = `Bearer ${normalizedApiKey}`;
+          }
+
+          response = await fetch(generationEndpoint, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              model: config.modelName,
+              prompt: entry.prompt,
+              n: 1,
+              size: "1024x1024",
+              response_format: "b64_json",
+            }),
+            signal: controller.signal,
+          });
+        }
       } catch (error) {
         if (isAbortLikeError(error)) {
           throw new Error("REQUEST_TIMEOUT");
@@ -721,25 +920,31 @@ async function runOpenAICompatibleImageModel(
         clearTimeout(timeoutId);
       }
 
-      const rawText = await response.text();
-      let payload: {
-        data?: Array<{ url?: string; b64_json?: string; revised_prompt?: string }>;
-        error?: { message?: string };
-      } = {};
-      try {
-        payload = JSON.parse(rawText);
-      } catch {
-        // Keep payload empty and surface the raw body below.
-      }
+      const { payload: parsedPayload, rawText } = await readJsonResponse(response);
+      process.stderr.write(
+        `[image-debug] provider=openai-compatible endpoint=${hasReferenceImages ? editEndpoint : generationEndpoint} status=${response.status} content-type=${response.headers.get("content-type") ?? ""} payload-keys=${parsedPayload ? Object.keys(parsedPayload).join(",") : "null"} raw-prefix=${rawText.slice(0, 800).replace(/\n/g, "\\n")}\n`,
+      );
+      const payload = parsedPayload as
+        | {
+            data?: Array<{ url?: string; b64_json?: string; revised_prompt?: string }>;
+            error?: { message?: string };
+          }
+        | null;
 
       if (!response.ok) {
-        throw new Error(`IMAGE_API_${response.status}: ${payload.error?.message || rawText.slice(0, 200)}`);
+        const detail = payload?.error?.message || rawText.slice(0, 200);
+        const errPrefix = response.status === 429
+          ? `IMAGE_RATE_LIMIT_${response.status}@${hasReferenceImages ? editEndpoint : generationEndpoint}`
+          : `IMAGE_API_${response.status}`;
+        throw new Error(`${errPrefix}: ${detail}`);
       }
 
-      const first = payload.data?.[0];
-      const imageUrl = first?.url || (first?.b64_json ? `data:image/png;base64,${first.b64_json}` : "");
+      const first = payload?.data?.[0];
+      const urlField = typeof first?.url === "string" ? first.url.trim() : "";
+      const b64Field = typeof first?.b64_json === "string" ? first.b64_json.trim() : "";
+      const imageUrl = urlField || (b64Field ? `data:image/png;base64,${b64Field}` : "");
       if (!imageUrl) {
-        throw new Error("图片模型未返回可用图片");
+        throw new Error(`IMAGE_OUTPUT_EMPTY@${hasReferenceImages ? editEndpoint : generationEndpoint}`);
       }
 
       return {
@@ -749,24 +954,25 @@ async function runOpenAICompatibleImageModel(
         alt: entry.planItem.alt,
         question: entry.planItem.question,
         sectionHeading: entry.planItem.sectionHeading,
-        referenceMode: "article_only",
+        referenceMode: hasReferenceImages ? "reference_enhanced" : "article_only",
         reviewStatus: "pending",
         provider: "openai-compatible-image",
-        generationMode: "prompt",
+        generationMode: hasReferenceImages ? "reference" : "prompt",
         placement: {
           paragraphIndex: entry.planItem.paragraphIndex,
           caption: `配图 ${entry.planItem.imageIndex}`,
         },
       };
-    }),
+      }, `openai-compatible[${entry.planItem.imageIndex}]`),
+    ),
   );
 
-  if (items.length !== REQUIRED_IMAGE_COUNT) {
+  if (items.length !== prompts.length) {
     throw new Error(`图片生成数量不足，当前仅成功返回 ${items.length} 张。`);
   }
 
   const cover = items[0];
-  return ensureFiveImageAsset(product.taskId, {
+  return ensureImageAssetCount(product.taskId, {
     taskId: product.taskId,
     assetType: "cover",
     url: cover?.url || buildPromptUrl(prompts[0]?.prompt || product.productName),
@@ -776,7 +982,7 @@ async function runOpenAICompatibleImageModel(
     generationMode: cover?.generationMode ?? "prompt",
     images: items,
     updatedAt: new Date().toISOString(),
-  });
+  }, prompts.length);
 }
 
 export async function runImageModel(
@@ -784,9 +990,10 @@ export async function runImageModel(
   theme: ThemeSet,
   content: ContentDraft | undefined,
   config: ModelApiConfig,
+  imageCount?: number,
 ): Promise<ImageAsset> {
   const keyword = pickKeyword(theme);
-  const plan = buildArticleImagePlan(content, keyword);
+  const plan = buildArticleImagePlan(content, keyword, imageCount);
   const referenceImages = await resolveReferenceImages(product);
   const hasReferenceImages = referenceImages.length > 0;
   const prompts = await Promise.all(
@@ -817,4 +1024,38 @@ export async function runImageModel(
   }
 
   return runGenericImageModel(product, prompts, config, fallbackAsset);
+}
+
+export async function runSingleImageModel(
+  product: ProductProfile,
+  config: ModelApiConfig,
+  input: SingleImageRequestInput,
+): Promise<ArticleImageItem> {
+  const planItem: ArticleImagePlanItem = {
+    imageIndex: input.imageIndex ?? 1,
+    imageCount: input.imageCount ?? 1,
+    paragraphIndex: input.paragraphIndex ?? 0,
+    sectionExcerpt: input.prompt,
+    alt: input.alt ?? `文章配图 ${input.imageIndex ?? 1}`,
+    question: input.question,
+    sectionHeading: input.sectionHeading ?? `内容配图 ${input.imageIndex ?? 1}`,
+  };
+  const promptEntry = [{ prompt: input.prompt, planItem }];
+  const fallbackAsset = createFallbackAsset(product.taskId, input.prompt, planItem);
+  fallbackAsset.images = [createFallbackImageItem(product.taskId, input.prompt, planItem)];
+
+  const provider = normalizeProvider(config.provider);
+
+  if (!config.baseUrl || provider === "prompt-url" || provider.startsWith("mock")) {
+    return fallbackAsset.images[0];
+  }
+
+  const asset =
+    provider === "vidu"
+      ? await runViduImageModel(product, promptEntry, config)
+      : provider.includes("openai") || provider.includes("gpt") || provider.includes("newapi")
+        ? await runOpenAICompatibleImageModel(product, promptEntry, config)
+        : await runGenericImageModel(product, promptEntry, config, fallbackAsset);
+
+  return asset.images?.[0] ?? fallbackAsset.images[0];
 }

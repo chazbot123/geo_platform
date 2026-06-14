@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { ArrowLeft, ImageIcon } from "lucide-react";
 import type { ContentPoolItem, ContentPoolRiskLevel, ContentPoolItemStatus } from "@/lib/types";
+import { DEFAULT_EXPECTED_IMAGE_COUNT } from "@/lib/tasks/constants";
 
 const statusLabels: Record<ContentPoolItemStatus, string> = {
   pending_generation: "待生成",
@@ -30,7 +31,7 @@ interface DetailResponse {
   error?: string;
 }
 
-type ItemAction = "rewrite" | "confirm_medium" | "disperse";
+type ItemAction = "rewrite" | "confirm_medium" | "disperse" | "update_image_count" | "retry_image";
 
 function formatDateTime(value?: string) {
   if (!value) return "未记录";
@@ -50,6 +51,7 @@ export function ContentItemDetail({ itemId }: { itemId: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [submittingAction, setSubmittingAction] = useState<ItemAction | null>(null);
+  const [expectedImageCount, setExpectedImageCount] = useState(DEFAULT_EXPECTED_IMAGE_COUNT);
 
   async function loadDetail(options?: { silent?: boolean }) {
     if (!options?.silent) {
@@ -63,6 +65,7 @@ export function ContentItemDetail({ itemId }: { itemId: string }) {
       const data = (await response.json()) as DetailResponse;
       if (!response.ok || !data.item) throw new Error(data.error || "读取文章详情失败。");
       setItem(data.item);
+      setExpectedImageCount(data.item.expectedImageCount ?? DEFAULT_EXPECTED_IMAGE_COUNT);
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "读取文章详情失败。");
     } finally {
@@ -86,7 +89,7 @@ export function ContentItemDetail({ itemId }: { itemId: string }) {
     return () => window.clearInterval(timer);
   }, [item]);
 
-  async function handleAction(action: ItemAction) {
+  async function handleAction(action: ItemAction, imageId?: string) {
     if (!item) {
       return;
     }
@@ -100,6 +103,8 @@ export function ContentItemDetail({ itemId }: { itemId: string }) {
           taskId: item.taskId,
           itemId: item.id,
           action,
+          expectedImageCount,
+          imageId,
         }),
       });
       const data = (await response.json()) as { current?: { items?: ContentPoolItem[] }; error?: string };
@@ -133,6 +138,9 @@ export function ContentItemDetail({ itemId }: { itemId: string }) {
       </section>
     );
   }
+
+  const generatedImages = item.imageList.filter((image) => image.status !== "failed");
+  const failedImages = item.imageList.filter((image) => image.status === "failed");
 
   return (
     <div className="space-y-5">
@@ -178,14 +186,76 @@ export function ContentItemDetail({ itemId }: { itemId: string }) {
               <h3 className="page-section-title">图片</h3>
             </div>
             <p className="mt-3 text-sm leading-6 text-muted">{item.imagePrompt || "暂无图片提示。"}</p>
-            <p className="mt-3 text-xs text-muted">图片数量：{item.imageList.length}</p>
-            {item.imageList.length ? (
-              <div className="mt-4 grid grid-cols-2 gap-3">
-                {item.imageList.slice(0, 4).map((image) => (
-                  <a key={image.id} href={image.url} target="_blank" rel="noreferrer" className="overflow-hidden rounded-md border border-line bg-surface">
-                    <img className="h-24 w-full object-cover" src={image.url} alt={image.prompt} />
-                  </a>
-                ))}
+            <p className="mt-3 text-xs text-muted">目标图片数量：{item.expectedImageCount ?? DEFAULT_EXPECTED_IMAGE_COUNT}</p>
+            <p className="mt-1 text-xs text-muted">当前已生成：{item.imageList.length}</p>
+
+            <div className="mt-4 space-y-2">
+              <label className="block">
+                <span className="text-xs text-muted">本篇文章图片数量</span>
+                <input
+                  className="input-base mt-2 w-full"
+                  type="number"
+                  min={1}
+                  max={10}
+                  value={expectedImageCount}
+                  onChange={(event) => {
+                    const nextValue = Number.parseInt(event.target.value || String(DEFAULT_EXPECTED_IMAGE_COUNT), 10);
+                    setExpectedImageCount(Math.max(1, Math.min(10, Number.isFinite(nextValue) ? nextValue : DEFAULT_EXPECTED_IMAGE_COUNT)));
+                  }}
+                />
+              </label>
+              <button
+                type="button"
+                className="rounded-md border border-line px-3 py-2 text-xs font-medium text-ink disabled:opacity-60"
+                disabled={Boolean(submittingAction)}
+                onClick={() => void handleAction("update_image_count")}
+              >
+                {submittingAction === "update_image_count" ? "保存中..." : "保存本篇图片数量"}
+              </button>
+            </div>
+
+            {generatedImages.length ? (
+              <div className="mt-4">
+                <p className="mb-2 text-xs font-medium uppercase tracking-wider text-emerald-400">成功图片</p>
+                <div className="grid grid-cols-2 gap-3">
+                  {generatedImages.slice(0, 4).map((image) => (
+                    <div key={image.id} className="overflow-hidden rounded-md border border-emerald-500/20 bg-surface">
+                      {image.url ? (
+                        <a href={image.url} target="_blank" rel="noreferrer">
+                          <img className="h-24 w-full object-cover" src={image.url} alt={image.prompt} />
+                        </a>
+                      ) : null}
+                      <div className="px-2 py-2 text-xs text-muted">
+                        <p>状态：已生成</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {failedImages.length ? (
+              <div className="mt-4">
+                <p className="mb-2 text-xs font-medium uppercase tracking-wider text-danger">失败图片</p>
+                <div className="grid grid-cols-2 gap-3">
+                  {failedImages.slice(0, 4).map((image) => (
+                    <div key={image.id} className="overflow-hidden rounded-md border border-danger/20 bg-surface">
+                      <div className="flex h-24 items-center justify-center bg-panel text-xs text-muted">生成失败</div>
+                      <div className="px-2 py-2 text-xs text-muted">
+                        <p>状态：失败</p>
+                        {image.errorMessage ? <p className="mt-1 text-danger">{image.errorMessage}</p> : null}
+                        <button
+                          type="button"
+                          className="mt-2 rounded-md border border-line px-2 py-1 text-[11px] font-medium text-ink disabled:opacity-60"
+                          disabled={Boolean(submittingAction)}
+                          onClick={() => void handleAction("retry_image", image.id)}
+                        >
+                          {submittingAction === "retry_image" ? "重试中..." : "重试这张"}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
             ) : null}
           </section>

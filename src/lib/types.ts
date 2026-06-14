@@ -138,6 +138,7 @@ export interface TaskRecord {
   productId: string;
   status: TaskStatus;
   searchProvider?: SearchProvider;
+  expectedImageCount?: number;
   publishPlan?: PublishTaskPlan;
   createdAt: string;
   updatedAt: string;
@@ -358,10 +359,11 @@ export interface ArticleImageItem {
   question?: string;
   sectionHeading?: string;
   referenceMode?: "article_only" | "reference_enhanced";
-  reviewStatus: "pending" | "passed" | "fallback";
+  reviewStatus: "pending" | "passed" | "fallback" | "failed";
   provider?: string;
   providerTaskId?: string;
   generationMode?: "prompt" | "reference";
+  errorMessage?: string;
   placement: ArticleImagePlacement;
 }
 
@@ -693,6 +695,7 @@ export interface ContentPoolImageItem {
   prompt: string;
   url?: string;
   localPath?: string;
+  errorMessage?: string;
   status: "pending" | "generated" | "failed";
 }
 
@@ -747,6 +750,7 @@ export interface ContentPoolItem {
   summary: string;
   body: string;
   imagePrompt: string;
+  expectedImageCount?: number;
   imageList: ContentPoolImageItem[];
   riskLevel: ContentPoolRiskLevel;
   status: ContentPoolItemStatus;
