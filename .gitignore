@@ -11,6 +11,9 @@ public/generated-images/
 .tmp-*
 .worktrees/
 CLAUDE.md
+devweb.log
+reports-*.png
+step*.png
 
 .trae/*
 !.trae/skills/
