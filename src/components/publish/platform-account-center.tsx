@@ -78,6 +78,16 @@ function statusText(account: PlatformAccountRecord) {
   return "未登录";
 }
 
+function accountActionLabel(account: PlatformAccountRecord) {
+  if (account.loginStatus === "authenticated" && account.status === "valid") {
+    return "校验";
+  }
+  if (account.loginStatus === "failed" || account.status === "invalid") {
+    return "重新登录";
+  }
+  return "登录";
+}
+
 function statusDescription(account: PlatformAccountRecord) {
   if (account.loginStatus === "authenticated") {
     return "已保存并通过桌面会话校验，但发布前仍会再做一次真实平台登录态检查。";
@@ -387,6 +397,33 @@ export function PlatformAccountCenter({
       window.dispatchEvent(new Event("geo-workflow-status-refresh"));
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "发起登录失败");
+    } finally {
+      setLoadingKey("");
+    }
+  }
+
+  async function verifyAccountSession(account: PlatformAccountRecord) {
+    if (!isBridgeReady) {
+      setMessage(bridgeAvailability.reason ?? "未检测到可用桌面桥，请先启动 GEO 桌面版。");
+      return;
+    }
+    setLoadingKey(account.id);
+    setMessage("");
+    try {
+      const audit = await auditPlatformAccountSession(account);
+      if (!audit.canAutoValidate || !audit.patch) {
+        throw new Error(audit.summary || "当前无法校验账号会话。");
+      }
+      await sendAccountPatch(account.id, audit.patch);
+      await refreshAccounts();
+      window.dispatchEvent(new Event("geo-workflow-status-refresh"));
+      if (audit.validationStatus === "authenticated") {
+        setMessage(`${platformLabel(account.platform)}账号会话校验通过。`);
+        return;
+      }
+      setMessage(`${platformLabel(account.platform)}账号已失效，请重新登录。`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "账号会话校验失败");
     } finally {
       setLoadingKey("");
     }
@@ -802,11 +839,15 @@ export function PlatformAccountCenter({
                   <div className="flex flex-wrap items-center gap-2">
                     <button
                       className="flex items-center gap-1.5 rounded-md border border-stroke bg-white/5 px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-white/10"
-                      onClick={() => startLogin(account.platform, account.id)}
+                      onClick={() =>
+                        account.loginStatus === "authenticated" && account.status === "valid"
+                          ? verifyAccountSession(account)
+                          : startLogin(account.platform, account.id)
+                      }
                       disabled={platformDescriptor(account.platform)?.automationStatus !== "ready" || loadingKey === account.id || !isBridgeReady}
                     >
                       <RefreshCcw className="h-3.5 w-3.5" />
-                      重新登录
+                      {accountActionLabel(account)}
                     </button>
                     <button
                       className="flex items-center gap-1.5 rounded-md border border-emerald-500/20 bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-400 transition-colors hover:bg-emerald-500/20"

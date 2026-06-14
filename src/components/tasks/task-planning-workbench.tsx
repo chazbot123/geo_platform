@@ -197,6 +197,16 @@ function buildValidatedSessionPatch(result: Awaited<ReturnType<typeof validatePl
   return patch;
 }
 
+function accountActionLabel(account: PlatformAccountRecord) {
+  if (account.loginStatus === "authenticated" && account.status === "valid") {
+    return "校验";
+  }
+  if (account.loginStatus === "failed" || account.status === "invalid") {
+    return "重新登录";
+  }
+  return "登录";
+}
+
 function AccountAvatar({ account, platform }: { account: PlatformAccountRecord; platform: SocialPlatform }) {
   const fallback = getSocialPlatformIcon(platform);
   return (
@@ -558,6 +568,33 @@ export function TaskPlanningWorkbench() {
     }
   }
 
+  async function verifyAccountSession(account: PlatformAccountRecord) {
+    setLoginKey(account.id);
+    setError("");
+    setNotice("");
+    try {
+      const audit = await auditPlatformAccountSession(account);
+      if (!audit.canAutoValidate || !audit.patch) {
+        throw new Error(audit.summary || "当前无法校验账号会话。");
+      }
+      await patchAccountStatus(account.id, {
+        action: "session_audit",
+        ...audit.patch,
+      });
+      await loadAccounts();
+      dispatchWorkflowStatusRefresh();
+      if (audit.validationStatus === "authenticated") {
+        setNotice(`${platformLabels[account.platform]}账号会话校验通过。`);
+        return;
+      }
+      setNotice(`${platformLabels[account.platform]}账号已失效，请重新登录。`);
+    } catch (currentError) {
+      setError(currentError instanceof Error ? currentError.message : "账号会话校验失败。");
+    } finally {
+      setLoginKey("");
+    }
+  }
+
   async function removeAccount(account: PlatformAccountRecord) {
     const accountLabel = formatAccountDisplayLabel(account, account.id) || account.id;
     const confirmed = window.confirm(`确定移除 ${platformLabels[account.platform]} 账号「${accountLabel}」吗？移除后会从已保存任务和内容绑定中摘除，不再加入当前任务。`);
@@ -843,10 +880,14 @@ export function TaskPlanningWorkbench() {
                           type="button"
                           className="inline-flex items-center justify-center gap-2 rounded-md border border-line px-3 py-2 text-xs font-medium text-ink transition hover:border-accent disabled:cursor-not-allowed disabled:opacity-60"
                           disabled={Boolean(loginKey) || Boolean(removingKey)}
-                          onClick={() => void startLogin(account.platform, account.id)}
+                          onClick={() =>
+                            void (account.loginStatus === "authenticated" && account.status === "valid"
+                              ? verifyAccountSession(account)
+                              : startLogin(account.platform, account.id))
+                          }
                         >
                           {loginKey === account.id ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <ShieldCheck className="h-3.5 w-3.5" />}
-                          {account.loginStatus === "idle" ? "登录" : "重新登录"}
+                          {accountActionLabel(account)}
                         </button>
                         <button
                           type="button"

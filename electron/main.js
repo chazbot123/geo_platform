@@ -658,7 +658,19 @@ function getPlatformSessionSpec(platform, publishUrl) {
         publishUrl: publishUrl || "https://editor.csdn.net/md/",
         loginUrlHints: ["/login", "passport", "sso", "signin"],
         loginTextHints: ["扫码登录", "账号密码登录", "请输入手机号", "验证码登录"],
-        authenticatedSelectors: [".toolbar-btn-name", ".toolbar-avatar img", "a[href*='blog.csdn.net/']"],
+        authenticatedPageUrlHints: ["editor.csdn.net"],
+        authenticatedPageSelectors: [
+          "#txtTitle",
+          "input[name='title']",
+          ".article-title-box input",
+          ".article-title input",
+          ".title-input",
+          "textarea.editor",
+          ".CodeMirror",
+          ".editor__inner",
+          "pre[contenteditable='true']",
+        ],
+        requiresAuthenticatedMarker: true,
       };
     default:
       return {
@@ -778,6 +790,9 @@ async function inspectLoadedPlatformPage(windowInstance, spec, cookieCount) {
       const loginUrlHints = ${JSON.stringify(spec.loginUrlHints)};
       const loginTextHints = ${JSON.stringify(spec.loginTextHints)};
       const authenticatedSelectors = ${JSON.stringify(spec.authenticatedSelectors || [])};
+      const authenticatedPageUrlHints = ${JSON.stringify(spec.authenticatedPageUrlHints || [])};
+      const authenticatedPageSelectors = ${JSON.stringify(spec.authenticatedPageSelectors || [])};
+      const requiresAuthenticatedMarker = ${JSON.stringify(Boolean(spec.requiresAuthenticatedMarker))};
       const lowerUrl = currentUrl.toLowerCase();
       const matchedUrlHint = loginUrlHints.find((hint) => lowerUrl.includes(String(hint).toLowerCase())) || "";
       const hasAuthenticatedMarker = authenticatedSelectors.some((selector) =>
@@ -787,6 +802,15 @@ async function inspectLoadedPlatformPage(windowInstance, spec, cookieCount) {
           return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
         }),
       );
+      const matchedAuthenticatedPageUrlHint = authenticatedPageUrlHints.find((hint) => lowerUrl.includes(String(hint).toLowerCase())) || "";
+      const hasAuthenticatedPageSelector = authenticatedPageSelectors.some((selector) =>
+        Array.from(document.querySelectorAll(selector)).some((element) => {
+          const style = window.getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
+        }),
+      );
+      const hasAuthenticatedPage = Boolean(matchedAuthenticatedPageUrlHint && hasAuthenticatedPageSelector);
       const visibleControls = Array.from(document.querySelectorAll("input, textarea, button, [role='button'], a"))
         .filter((element) => {
           const style = window.getComputedStyle(element);
@@ -813,13 +837,14 @@ async function inspectLoadedPlatformPage(windowInstance, spec, cookieCount) {
         currentUrl,
         matchedUrlHint,
         matchedTextHint,
-        hasAuthenticatedMarker,
+        hasAuthenticatedMarker: hasAuthenticatedMarker || hasAuthenticatedPage,
+        requiresAuthenticatedMarker,
       };
     })()`,
     true,
   );
 
-  if (inspection?.hasAuthenticatedMarker) {
+  if (inspection?.hasAuthenticatedMarker && !inspection?.matchedUrlHint && !inspection?.matchedTextHint) {
     return {
       status: "authenticated",
       reason: cookieCount > 0 ? `检测到 ${cookieCount} 个会话 Cookie，且命中平台已登录标记。` : "命中平台已登录标记，判定为已登录。",
@@ -834,6 +859,15 @@ async function inspectLoadedPlatformPage(windowInstance, spec, cookieCount) {
       reason: inspection?.matchedTextHint
         ? `页面显示登录提示：${inspection.matchedTextHint}`
         : `页面跳转到登录相关地址：${inspection?.matchedUrlHint || inspection?.currentUrl || "unknown"}`,
+      currentUrl: inspection?.currentUrl || spec.publishUrl,
+      cookieCount,
+    };
+  }
+
+  if (inspection?.requiresAuthenticatedMarker) {
+    return {
+      status: cookieCount > 0 ? "expired" : "missing_session",
+      reason: "Authenticated marker was not detected.",
       currentUrl: inspection?.currentUrl || spec.publishUrl,
       cookieCount,
     };
@@ -1085,6 +1119,9 @@ function buildPlatformAccountProfileProbe(platform) {
     case "csdn":
       return {
         displayNameSelectors: [
+          ".csdn-profile-nickName",
+          ".csdn-profile-top .csdn-profile-nickName",
+          ".csdn-toolbar-plugin .csdn-profile-nickName",
           "[class*='toolbar-name']",
           "[class*='profile-name']",
           "[class*='user-name']",
@@ -1092,12 +1129,16 @@ function buildPlatformAccountProfileProbe(platform) {
           ".user-name",
         ],
         avatarSelectors: [
+          ".csdn-profile-avatar img",
+          ".csdn-toolbar-plugin .csdn-profile-avatar img",
+          "a.hasAvatar img",
           "[class*='avatar'] img",
           ".toolbar-avatar img",
           "img[src*='csdnimg.cn']",
           "img[src*='csdn.net']",
         ],
         accountIdSelectors: [
+          ".csdn-profile-avatar[href*='blog.csdn.net/']",
           "a[href*='blog.csdn.net/']",
           "a[href*='/user/']",
           "[class*='user-id']",
@@ -1359,13 +1400,14 @@ async function extractPlatformAccountProfile(windowInstance, input = {}) {
           }
         }
       }
+      const allowFallbackName = !["douyin", "weibo"].includes(platform);
       const displayName = pickTextBySelectors(probe.displayNameSelectors, isMeaningfulName)
         || pickStorageValue(
           displayNameValuePattern,
           (text) => isMeaningfulName(text),
           (trail) => userTrailPattern.test(trail) && displayNameTrailPattern.test(trail),
         )
-        || (platform === "douyin" ? "" : fallbackName);
+        || (allowFallbackName ? fallbackName : "");
       const avatarUrl = pickAvatarBySelectors(probe.avatarSelectors)
         || pickStorageValue(
           /avatar|avatarurl|avatar_url|head_url|headurl|portrait|image/i,
@@ -1400,26 +1442,6 @@ function isMeaningfulAccountProfileText(value) {
     return false;
   }
   return !/^(douyin|toutiao|baijiahao|wechat|videohao|weibo|zhihu|csdn)[-_]?(account|user)-\d{6,}$/i.test(text);
-}
-
-const DEBUG_SERVER_URL = "http://127.0.0.1:7778/event";
-const DEBUG_SESSION_ID = "account-info-fetch";
-
-function emitDebug(hypothesisId, location, msg, data) {
-  // #region debug-point shared:emit
-  fetch(DEBUG_SERVER_URL, {
-    method: "POST",
-    body: JSON.stringify({
-      sessionId: DEBUG_SESSION_ID,
-      runId: "pre-fix",
-      hypothesisId,
-      location,
-      msg: `[DEBUG] ${msg}`,
-      data,
-      ts: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
 }
 
 function hasMeaningfulAccountProfile(profile = {}) {
@@ -1471,7 +1493,26 @@ function mergePlatformAccountProfiles(currentProfile = {}, nextProfile = {}) {
 }
 
 function getPlatformAccountProfileProbeUrls(input = {}) {
-  switch (String(input.platform || "").trim()) {
+  const platform = String(input.platform || "").trim();
+  const currentProfile = input.currentProfile && typeof input.currentProfile === "object" ? input.currentProfile : {};
+  const resolveCsdnProfileId = () => {
+    const directId = String(currentProfile.platformAccountId || "").trim();
+    if (isMeaningfulAccountProfileText(directId)) {
+      return directId;
+    }
+    const avatarUrl = String(currentProfile.avatarUrl || "").trim();
+    const avatarMatched = avatarUrl.match(/_([A-Za-z0-9_-]{4,})\.(?:png|jpe?g|webp|gif)(?:[!?].*)?$/i);
+    if (avatarMatched?.[1] && isMeaningfulAccountProfileText(avatarMatched[1])) {
+      return avatarMatched[1];
+    }
+    const sourceUrl = String(currentProfile.sourceUrl || "").trim();
+    const sourceMatched = sourceUrl.match(/blog\.csdn\.net\/([^/?#]+)/i);
+    if (sourceMatched?.[1] && isMeaningfulAccountProfileText(sourceMatched[1])) {
+      return sourceMatched[1];
+    }
+    return "";
+  };
+  switch (platform) {
     case "toutiao":
       return [
         "https://mp.toutiao.com/",
@@ -1497,19 +1538,38 @@ function getPlatformAccountProfileProbeUrls(input = {}) {
       ];
     case "zhihu":
       return ["https://www.zhihu.com/people/self", "https://www.zhihu.com/creator"];
+    case "weibo":
+      return [
+        "https://me.weibo.com/",
+        "https://dss.sc.weibo.com/pc/index",
+      ];
+    case "csdn": {
+      const profileId = resolveCsdnProfileId();
+      if (!profileId) {
+        return [];
+      }
+      return [
+        `https://blog.csdn.net/${profileId}?spm=1000.2115.3001.5343`,
+        `https://blog.csdn.net/${profileId}`,
+      ];
+    }
     default:
       return [];
   }
 }
 
-async function resolvePlatformAccountProfileFromWindow(windowInstance, input = {}, timeoutMs = 12000) {
+async function resolvePlatformAccountProfileFromWindow(windowInstance, input = {}, timeoutMs = 12000, options = {}) {
   const startedAt = Date.now();
   let latestProfile = {};
+  const requireDisplayName = Boolean(options.requireDisplayName);
+  const requiredSourcePrefix = typeof options.requiredSourcePrefix === "string" ? options.requiredSourcePrefix.trim() : "";
   while (Date.now() - startedAt < timeoutMs) {
     try {
       const profile = await extractPlatformAccountProfile(windowInstance, input);
       latestProfile = profile && typeof profile === "object" ? profile : latestProfile;
-      if (hasMeaningfulAccountProfile(latestProfile)) {
+      const hasRequiredDisplayName = !requireDisplayName || isMeaningfulAccountProfileText(latestProfile.displayName);
+      const hasRequiredSource = !requiredSourcePrefix || String(latestProfile.sourceUrl || "").startsWith(requiredSourcePrefix);
+      if (hasMeaningfulAccountProfile(latestProfile) && hasRequiredDisplayName && hasRequiredSource) {
         return latestProfile;
       }
     } catch (_) {
@@ -1521,10 +1581,12 @@ async function resolvePlatformAccountProfileFromWindow(windowInstance, input = {
 }
 
 async function resolvePlatformAccountProfile(windowInstance, input = {}) {
+  const platform = String(input.platform || "").trim();
   const initialProfile = await resolvePlatformAccountProfileFromWindow(windowInstance, input, 12000);
-  const probeUrls = getPlatformAccountProfileProbeUrls(input);
+  const probeUrls = getPlatformAccountProfileProbeUrls({ ...input, currentProfile: initialProfile });
   const hasMeaningfulDisplayName = isMeaningfulAccountProfileText(initialProfile.displayName);
-  if ((!probeUrls.length || hasMeaningfulDisplayName) && hasMeaningfulAccountProfile(initialProfile) && (initialProfile.avatarUrl || initialProfile.platformAccountId)) {
+  const forceProbeProfile = ["weibo", "csdn"].includes(platform);
+  if (!forceProbeProfile && (!probeUrls.length || hasMeaningfulDisplayName) && hasMeaningfulAccountProfile(initialProfile) && (initialProfile.avatarUrl || initialProfile.platformAccountId)) {
     return initialProfile;
   }
   if (!probeUrls.length) {
@@ -1538,13 +1600,50 @@ async function resolvePlatformAccountProfile(windowInstance, input = {}) {
   });
   probeWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   let latestProfile = initialProfile;
+  let lockedDisplayName = "";
+  let lockedAccountName = "";
+  let lockedPlatformAccountId = "";
   try {
     for (const probeUrl of probeUrls) {
+      const isWeiboProfilePage = platform === "weibo" && /^https:\/\/me\.weibo\.com\/?/i.test(probeUrl);
+      const isCsdnProfilePage = platform === "csdn" && /^https:\/\/blog\.csdn\.net\/[^/?#]+/i.test(probeUrl);
       await loadWindowUrlWithTimeout(probeWindow, probeUrl, 20000);
       await waitForWindowStable(probeWindow);
-      const profile = await resolvePlatformAccountProfileFromWindow(probeWindow, { ...input, loginUrl: probeUrl }, 5000);
+      const profile = await resolvePlatformAccountProfileFromWindow(
+        probeWindow,
+        { ...input, loginUrl: probeUrl },
+        5000,
+        (isWeiboProfilePage || isCsdnProfilePage)
+          ? {
+              requireDisplayName: true,
+              requiredSourcePrefix: isWeiboProfilePage ? "https://me.weibo.com/" : "https://blog.csdn.net/",
+            }
+          : undefined,
+      );
       if (profile && typeof profile === "object") {
         latestProfile = mergePlatformAccountProfiles(latestProfile, profile);
+        if (isWeiboProfilePage && isMeaningfulAccountProfileText(profile.displayName)) {
+          lockedDisplayName = String(profile.displayName || "").trim();
+          lockedAccountName = String(profile.accountName || profile.displayName || "").trim();
+          lockedPlatformAccountId = String(profile.platformAccountId || "").trim();
+        }
+        if (isCsdnProfilePage && isMeaningfulAccountProfileText(profile.displayName)) {
+          lockedDisplayName = String(profile.displayName || "").trim();
+          lockedAccountName = String(profile.accountName || profile.displayName || "").trim();
+          lockedPlatformAccountId = String(profile.platformAccountId || profile.displayName || "").trim();
+        }
+        if (lockedDisplayName) {
+          latestProfile.displayName = lockedDisplayName;
+        }
+        if (lockedAccountName) {
+          latestProfile.accountName = lockedAccountName;
+        }
+        if (lockedPlatformAccountId) {
+          latestProfile.platformAccountId = lockedPlatformAccountId;
+        }
+      }
+      if ((platform === "weibo" || platform === "csdn") && lockedDisplayName) {
+        break;
       }
       if (hasMeaningfulAccountProfile(latestProfile) && latestProfile.avatarUrl && latestProfile.platformAccountId) {
         break;
@@ -1556,6 +1655,10 @@ async function resolvePlatformAccountProfile(windowInstance, input = {}) {
     if (!probeWindow.isDestroyed()) {
       probeWindow.close();
     }
+  }
+  if ((platform === "weibo" || platform === "csdn") && !lockedDisplayName) {
+    delete latestProfile.displayName;
+    delete latestProfile.accountName;
   }
   return latestProfile;
 }
@@ -1682,19 +1785,6 @@ function openPlatformLoginWindow(input = {}) {
             spec,
             partition,
           ).catch(() => ({ validatedAt: now() }));
-          // #region debug-point A:electron-profile
-          emitDebug("A", "electron/main.js:openPlatformLoginWindow:profile", "Electron 提取账号资料", {
-            platform: input.platform || null,
-            sessionPartition: partition || null,
-            loginUrl,
-            accountName: profile?.accountName ?? null,
-            displayName: profile?.displayName ?? null,
-            platformAccountId: profile?.platformAccountId ?? null,
-            avatarUrl: profile?.avatarUrl ?? null,
-            sourceUrl: profile?.sourceUrl ?? null,
-            sessionReason: sessionState.reason || null,
-          });
-          // #endregion
           finishAuthenticated({
             status: "authenticated",
             reason: sessionState.reason,
