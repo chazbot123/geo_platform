@@ -60,7 +60,7 @@ export function SettingsForm({ initialConfig }: { initialConfig: AppConfig }) {
   const [message, setMessage] = useState("");
   const [probing, setProbing] = useState(false);
   const [probeResult, setProbeResult] = useState<ProbeResult | null>(null);
-  const [apiKeyVisibility, setApiKeyVisibility] = useState<Record<ModelSection, boolean>>({
+  const [visibleApiKeys, setVisibleApiKeys] = useState<Record<ModelSection, boolean>>({
     text: false,
     image: false,
   });
@@ -162,25 +162,25 @@ export function SettingsForm({ initialConfig }: { initialConfig: AppConfig }) {
                     ) : field === "apiKey" ? (
                       <div className="relative">
                         <input
-                          className="input-base pr-11"
-                          type={apiKeyVisibility[section] ? "text" : "password"}
+                          className="input-base pr-12"
+                          type={visibleApiKeys[section] ? "text" : "password"}
                           value={String(modelConfig[field] ?? "")}
                           onChange={(event) => updateModel(section, field, event.target.value)}
                           autoComplete="off"
                         />
                         <button
                           type="button"
-                          className="absolute inset-y-0 right-0 inline-flex w-11 items-center justify-center text-muted transition-colors hover:text-ink"
+                          className="absolute right-3 top-1/2 inline-flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md text-muted transition-colors hover:bg-surface hover:text-accent"
+                          aria-label={visibleApiKeys[section] ? "隐藏 API Key" : "查看 API Key"}
+                          title={visibleApiKeys[section] ? "隐藏 API Key" : "查看 API Key"}
                           onClick={() =>
-                            setApiKeyVisibility((currentVisibility) => ({
-                              ...currentVisibility,
-                              [section]: !currentVisibility[section],
+                            setVisibleApiKeys((current) => ({
+                              ...current,
+                              [section]: !current[section],
                             }))
                           }
-                          aria-label={apiKeyVisibility[section] ? "隐藏 API Key" : "显示 API Key"}
-                          aria-pressed={apiKeyVisibility[section]}
                         >
-                          {apiKeyVisibility[section] ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                          {visibleApiKeys[section] ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                         </button>
                       </div>
                     ) : (

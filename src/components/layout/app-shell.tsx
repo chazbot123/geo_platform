@@ -10,6 +10,7 @@ import {
   Circle,
   FileQuestion,
   FolderKanban,
+  History,
   Moon,
   PenLine,
   Rocket,
@@ -24,8 +25,12 @@ const workflowItems = [
   { key: "customerKeywords", href: "/customer-keywords", label: "客户关键词", icon: FileQuestion },
   { key: "taskCreate", href: "/tasks/create", label: "登录账号", icon: PenLine },
   { key: "contentPool", href: "/content-pool", label: "生成结果", icon: FolderKanban },
-  { key: "publishExecution", href: "/publish-execution", label: "执行发布", icon: Rocket },
+  { key: "publishExecution", href: "/publish-execution", label: "发布结果", icon: Rocket },
 ] satisfies Array<{ key: WorkflowStepKey; href: string; label: string; icon: typeof Building2 }>;
+
+const workflowUtilityItems = [
+  { href: "/tasks", label: "历史任务", description: "找回历史任务继续发布", icon: History },
+] satisfies Array<{ href: string; label: string; description: string; icon: typeof Building2 }>;
 
 const emptyWorkflowStatus: WorkflowStatus = {
   updatedAt: "",
@@ -38,8 +43,8 @@ const emptyWorkflowStatus: WorkflowStatus = {
   },
 };
 
-async function fetchWorkflowStatus(signal?: AbortSignal) {
-  const response = await fetch("/api/workflow/status", { cache: "no-store", signal });
+async function fetchWorkflowStatus() {
+  const response = await fetch("/api/workflow/status", { cache: "no-store" });
   const data = (await response.json()) as WorkflowStatus & { error?: string };
   if (!response.ok) {
     throw new Error(data.error || "读取工作流状态失败。");
@@ -52,7 +57,17 @@ export function dispatchWorkflowStatusRefresh() {
   window.dispatchEvent(new Event("geo-workflow-status-refresh"));
 }
 
-export function AppShell({ title, description, children }: { title: string; description: string; children: React.ReactNode }) {
+export function AppShell({
+  title,
+  description,
+  children,
+  eyebrow = "GEO 生产流程",
+}: {
+  title: string;
+  description: string;
+  children: React.ReactNode;
+  eyebrow?: string;
+}) {
   const pathname = usePathname();
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [workflowStatus, setWorkflowStatus] = useState<WorkflowStatus>(emptyWorkflowStatus);
@@ -68,12 +83,16 @@ export function AppShell({ title, description, children }: { title: string; desc
   }, []);
 
   useEffect(() => {
-    const controller = new AbortController();
+    let disposed = false;
 
     async function refreshStatus() {
       try {
-        setWorkflowStatus(await fetchWorkflowStatus(controller.signal));
+        const nextStatus = await fetchWorkflowStatus();
+        if (!disposed) {
+          setWorkflowStatus(nextStatus);
+        }
       } catch (error) {
+        if (disposed) return;
         if (error instanceof DOMException && error.name === "AbortError") return;
       }
     }
@@ -81,7 +100,7 @@ export function AppShell({ title, description, children }: { title: string; desc
     void refreshStatus();
     window.addEventListener("geo-workflow-status-refresh", refreshStatus);
     return () => {
-      controller.abort();
+      disposed = true;
       window.removeEventListener("geo-workflow-status-refresh", refreshStatus);
     };
   }, []);
@@ -113,7 +132,7 @@ export function AppShell({ title, description, children }: { title: string; desc
             </div>
           </div>
 
-          <nav className="mt-4 space-y-1" aria-label="GEO 生产流程">
+          <nav className="mt-4 space-y-1" aria-label="功能导航">
             {workflowItems.map((item, index) => {
               const Icon = item.icon;
               const active = pathname === item.href || pathname.startsWith(`${item.href}/`) || (pathname === "/" && index === 0);
@@ -148,6 +167,40 @@ export function AppShell({ title, description, children }: { title: string; desc
                   ) : (
                     <Circle className="h-3 w-3 shrink-0 text-muted/60" />
                   )}
+                </Link>
+              );
+            })}
+            <div className="my-2 border-t border-stroke" />
+            {workflowUtilityItems.map((item) => {
+              const Icon = item.icon;
+              const active =
+                item.href === "/tasks"
+                  ? pathname === item.href || (pathname.startsWith("/tasks/") && pathname !== "/tasks/create")
+                  : pathname === item.href || pathname.startsWith(`${item.href}/`);
+
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={cn(
+                    "group relative flex min-h-12 items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors duration-200",
+                    active ? "bg-accent-muted text-ink" : "text-muted hover:bg-panelSoft hover:text-ink"
+                  )}
+                  aria-current={active ? "page" : undefined}
+                >
+                  <span
+                    className={cn(
+                      "flex h-7 w-7 shrink-0 items-center justify-center rounded-md border",
+                      active ? "border-accent bg-accent text-white" : "border-stroke bg-panel text-muted group-hover:border-stroke-strong"
+                    )}
+                  >
+                    <Icon className="h-3.5 w-3.5" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate">{item.label}</span>
+                    <span className="mt-0.5 block text-[11px] font-normal text-muted">{item.description}</span>
+                  </span>
+                  {active ? <ChevronRight className="h-4 w-4 shrink-0 text-accent" /> : null}
                 </Link>
               );
             })}
@@ -189,7 +242,7 @@ export function AppShell({ title, description, children }: { title: string; desc
 
         <main className="glass-panel min-h-[calc(100vh-1.5rem)] rounded-lg p-4 sm:p-5 lg:p-7">
           <header className="mb-6 border-b border-stroke pb-5">
-            <p className="mb-2 text-xs font-medium text-accent">GEO 生产流程</p>
+            {eyebrow ? <p className="mb-2 text-xs font-medium text-accent">{eyebrow}</p> : null}
             <h1 className="font-display text-2xl font-semibold tracking-tight text-ink sm:text-3xl">{title}</h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-muted">{description}</p>
           </header>

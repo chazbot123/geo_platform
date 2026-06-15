@@ -115,4 +115,38 @@ describe("workflow status completion", () => {
     expect(status.currentTaskId).toBe("task-1");
     expect(Object.values(status.steps).map((step) => step.completed)).toEqual([true, true, true, true, true]);
   });
+
+  it("does not complete customer keywords when enterprise profile changed after keyword save", async () => {
+    const dataDir = await resetDataDir();
+    const [{ saveEnterpriseProfile }, { writeJsonFile }, { getWorkflowStatus }] = await Promise.all([
+      import("@/lib/enterprise/service"),
+      import("@/lib/storage/json-store"),
+      import("@/lib/workflow/status-service"),
+    ]);
+
+    const savedAt = "2026-06-09T01:00:00.000Z";
+    await saveEnterpriseProfile({
+      companyName: "Geo Company",
+      brandShortName: "Geo",
+      productService: "New Publishing desk",
+      region: "Shanghai",
+    });
+    await writeJsonFile(path.join(dataDir, "customer-keywords", "current.json"), {
+      id: "keywords-1",
+      enterpriseId: "enterprise-1",
+      enterpriseName: "Geo Company",
+      brandShortName: "Geo",
+      productService: "Old Publishing desk",
+      region: "Shanghai",
+      candidates: { high: [], medium: [], low: [] },
+      selectedQuestions: [1, 2, 3, 4, 5].map((item) => ({ id: `q${item}`, heat: "high", question: `Question ${item}` })),
+      savedAt,
+      updatedAt: savedAt,
+    });
+
+    const status = await getWorkflowStatus();
+    expect(status.steps.enterprise.completed).toBe(true);
+    expect(status.steps.customerKeywords.completed).toBe(false);
+    expect(status.steps.customerKeywords.reason).toContain("企业信息已变更");
+  });
 });

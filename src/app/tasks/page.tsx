@@ -1,20 +1,12 @@
 import { AppShell } from "@/components/layout/app-shell";
 import { TaskCenter } from "@/components/tasks/task-center";
-import { getContentPool, getPublishingJobsByTask } from "@/lib/storage/data-store";
-import { listTaskBundles } from "@/lib/tasks/service";
+import { listHistoricalTaskSummaries } from "@/lib/tasks/history-service";
 
 export default async function TasksPage() {
-  const bundles = await listTaskBundles();
-  const tasks = await Promise.all(
-    bundles.map(async (bundle) => ({
-      bundle,
-      contentPool: await getContentPool(bundle.task.id),
-      publishingJobs: await getPublishingJobsByTask(bundle.task.id),
-    })),
-  );
+  const tasks = await listHistoricalTaskSummaries();
 
   return (
-    <AppShell title="任务中心" description="查看当前任务和历史任务的计划、生成进度与发布进度。">
+    <AppShell title="历史任务" description="查看历史任务的内容池与发布结果，继续处理未完成发布。" eyebrow="历史任务">
       <TaskCenter tasks={tasks} />
     </AppShell>
   );

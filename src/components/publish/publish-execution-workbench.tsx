@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -13,13 +14,17 @@ import {
   RotateCcw,
 } from "lucide-react";
 import { dispatchWorkflowStatusRefresh } from "@/components/layout/app-shell";
+import { HistoryTasksPanel } from "@/components/tasks/history-tasks-panel";
 import { requireLicensedAction } from "@/lib/license/guard";
 import { formatAccountDisplayLabel } from "@/lib/publish/account-label";
-import { openPlatformLoginWindow, validatePlatformSessionWindow } from "@/lib/publish/electron-login-client";
+import { getPlatformPublishProgressWindow, openPlatformLoginWindow, validatePlatformSessionWindow } from "@/lib/publish/electron-login-client";
+import { publishQueueReasonLabel, publishStageLabel } from "@/lib/publish/status-labels";
+import type { HistoricalTaskSummary } from "@/lib/tasks/history-service";
 import type {
   ContentPoolItem,
   ContentPoolRecord,
   PlatformAccountRecord,
+  PublishProgressSnapshot,
   PublishingJobRecord,
   SearchProvider,
   SocialPlatform,
@@ -42,39 +47,6 @@ const providerLabels: Record<SearchProvider, string> = {
   deepseek: "DeepSeek",
   yuanbao: "元宝",
   tongyi: "通义",
-};
-
-const jobStatusLabels: Record<PublishingJobRecord["status"], string> = {
-  drafted: "草稿",
-  queued: "待执行",
-  running: "执行中",
-  submitted: "已提交",
-  verifying: "核验中",
-  pending_review: "平台审核中",
-  verification_failed: "待人工确认",
-  manual_pending: "手动待处理",
-  published: "已发布",
-  failed: "失败",
-};
-
-const riskLabels: Record<string, string> = {
-  active: "正常",
-  needs_login: "需要重新登录",
-  verification_blocked: "需要验证/风控处理",
-  cooling_down: "冷却中",
-  disabled: "已停用",
-};
-
-const queueReasonLabels: Record<string, string> = {
-  account_needs_login: "账号需要重新登录",
-  account_verification_blocked: "账号需要验证/风控处理",
-  account_disabled: "账号已停用",
-  account_cooling_down: "账号冷却中",
-  account_daily_cap_reached: "账号今日发布上限",
-  platform_cooldown_active: "平台发布间隔冷却中",
-  retry_backoff_active: "重试等待中",
-  missing_account: "缺少账号",
-  account_not_found: "账号不存在",
 };
 
 const stageLabels: Record<string, string> = {
@@ -102,6 +74,27 @@ const stageLabels: Record<string, string> = {
   fill_body: "填写正文",
   fill_tags: "填写标签",
   submit: "提交发布",
+};
+
+const riskLabels: Record<string, string> = {
+  active: "正常",
+  needs_login: "需要重新登录",
+  verification_blocked: "需要验证/风控处理",
+  cooling_down: "冷却中",
+  disabled: "已停用",
+  invalid: "无效",
+};
+
+const queueReasonLabels: Record<string, string> = {
+  account_needs_login: "账号需要重新登录",
+  account_verification_blocked: "账号需要验证/风控处理",
+  account_disabled: "账号已停用",
+  account_cooling_down: "账号冷却中",
+  account_daily_cap_reached: "账号今日发布上限",
+  platform_cooldown_active: "平台发布间隔冷却中",
+  retry_backoff_active: "重试等待中",
+  missing_account: "缺少账号",
+  account_not_found: "账号不存在",
 };
 
 const executionTableGridClass =
@@ -146,14 +139,13 @@ function formatPlannedTime(value?: string | null) {
   const planned = new Date(value);
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
-  if (planned.getTime() < todayStart.getTime()) {
-    return "待重新排期";
-  }
+  if (planned.getTime() < todayStart.getTime()) return "待重新排期";
   return formatDateTime(value);
 }
 
-function stageLabel(stage: string) {
-  return stageLabels[stage] ?? stage.replace(/_/g, " ");
+function stageLabel(stage?: string) {
+  if (!stage) return "--";
+  return stageLabels[stage] ?? publishStageLabel(stage);
 }
 
 function riskLabel(value?: string) {
@@ -163,7 +155,7 @@ function riskLabel(value?: string) {
 
 function queueLabel(value?: string) {
   if (!value) return "--";
-  return queueReasonLabels[value] ?? stageLabel(value);
+  return queueReasonLabels[value] ?? publishQueueReasonLabel(value);
 }
 
 function translateMessage(value?: string) {
@@ -191,8 +183,19 @@ function statusTone(article: ExecutionArticle) {
   return "border-line bg-surface text-muted";
 }
 
+function needsManualConfirmation(job?: PublishingJobRecord) {
+  const errorText = [job?.errorMessage, job?.verificationEvidence, job?.notes].filter(Boolean).join(" ").toLowerCase();
+  return (
+    job?.status === "verification_failed" ||
+    ((job?.status === "manual_pending" || job?.status === "failed") &&
+      (job?.failureStage === "submit" ||
+        /验证|审核|风控|captcha|verification|blocking|pending_review|submitted|success_then_blocking/.test(errorText)))
+  );
+}
+
 function statusText(article: ExecutionArticle) {
   if (article.published) return "已发布";
+  if (needsManualConfirmation(article.job)) return "待人工确认";
   if (article.manualPending) return "手动待处理";
   if (!article.item.publishable) return "未通过检查";
   return stageLabel(article.stage);
@@ -201,6 +204,24 @@ function statusText(article: ExecutionArticle) {
 function accountDisplayName(account: PlatformAccountRecord | undefined, fallback?: string) {
   if (!account) return fallback || "--";
   return formatAccountDisplayLabel(account, fallback);
+}
+
+function isMaterialIssue(job?: PublishingJobRecord) {
+  const failureStage = String(job?.failureStage || "").toLowerCase();
+  const executionStage = String(job?.executionStage || "").toLowerCase();
+  const errorText = [job?.errorMessage, job?.verificationEvidence].filter(Boolean).join(" ").toLowerCase();
+  const logText = (job?.executionLog ?? []).join(" ").toLowerCase();
+  const stageIndicatesMissingImages =
+    failureStage === "prepare_images" || failureStage === "upload_images" || failureStage === "missing_images";
+  const textIndicatesMissingImages =
+    /(缺少可上传图片|缺少图片|图片素材缺失|未提供图片|missing images?|missing image|without images?|without image|no images?|no image)/i.test(
+      errorText,
+    );
+  const logIndicatesMissingImages =
+    /(prepare_images:.*(failed|missing|without images|without image|no images|no image|未提供|缺少)|upload_images:.*(failed|missing|without images|without image|no images|no image|未提供|缺少)|missing_images)/i.test(
+      logText,
+    );
+  return stageIndicatesMissingImages || executionStage === "missing_images" || textIndicatesMissingImages || logIndicatesMissingImages;
 }
 
 function accountNeedsLogin(article: ExecutionArticle, account?: PlatformAccountRecord) {
@@ -214,19 +235,6 @@ function accountNeedsLogin(article: ExecutionArticle, account?: PlatformAccountR
   );
   if (accountInvalid) return true;
   return Boolean(job?.queueBlockedReason === "account_needs_login" && !account);
-}
-
-function isMaterialIssue(job?: PublishingJobRecord) {
-  const text = [
-    job?.failureStage,
-    job?.errorMessage,
-    job?.verificationEvidence,
-    ...(job?.executionLog ?? []),
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-  return /(prepare_images|upload_images|图片|image|素材|未提供|missing_images|without images)/i.test(text);
 }
 
 function articleStageText(article: ExecutionArticle, job?: PublishingJobRecord) {
@@ -255,6 +263,7 @@ function ArticleRow({
   onPublishUrlChange,
   onManualDone,
   onLogin,
+  progress,
 }: {
   article: ExecutionArticle;
   account?: PlatformAccountRecord;
@@ -264,10 +273,14 @@ function ArticleRow({
   onPublishUrlChange: (value: string) => void;
   onManualDone: (jobId: string) => void;
   onLogin: (article: ExecutionArticle) => void;
+  progress?: PublishProgressSnapshot;
 }) {
   const item = article.item;
   const job = article.job;
   const needsLogin = accountNeedsLogin(article, account);
+  const materialIssue = isMaterialIssue(job);
+  const manualConfirmation = needsManualConfirmation(job);
+  const canManualConfirm = Boolean(job && !article.published && !needsLogin && !materialIssue);
 
   return (
     <article className="border-b border-line last:border-b-0">
@@ -293,7 +306,9 @@ function ArticleRow({
         <div className="mx-4 mb-4 flex flex-wrap gap-x-6 gap-y-2 rounded-md border border-line bg-surface px-3 py-2 text-xs text-muted">
           <span>记录：{job.id.slice(0, 8)}</span>
           <span>阶段：{articleStageText(article, job)}</span>
-          <span>重试：{job.retryCount ?? 0}/{job.maxRetries ?? 3}</span>
+          <span>
+            重试：{job.retryCount ?? 0}/{job.maxRetries ?? 3}
+          </span>
           {job.queueBlockedReason ? <span>队列：{queueLabel(job.queueBlockedReason)}</span> : null}
           <span>账号风险：{riskLabel(account?.riskState ?? account?.status ?? job.accountRiskState)}</span>
           {job.publishUrl ? (
@@ -305,15 +320,21 @@ function ArticleRow({
         </div>
       ) : null}
 
-      {article.manualPending && job && (needsLogin || isMaterialIssue(job)) ? (
+      {job && (article.manualPending || canManualConfirm) ? (
         <div className="mx-4 mb-4 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-3">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
-              <p className="text-sm font-medium text-ink">{needsLogin ? "账号登录已失效" : "发布素材缺失"}</p>
+              <p className="text-sm font-medium text-ink">
+                {needsLogin ? "账号登录已失效" : materialIssue ? "发布素材缺失" : manualConfirmation ? "平台疑似已发布，等待人工确认" : "待人工处理"}
+              </p>
               <p className="mt-1 text-xs leading-5 text-muted">
                 {needsLogin
                   ? "该账号当前不能继续自动发布。请先重新登录账号，登录完成后再继续发布。"
-                  : "账号会话正常，不需要重新登录。当前文章缺少可上传图片，请先在生成结果中补图或改为支持纯文本的发布方式。"}
+                  : materialIssue
+                    ? "账号会话正常，不需要重新登录。当前文章缺少可上传图片，请先在生成结果中补图或改为支持纯文本的发布方式。"
+                    : manualConfirmation
+                      ? "平台侧可能已经完成发布，但系统未能在限定时间内自动核验成功。人工确认后即可记录发布结果，链接可选填。"
+                      : "当前文章需要先完成人工处理后，才能继续后续发布。"}
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -341,13 +362,13 @@ function ArticleRow({
               ) : null}
             </div>
           </div>
-          {!needsLogin && !isMaterialIssue(job) ? (
+          {canManualConfirm ? (
             <div className="mt-3 flex flex-col gap-2 sm:flex-row">
               <input
                 className="min-w-0 flex-1 rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent"
                 value={publishUrl}
                 onChange={(event) => onPublishUrlChange(event.target.value)}
-                placeholder="可选：粘贴平台发布链接"
+                placeholder="选填：粘贴平台已发布文章链接，便于后续追踪"
               />
               <button
                 type="button"
@@ -356,7 +377,7 @@ function ArticleRow({
                 onClick={() => onManualDone(job.id)}
               >
                 <CheckCircle2 className="h-4 w-4" />
-                标记已发布
+                人工确认已发布
               </button>
             </div>
           ) : null}
@@ -369,35 +390,64 @@ function ArticleRow({
           {translateMessage(job.errorMessage)}
         </p>
       ) : null}
+
+      {progress ? (
+        <div className="mx-4 mb-4 rounded-md border border-line bg-surface px-3 py-2 text-xs text-muted">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="font-medium text-ink">当前阶段：{stageLabel(progress.currentStage)}</span>
+            <span>最后更新：{formatDateTime(progress.lastUpdatedAt)}</span>
+          </div>
+          {progress.stageTimeline?.length ? (
+            <div className="mt-2 grid gap-1">
+              {progress.stageTimeline.slice(-3).map((entry, index) => (
+                <p key={`${entry.stage}-${entry.at}-${index}`}>
+                  {entry.label}：{entry.message}
+                </p>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </article>
   );
 }
 
 export function PublishExecutionWorkbench() {
+  const searchParams = useSearchParams();
+  const requestedTaskId = searchParams.get("taskId") || "";
   const [state, setState] = useState<ExecutionState | null>(null);
   const [accounts, setAccounts] = useState<PlatformAccountRecord[]>([]);
+  const [historyTasks, setHistoryTasks] = useState<HistoricalTaskSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [loginBusyAccountId, setLoginBusyAccountId] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [manualUrls, setManualUrls] = useState<Record<string, string>>({});
+  const [liveProgress, setLiveProgress] = useState<Record<string, PublishProgressSnapshot>>({});
 
   const articles = state?.articles ?? [];
   const accountsById = useMemo(() => new Map(accounts.map((account) => [account.id, account])), [accounts]);
   const currentArticle = state?.currentArticle ?? null;
-  const loginRequiredArticle = articles.find((article) => accountNeedsLogin(article, article.job?.accountId ? accountsById.get(article.job.accountId) : undefined)) ?? null;
+  const loginRequiredArticle =
+    articles.find((article) => accountNeedsLogin(article, article.job?.accountId ? accountsById.get(article.job.accountId) : undefined)) ??
+    null;
   const progressPercent = useMemo(() => {
     if (!state?.stats.total) return 0;
     return Math.round((state.stats.published / state.stats.total) * 100);
   }, [state]);
+
+  const runningJobs = useMemo(
+    () => articles.map((article) => article.job).filter((job): job is PublishingJobRecord => Boolean(job?.sessionToken && job.status === "running")),
+    [articles],
+  );
 
   async function loadState(options?: { silent?: boolean }) {
     if (!options?.silent) setLoading(true);
     setError("");
     try {
       const [executionResponse, accountsResponse] = await Promise.all([
-        fetch("/api/publish/execution", { cache: "no-store" }),
+        fetch(`/api/publish/execution${requestedTaskId ? `?taskId=${encodeURIComponent(requestedTaskId)}` : ""}`, { cache: "no-store" }),
         fetch("/api/publish/accounts", { cache: "no-store" }),
       ]);
       const executionData = (await executionResponse.json()) as ExecutionState;
@@ -413,6 +463,17 @@ export function PublishExecutionWorkbench() {
     }
   }
 
+  async function loadHistoryTasks() {
+    try {
+      const response = await fetch("/api/tasks/history", { cache: "no-store" });
+      const payload = (await response.json()) as { items?: HistoricalTaskSummary[]; error?: string };
+      if (!response.ok) throw new Error(payload.error || "读取任务记录失败。");
+      setHistoryTasks(payload.items ?? []);
+    } catch {
+      setHistoryTasks([]);
+    }
+  }
+
   async function patchAccount(accountId: string, patch: Record<string, unknown>) {
     const response = await fetch(`/api/publish/accounts/${accountId}`, {
       method: "PATCH",
@@ -420,9 +481,7 @@ export function PublishExecutionWorkbench() {
       body: JSON.stringify(patch),
     });
     const payload = (await response.json()) as { account?: PlatformAccountRecord; error?: string };
-    if (!response.ok) {
-      throw new Error(payload.error || "更新账号状态失败。");
-    }
+    if (!response.ok) throw new Error(payload.error || "更新账号状态失败。");
     return payload.account;
   }
 
@@ -457,9 +516,7 @@ export function PublishExecutionWorkbench() {
           sessionPartition?: string;
         };
       };
-      if (!response.ok || !payload.loginRequest) {
-        throw new Error(payload.error || "发起账号登录失败。");
-      }
+      if (!response.ok || !payload.loginRequest) throw new Error(payload.error || "发起账号登录失败。");
 
       const loginResult = await openPlatformLoginWindow(payload.loginRequest);
       if (loginResult.status === "unsupported") {
@@ -503,9 +560,7 @@ export function PublishExecutionWorkbench() {
 
     if (targetLoginArticle) {
       const confirmed = window.confirm("当前发布账号登录已失效，需要先重新登录。是否现在打开登录窗口？");
-      if (confirmed) {
-        await startAccountLogin(targetLoginArticle);
-      }
+      if (confirmed) await startAccountLogin(targetLoginArticle);
       return;
     }
 
@@ -522,7 +577,7 @@ export function PublishExecutionWorkbench() {
       const response = await fetch("/api/publish/execution", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "run_next" }),
+        body: JSON.stringify({ action: "run_next", taskId: state?.current?.taskId || requestedTaskId || undefined }),
       });
       const data = (await response.json()) as ExecutionState;
       if (!response.ok) throw new Error(data.error || "执行发布失败。");
@@ -530,6 +585,7 @@ export function PublishExecutionWorkbench() {
       setNotice("已记录当前文章执行结果。");
       dispatchWorkflowStatusRefresh();
       await loadState({ silent: true });
+      await loadHistoryTasks();
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "执行发布失败。");
     } finally {
@@ -553,6 +609,7 @@ export function PublishExecutionWorkbench() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "mark_manual_published",
+          taskId: state?.current?.taskId || requestedTaskId || undefined,
           jobId,
           publishUrl: manualUrls[jobId]?.trim() || undefined,
         }),
@@ -561,9 +618,10 @@ export function PublishExecutionWorkbench() {
       if (!response.ok) throw new Error(data.error || "回填发布结果失败。");
       setState(data);
       setManualUrls((current) => ({ ...current, [jobId]: "" }));
-      setNotice("已回填人工发布结果，可以继续执行剩余文章。");
+      setNotice("已人工确认发布结果，可以继续执行剩余文章。");
       dispatchWorkflowStatusRefresh();
       await loadState({ silent: true });
+      await loadHistoryTasks();
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "回填发布结果失败。");
     } finally {
@@ -573,7 +631,43 @@ export function PublishExecutionWorkbench() {
 
   useEffect(() => {
     void loadState();
-  }, []);
+    void loadHistoryTasks();
+  }, [requestedTaskId]);
+
+  useEffect(() => {
+    if (!runningJobs.length) {
+      return;
+    }
+
+    let cancelled = false;
+    async function pollProgress() {
+      const entries = await Promise.all(
+        runningJobs.map(async (job) => {
+          if (!job.sessionToken) return null;
+          const progress = await getPlatformPublishProgressWindow({ sessionToken: job.sessionToken });
+          return progress ? [job.id, progress] as const : null;
+        }),
+      );
+      if (cancelled) return;
+      setLiveProgress((current) => {
+        const next = { ...current };
+        for (const entry of entries) {
+          if (entry) next[entry[0]] = entry[1];
+        }
+        return next;
+      });
+      await loadState({ silent: true });
+    }
+
+    void pollProgress();
+    const timer = window.setInterval(() => {
+      void pollProgress();
+    }, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [runningJobs]);
 
   if (loading) {
     return (
@@ -588,32 +682,41 @@ export function PublishExecutionWorkbench() {
 
   if (!state?.current) {
     return (
-      <section className="section-card">
-        <h2 className="page-section-title">还没有可执行任务</h2>
-        <p className="page-section-desc">先完成内容池生成，并确保文章通过风险检查后再进入执行发布。</p>
-        <div className="mt-5 flex flex-wrap gap-2">
-          <Link className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white" href="/content-pool">
-            去内容池
-          </Link>
-          <button
-            type="button"
-            className="inline-flex items-center gap-2 rounded-md border border-line px-4 py-2 text-sm font-medium text-ink"
-            onClick={() => void loadState()}
-          >
-            <RefreshCw className="h-4 w-4" />
-            刷新
-          </button>
-        </div>
-        {error && <p className="mt-4 text-sm text-red-500">{error}</p>}
-      </section>
+      <div className="space-y-5">
+        <section className="section-card">
+          <h2 className="page-section-title">还没有发布结果</h2>
+          <p className="page-section-desc">先完成内容生成；系统会按计划时间自动创建发布任务并执行。</p>
+          <div className="mt-5 flex flex-wrap gap-2">
+            <Link className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white" href="/content-pool">
+              去内容池
+            </Link>
+            <button
+              type="button"
+              className="inline-flex items-center gap-2 rounded-md border border-line px-4 py-2 text-sm font-medium text-ink"
+              onClick={() => void loadState()}
+            >
+              <RefreshCw className="h-4 w-4" />
+              刷新
+            </button>
+          </div>
+          {error && <p className="mt-4 text-sm text-red-500">{error}</p>}
+        </section>
+        <HistoryTasksPanel tasks={historyTasks} activeTaskId={requestedTaskId} limit={8} activeLabel="当前查看" />
+      </div>
     );
   }
 
+  const hasManualConfirmationPending = articles.some((article) => article.job?.status === "verification_failed");
+  const allPublished = state.stats.total > 0 && state.stats.remaining === 0;
   const primaryButtonText = loginRequiredArticle && !currentArticle
     ? "重新登录账号"
-    : state.stats.published > 0 || state.stats.manualPending > 0
-      ? "继续发布"
-      : "开始发布";
+    : currentArticle
+      ? "立即执行到点任务"
+      : allPublished
+        ? "已全部发布"
+        : state.stats.manualPending > 0
+          ? "待人工处理"
+          : "等待计划时间";
 
   return (
     <div className="space-y-5">
@@ -621,8 +724,8 @@ export function PublishExecutionWorkbench() {
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
             <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted">第 5 步</p>
-            <h2 className="page-section-title mt-2">执行发布</h2>
-            <p className="page-section-desc">按文章级进度恢复执行。已发布文章不会重复执行；账号过期时会先要求重新登录。</p>
+            <h2 className="page-section-title mt-2">发布结果</h2>
+            <p className="page-section-desc">系统按计划时间自动执行发布；你只需要查看结果，处理需要人工介入的文章。</p>
           </div>
           <div className="flex flex-wrap gap-2">
             <button
@@ -640,7 +743,13 @@ export function PublishExecutionWorkbench() {
               disabled={busy || Boolean(loginBusyAccountId) || (!currentArticle && !loginRequiredArticle)}
               onClick={() => void runNext()}
             >
-              {busy || loginBusyAccountId ? <LoaderCircle className="h-4 w-4 animate-spin" /> : loginRequiredArticle && !currentArticle ? <LogIn className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+              {busy || loginBusyAccountId ? (
+                <LoaderCircle className="h-4 w-4 animate-spin" />
+              ) : loginRequiredArticle && !currentArticle ? (
+                <LogIn className="h-4 w-4" />
+              ) : (
+                <Play className="h-4 w-4" />
+              )}
               {primaryButtonText}
             </button>
           </div>
@@ -676,17 +785,26 @@ export function PublishExecutionWorkbench() {
           <div className="mt-4 grid gap-3 text-sm text-muted md:grid-cols-4">
             <span>平台：{currentArticle ? platformLabels[currentArticle.item.publishPlatform] : "--"}</span>
             <span className="truncate">
-              账号：{currentArticle?.job?.accountId ? accountDisplayName(accountsById.get(currentArticle.job.accountId), currentArticle.item.accountName) : "--"}
+              账号：
+              {currentArticle?.job?.accountId
+                ? accountDisplayName(accountsById.get(currentArticle.job.accountId), currentArticle.item.accountName)
+                : "--"}
             </span>
             <span>文章：{currentArticle ? `#${currentArticle.item.sequence}` : "--"}</span>
-            <span>最近执行：{formatDateTime(state.latestExecutionTime)}</span>
+            <span>最近处理：{formatDateTime(state.latestExecutionTime)}</span>
           </div>
         </div>
 
         {!currentArticle && state.stats.remaining > 0 ? (
           <p className="mt-4 inline-flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300">
             <AlertTriangle className="h-4 w-4" />
-            {loginRequiredArticle ? "剩余文章需要先重新登录发布账号。" : "剩余文章需要先完成风险处理或手动回填。"}
+            {loginRequiredArticle
+              ? "剩余文章需要先重新登录发布账号。"
+              : hasManualConfirmationPending
+                ? "有文章在平台疑似已发布，等待人工确认。"
+                : state.stats.manualPending > 0
+                  ? "剩余文章需要先完成人工处理。"
+                  : "剩余文章需要先完成风险处理后再继续发布。"}
           </p>
         ) : null}
         {error && <p className="mt-4 text-sm text-red-500">{error}</p>}
@@ -702,7 +820,7 @@ export function PublishExecutionWorkbench() {
           <span>账号</span>
           <span>计划时间</span>
           <span>状态</span>
-          <span>最近执行</span>
+          <span>最近处理</span>
         </div>
         {articles.map((article) => (
           <ArticleRow
@@ -718,9 +836,11 @@ export function PublishExecutionWorkbench() {
             }}
             onManualDone={(jobId) => void markManualDone(jobId)}
             onLogin={(target) => void startAccountLogin(target)}
+            progress={article.job ? liveProgress[article.job.id] : undefined}
           />
         ))}
       </section>
+      <HistoryTasksPanel tasks={historyTasks} activeTaskId={state.current.taskId} limit={8} activeLabel="当前执行" />
     </div>
   );
 }

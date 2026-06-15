@@ -16,9 +16,14 @@ import {
   saveContentPool,
 } from "@/lib/storage/data-store";
 import { getTaskBundle, listTaskBundles, markTaskFailed, updateTaskStatus } from "@/lib/tasks/service";
-import { reconcileContentPoolPublishingStatuses } from "@/lib/publish/jobs-service";
+import {
+  createContentPoolPublishingJob,
+  reconcileContentPoolPublishingStatuses,
+  reconcilePerAccountDailyPublishSchedule,
+} from "@/lib/publish/jobs-service";
 import type {
   ContentDraft,
+  ContentPoolImageItem,
   ContentPoolItem,
   ContentPoolItemStatus,
   ContentPoolPipelineState,
@@ -35,6 +40,7 @@ import { DEFAULT_EXPECTED_IMAGE_COUNT, normalizeExpectedImageCount } from "@/lib
 const activeGenerationTasks = new Set<string>();
 const activeRetryTasks = new Set<string>();
 const generationResumeStatuses = new Set(["generation_queued", "generation_running"]);
+const autoPublishReadyStatuses = new Set<ContentPoolItemStatus>(["ready", "sample", "pending_publish", "published"]);
 
 function splitParagraphs(content: string) {
   return content
@@ -338,9 +344,55 @@ function buildDailyPublishTimes(plan: PublishTaskPlan, dayIndex: number, account
   return times;
 }
 
-function plannedTimeFor(plan: PublishTaskPlan, dayIndex: number, slotIndex: number, accountSeed: number) {
+function localDayStart(date: Date) {
+  const next = new Date(date);
+  next.setHours(0, 0, 0, 0);
+  return next;
+}
+
+function startDayIndexFor(plan: PublishTaskPlan, notBefore: Date) {
+  const base = localDayStart(new Date(plan.createdAt));
+  const current = localDayStart(notBefore);
+  return Math.max(0, Math.floor((current.getTime() - base.getTime()) / 86_400_000));
+}
+
+function plannedTimeFor(plan: PublishTaskPlan, dayIndex: number, slotIndex: number, accountSeed: number, notBefore?: Date) {
   const dailyTimes = buildDailyPublishTimes(plan, dayIndex, accountSeed);
-  return dailyTimes[slotIndex] ?? dailyTimes.at(-1) ?? new Date(plan.createdAt).toISOString();
+  const planned = dailyTimes[slotIndex] ?? dailyTimes.at(-1) ?? new Date(plan.createdAt).toISOString();
+  if (!notBefore) {
+    return planned;
+  }
+
+  const startDayIndex = startDayIndexFor(plan, notBefore);
+  let firstAvailableDayIndex = startDayIndex;
+
+  for (; firstAvailableDayIndex < startDayIndex + 366; firstAvailableDayIndex += 1) {
+    const hasAvailableSlot = buildDailyPublishTimes(plan, firstAvailableDayIndex, accountSeed).some(
+      (candidate) => new Date(candidate).getTime() >= notBefore.getTime(),
+    );
+    if (hasAvailableSlot) {
+      break;
+    }
+  }
+
+  const firstPlanDayHasExpiredSlot = buildDailyPublishTimes(plan, 0, accountSeed).some(
+    (candidate) => new Date(candidate).getTime() < notBefore.getTime(),
+  );
+  if (!firstPlanDayHasExpiredSlot && new Date(planned).getTime() >= notBefore.getTime()) {
+    return planned;
+  }
+
+  const shiftedDayIndex = firstAvailableDayIndex + dayIndex;
+  const shiftedDailyTimes = buildDailyPublishTimes(plan, shiftedDayIndex, accountSeed);
+  const shiftedPlanned = shiftedDailyTimes[slotIndex] ?? shiftedDailyTimes.at(-1);
+  if (shiftedPlanned && new Date(shiftedPlanned).getTime() >= notBefore.getTime()) {
+    return shiftedPlanned;
+  }
+
+  const fallback = new Date(notBefore);
+  fallback.setDate(fallback.getDate() + dayIndex);
+  fallback.setSeconds(0, 0);
+  return fallback.toISOString();
 }
 
 function buildPendingPipeline(platform: SocialPlatform, imagePrompt: string): ContentPoolPipelineState {
@@ -552,6 +604,8 @@ async function saveRetryQueueRecord(record: ContentPoolRecord) {
 async function buildPendingContentPoolRecord(bundle: TaskBundle, plan: PublishTaskPlan): Promise<ContentPoolRecord> {
   const planned = new Date(plan.createdAt);
   planned.setSeconds(0, 0);
+  const notBefore = new Date();
+  notBefore.setSeconds(0, 0);
   const questions = getSelectedQuestions(bundle);
   const defaultExpectedImageCount = normalizeExpectedImageCount(bundle.task.expectedImageCount ?? DEFAULT_EXPECTED_IMAGE_COUNT);
   if (questions.length !== 5) {
@@ -585,7 +639,7 @@ async function buildPendingContentPoolRecord(bundle: TaskBundle, plan: PublishTa
           sequence += 1;
           const keywordIndex = (accountArticleIndex + accountKeywordOffset) % questions.length;
           const keyword = questions[keywordIndex];
-          const plannedPublishTime = plannedTimeFor(plan, dayIndex, slotIndex, globalAccountIndex + 1);
+          const plannedPublishTime = plannedTimeFor(plan, dayIndex, slotIndex, globalAccountIndex + 1, notBefore);
           items.push(
               buildPendingContentPoolItem({
                 plan,
@@ -821,7 +875,14 @@ async function runContentGenerationBatch(bundle: TaskBundle, initialRecord: Cont
     ...record,
     updatedAt: finishedAt,
   };
-  return saveAndSyncGenerationRecord(bundle.task.id, "generation_completed", record, startedAt, finishedAt);
+  record = await saveAndSyncGenerationRecord(bundle.task.id, "generation_completed", record, startedAt, finishedAt);
+  await enqueueAutoPublishingJobs(record);
+  return record;
+}
+
+async function enqueueAutoPublishingJobs(record: ContentPoolRecord) {
+  const targets = record.items.filter((item) => item.publishable && autoPublishReadyStatuses.has(item.status));
+  await Promise.all(targets.map((item) => createContentPoolPublishingJob({ item })));
 }
 
 function launchContentGenerationBatch(bundle: TaskBundle, record: ContentPoolRecord, startedAt: string) {
@@ -845,6 +906,7 @@ export async function getCurrentContentPool() {
   const existing = await getContentPool(currentBundle.task.id);
   if (existing) {
     await resumeContentPoolQueuesIfNeeded(currentBundle.task.id, currentBundle, existing);
+    await reconcilePerAccountDailyPublishSchedule(currentBundle.task.id);
     await reconcileContentPoolPublishingStatuses(currentBundle.task.id);
   }
   const latestExisting = await getContentPool(currentBundle.task.id);
@@ -942,6 +1004,7 @@ export async function getContentGenerationStatus(taskId?: string) {
   if (taskId) {
     const [record, bundle] = await Promise.all([getContentPool(taskId), getTaskBundle(taskId)]);
     await resumeContentPoolQueuesIfNeeded(taskId, bundle, record);
+    await reconcilePerAccountDailyPublishSchedule(taskId);
     await reconcileContentPoolPublishingStatuses(taskId);
     const latestRecord = await getContentPool(taskId);
     const latestBundle = await getTaskBundle(taskId);
@@ -1103,7 +1166,7 @@ export async function retryContentPoolItemImage(taskId: string, itemId: string, 
     alt: `文章配图 ${imageIndex + 1}`,
   });
   const localizedImage = await materializeScopedArticleImageItem(itemId, regeneratedImage, imageIndex);
-  const nextImageList = currentItem.imageList.map((image, index) =>
+  const nextImageList: ContentPoolImageItem[] = currentItem.imageList.map((image, index) =>
     index === imageIndex
       ? {
           id: localizedImage.id,
@@ -1135,6 +1198,47 @@ export async function retryContentPoolItemImage(taskId: string, itemId: string, 
     };
   });
   return saveContentPool(next);
+}
+
+export async function retryAllFailedContentPoolImages(taskId: string) {
+  const record = await getContentPool(taskId);
+  if (!record) throw new Error("Content pool not found.");
+
+  const targets = record.items.flatMap((item) =>
+    item.imageList.filter((image) => image.status === "failed").map((image) => ({ itemId: item.id, imageId: image.id })),
+  );
+
+  let currentRecord = record;
+  let retriedImages = 0;
+  const errors: Array<{ itemId: string; imageId: string; message: string }> = [];
+
+  for (const target of targets) {
+    try {
+      currentRecord = await retryContentPoolItemImage(taskId, target.itemId, target.imageId);
+      retriedImages += 1;
+    } catch (error) {
+      errors.push({
+        itemId: target.itemId,
+        imageId: target.imageId,
+        message: error instanceof Error ? error.message : "Image retry failed.",
+      });
+      currentRecord = (await getContentPool(taskId)) ?? currentRecord;
+    }
+  }
+
+  const latestRecord = currentRecord;
+  const remainingFailedImages = latestRecord.items.reduce(
+    (total, item) => total + item.imageList.filter((image) => image.status === "failed").length,
+    0,
+  );
+
+  return {
+    current: latestRecord,
+    totalFailedImages: targets.length,
+    retriedImages,
+    remainingFailedImages,
+    errors,
+  };
 }
 
 async function runRetryFailedContentPoolItems(taskId: string) {

@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Clock3, History, RefreshCw } from "lucide-react";
+import { Clock3, ImageOff, RefreshCw } from "lucide-react";
 import type { ContentPoolItem, ContentPoolItemStatus, ContentPoolRecord, SearchProvider, SocialPlatform, TaskRecord } from "@/lib/types";
 
 const platformLabels: Record<SocialPlatform, string> = {
@@ -39,14 +39,12 @@ const statusLabels: Record<ContentPoolItemStatus, string> = {
 
 interface ContentGenerationStatusResponse {
   current: ContentPoolRecord | null;
-  history: ContentPoolRecord[];
   task?: TaskRecord | null;
   error?: string;
 }
 
-type ViewMode = "current" | "history";
 type StatusFilter = "all" | ContentPoolItemStatus;
-const articleTableGridClass = "lg:grid-cols-[56px_minmax(220px,1.4fr)_96px_96px_150px_minmax(160px,1fr)_88px_120px]";
+const articleTableGridClass = "lg:grid-cols-[56px_minmax(220px,1.4fr)_88px_88px_130px_minmax(150px,1fr)_118px_88px_110px]";
 
 function formatDateTime(value?: string) {
   if (!value) return "未开始";
@@ -77,34 +75,12 @@ function progressPercent(record: ContentPoolRecord | null) {
   return Math.round((finished / record.items.length) * 100);
 }
 
-function latestStageAt(item: ContentPoolItem) {
-  return item.stageLog?.[item.stageLog.length - 1]?.at;
+function failedImageCount(item: ContentPoolItem) {
+  return item.imageList.filter((image) => image.status === "failed").length;
 }
 
-function resolveStatusTime(item: ContentPoolItem, task?: TaskRecord | null) {
-  const stageAt = latestStageAt(item);
-  if ((item.status === "pending_generation" || item.status === "generating") && task?.generationStartedAt) {
-    return {
-      label: item.status === "generating" ? "本轮生成" : "本轮待生成",
-      value: stageAt || task.generationStartedAt,
-    };
-  }
-
-  if (stageAt) {
-    return {
-      label: "最近状态",
-      value: stageAt,
-    };
-  }
-
-  return {
-    label: "上次改动",
-    value: item.updatedAt,
-  };
-}
-
-function ArticleRow({ item, taskId, task }: { item: ContentPoolItem; taskId: string; task?: TaskRecord | null }) {
-  const statusTime = resolveStatusTime(item, task);
+function ArticleRow({ item, taskId }: { item: ContentPoolItem; taskId: string }) {
+  const failedImages = failedImageCount(item);
   return (
     <Link
       className={`grid gap-3 border-b border-line px-4 py-3 text-sm transition hover:bg-panelSoft lg:items-center ${articleTableGridClass}`}
@@ -112,21 +88,32 @@ function ArticleRow({ item, taskId, task }: { item: ContentPoolItem; taskId: str
     >
       <span className="text-muted">#{item.sequence}</span>
       <span className="min-w-0">
-        <span className="block truncate font-medium text-ink">{item.title || item.stageMessage || "等待生成结果"}</span>
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="block truncate font-medium text-ink">{item.title || item.stageMessage || "等待生成结果"}</span>
+          {failedImages > 0 ? (
+            <span
+              className="inline-flex shrink-0 items-center rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-1 text-amber-700 dark:text-amber-300"
+              title={`有 ${failedImages} 张图片生成失败`}
+            >
+              <ImageOff className="h-3.5 w-3.5" />
+            </span>
+          ) : null}
+        </span>
         <span className="mt-1 block truncate text-xs text-muted">{item.summary || item.stageMessage || "系统会在完成后写入最终成稿。"}</span>
       </span>
       <span className="truncate whitespace-nowrap text-muted">{providerLabels[item.aiPlatform]}</span>
       <span className="truncate whitespace-nowrap text-muted">{platformLabels[item.publishPlatform]}</span>
       <span className="truncate text-muted">{item.accountName || item.accountId}</span>
       <span className="truncate text-muted">{item.keywordText}</span>
+      <span className="whitespace-nowrap text-muted">{formatDateTime(item.plannedPublishTime)}</span>
       <span className="whitespace-nowrap">
         <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-medium ${statusClassName(item.status)}`}>
           {statusLabels[item.status]}
         </span>
       </span>
       <span className="min-w-0">
-        <span className="block text-muted">{formatDateTime(statusTime.value)}</span>
-        <span className="mt-1 block truncate text-xs text-muted">{statusTime.label}</span>
+        <span className="block text-muted">{formatDateTime(item.createdAt)}</span>
+        <span className="mt-1 block truncate text-xs text-muted">生成时间</span>
       </span>
     </Link>
   );
@@ -136,22 +123,18 @@ export function ContentPoolWorkbench() {
   const searchParams = useSearchParams();
   const requestedTaskId = searchParams.get("taskId") || "";
   const [current, setCurrent] = useState<ContentPoolRecord | null>(null);
-  const [history, setHistory] = useState<ContentPoolRecord[]>([]);
   const [task, setTask] = useState<TaskRecord | null>(null);
-  const [viewMode, setViewMode] = useState<ViewMode>("current");
-  const [selectedHistoryTaskId, setSelectedHistoryTaskId] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [retryingFailed, setRetryingFailed] = useState(false);
+  const [retryingImages, setRetryingImages] = useState(false);
 
-  const visibleRecord = useMemo(() => {
-    if (viewMode === "current") return current;
-    return history.find((record) => record.taskId === selectedHistoryTaskId) ?? history[0] ?? null;
-  }, [current, history, selectedHistoryTaskId, viewMode]);
-
+  const visibleRecord = current;
   const items = visibleRecord?.items ?? [];
   const retryableFailedItems = items.filter((item) => item.status === "failed" || item.riskLevel === "high");
+  const failedImageTotal = items.reduce((total, item) => total + failedImageCount(item), 0);
   const filteredItems = statusFilter === "all" ? items : items.filter((item) => item.status === statusFilter);
   const stats = {
     total: visibleRecord?.totalArticleCount ?? items.length,
@@ -172,9 +155,7 @@ export function ContentPoolWorkbench() {
       const data = (await response.json()) as ContentGenerationStatusResponse;
       if (!response.ok) throw new Error(data.error || "读取生成结果失败。");
       setCurrent(data.current);
-      setHistory(data.history ?? []);
       setTask(data.task ?? null);
-      setSelectedHistoryTaskId((currentTaskId) => currentTaskId || data.history?.[0]?.taskId || "");
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "读取生成结果失败。");
     } finally {
@@ -188,11 +169,11 @@ export function ContentPoolWorkbench() {
     void loadStatus();
   }, [requestedTaskId]);
 
-  const shouldAutoRefresh =
-    viewMode === "current" &&
-    (task?.status === "generation_queued" ||
+  const shouldAutoRefresh = Boolean(
+    task?.status === "generation_queued" ||
       task?.status === "generation_running" ||
-      current?.items.some((item) => item.status === "pending_generation" || item.status === "generating"));
+      current?.items.some((item) => item.status === "pending_generation" || item.status === "generating"),
+  );
 
   useEffect(() => {
     if (!shouldAutoRefresh) {
@@ -202,7 +183,7 @@ export function ContentPoolWorkbench() {
       void loadStatus({ silent: true });
     }, 3000);
     return () => window.clearInterval(timer);
-  }, [shouldAutoRefresh, requestedTaskId, viewMode]);
+  }, [shouldAutoRefresh, requestedTaskId]);
 
   async function retryFailedItems() {
     if (!visibleRecord || !retryableFailedItems.length) {
@@ -227,7 +208,42 @@ export function ContentPoolWorkbench() {
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "批量重试失败项时出错。");
     } finally {
-      setRetryingFailed(false);
+    setRetryingFailed(false);
+    }
+  }
+
+  async function retryFailedImages() {
+    if (!visibleRecord || failedImageTotal <= 0) {
+      return;
+    }
+
+    setRetryingImages(true);
+    setError("");
+    setNotice("");
+    try {
+      const response = await fetch("/api/content/pool/item", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          taskId: visibleRecord.taskId,
+          action: "retry_all_failed_images",
+        }),
+      });
+      const data = (await response.json()) as {
+        error?: string;
+        totalFailedImages?: number;
+        retriedImages?: number;
+        remainingFailedImages?: number;
+      };
+      if (!response.ok) {
+        throw new Error(data.error || "重生失败图片时出错。");
+      }
+      setNotice(`已重生 ${data.retriedImages ?? 0}/${data.totalFailedImages ?? failedImageTotal} 张失败图片，剩余 ${data.remainingFailedImages ?? 0} 张。`);
+      await loadStatus({ silent: true });
+    } catch (currentError) {
+      setError(currentError instanceof Error ? currentError.message : "重生失败图片时出错。");
+    } finally {
+      setRetryingImages(false);
     }
   }
 
@@ -235,11 +251,11 @@ export function ContentPoolWorkbench() {
     return <section className="section-card text-sm text-muted">正在读取生成结果。</section>;
   }
 
-  if (!current && !history.length) {
+  if (!current) {
     return (
       <section className="section-card">
         <h2 className="page-section-title">还没有生成结果</h2>
-        <p className="page-section-desc">保存计划后回到创建任务页点击“开始生成”，系统会把最终文章写入这里。</p>
+        <p className="page-section-desc">保存计划后回到登录账号页点击“开始生成并按计划发布”，系统会把最终文章写入这里并自动进入发布队列。</p>
         <Link className="mt-5 inline-flex rounded-md bg-accent px-4 py-2 text-sm font-medium text-white" href="/tasks/create">
           返回创建任务
         </Link>
@@ -255,25 +271,10 @@ export function ContentPoolWorkbench() {
           <div>
             <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted">第 4 步</p>
             <h2 className="page-section-title mt-2">生成结果中心</h2>
-            <p className="page-section-desc">查看当前任务的文章生成进度和最终结果，正文与图片进入详情页查看。</p>
+            <p className="page-section-desc">查看当前任务的文章生成进度和最终结果；生成完成后系统会按计划时间自动发布。</p>
             {shouldAutoRefresh ? <p className="mt-2 text-xs text-blue-600">后台正在持续生成，列表会自动刷新。</p> : null}
           </div>
           <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              className={`rounded-md px-3 py-2 text-sm font-medium ${viewMode === "current" ? "bg-accent text-white" : "border border-line text-ink"}`}
-              onClick={() => setViewMode("current")}
-            >
-              本次任务
-            </button>
-            <button
-              type="button"
-              className={`inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium ${viewMode === "history" ? "bg-accent text-white" : "border border-line text-ink"}`}
-              onClick={() => setViewMode("history")}
-            >
-              <History className="h-4 w-4" />
-              历史任务
-            </button>
             <button
               type="button"
               className="inline-flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm font-medium text-ink hover:border-accent"
@@ -282,7 +283,18 @@ export function ContentPoolWorkbench() {
               <RefreshCw className="h-4 w-4" />
               刷新
             </button>
-            {viewMode === "current" && retryableFailedItems.length > 0 ? (
+            {failedImageTotal > 0 ? (
+              <button
+                type="button"
+                className="inline-flex items-center gap-2 rounded-md border border-amber-500/30 px-3 py-2 text-sm font-medium text-amber-700 hover:border-amber-500 disabled:cursor-not-allowed disabled:opacity-60 dark:text-amber-300"
+                disabled={retryingImages || shouldAutoRefresh}
+                onClick={() => void retryFailedImages()}
+              >
+                <ImageOff className="h-4 w-4" />
+                {retryingImages ? "正在重生失败图片..." : `重生失败图片（${failedImageTotal}）`}
+              </button>
+            ) : null}
+            {retryableFailedItems.length > 0 ? (
               <button
                 type="button"
                 className="inline-flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm font-medium text-ink hover:border-accent disabled:cursor-not-allowed disabled:opacity-60"
@@ -295,23 +307,6 @@ export function ContentPoolWorkbench() {
             ) : null}
           </div>
         </div>
-
-        {viewMode === "history" && history.length > 0 && (
-          <label className="mt-4 block max-w-sm">
-            <span className="text-xs text-muted">历史任务</span>
-            <select
-              className="mt-2 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent"
-              value={selectedHistoryTaskId || history[0]?.taskId}
-              onChange={(event) => setSelectedHistoryTaskId(event.target.value)}
-            >
-              {history.map((record) => (
-                <option key={record.taskId} value={record.taskId}>
-                  {record.taskId.slice(0, 8)} · {formatDateTime(record.updatedAt)} · {record.items.length} 篇
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
 
         <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
           <div className="subtle-card">
@@ -363,6 +358,7 @@ export function ContentPoolWorkbench() {
             </button>
           ))}
         </div>
+        {notice && <p className="mt-4 text-sm text-emerald-600">{notice}</p>}
         {error && <p className="mt-4 text-sm text-red-500">{error}</p>}
       </section>
 
@@ -374,19 +370,23 @@ export function ContentPoolWorkbench() {
           <span>发布平台</span>
           <span>账号</span>
           <span>关键词</span>
+          <span>计划发布时间</span>
           <span>状态</span>
-          <span>最近状态</span>
+          <span>生成时间</span>
         </div>
         {filteredItems.length ? (
-          filteredItems.map((item) => <ArticleRow key={item.id} item={item} taskId={visibleRecord?.taskId ?? item.taskId} task={task} />)
+          filteredItems.map((item) => <ArticleRow key={item.id} item={item} taskId={visibleRecord?.taskId ?? item.taskId} />)
         ) : (
           <div className="px-4 py-8 text-center text-sm text-muted">当前筛选下没有文章。</div>
         )}
       </section>
 
       <div className="flex justify-end">
-        <Link className="inline-flex rounded-md bg-accent px-4 py-2 text-sm font-medium text-white" href="/publish-execution">
-          执行发布
+        <Link
+          className="inline-flex rounded-md bg-accent px-4 py-2 text-sm font-medium text-white"
+          href={`/publish-execution${visibleRecord ? `?taskId=${encodeURIComponent(visibleRecord.taskId)}` : ""}`}
+        >
+          查看发布结果
         </Link>
       </div>
     </div>

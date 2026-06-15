@@ -7,19 +7,41 @@ import {
   getPublishingDraft,
   getPublishingJob,
   getPublishingJobsByTask,
+  getTask,
   saveContentPool,
   savePublishingJob,
 } from "@/lib/storage/data-store";
 import { updatePlatformAccountRecord } from "@/lib/publish/accounts-service";
 import { buildManualDeliveryNotes } from "@/lib/publish/manual-delivery-service";
 import { getPlatformDescriptor } from "@/lib/publish/platforms";
-import { validateDraftForPlatform } from "@/lib/publish/draft-builders";
+import { limitXiaohongshuBodyForTags, normalizeXiaohongshuTags, validateDraftForPlatform } from "@/lib/publish/draft-builders";
 import { resolvePublishImagePaths } from "@/lib/publish/publish-image-resolver";
 import type { ContentPoolItemStatus, ContentPoolRecord, PublishPlatform, PublishingDraft, PublishingExecutionMode, PublishingJobRecord, PublishingJobStatus } from "@/lib/types";
 import type { ContentPoolItem } from "@/lib/types";
 
 function now() {
   return new Date().toISOString();
+}
+
+function parseTimeValue(value: string) {
+  const [hours, minutes] = value.split(":").map((item) => Number.parseInt(item, 10));
+  return hours * 60 + minutes;
+}
+
+function seededUnit(seed: number) {
+  const value = Math.sin(seed * 12.9898 + 78.233) * 43758.5453;
+  return value - Math.floor(value);
+}
+
+function buildDailyRepairTime(createdAt: string, timeWindow: { start: string; end: string }, dayIndex: number, accountSeed: number) {
+  const startMinutes = parseTimeValue(timeWindow.start);
+  const endMinutes = parseTimeValue(timeWindow.end);
+  const totalWindowMinutes = Math.max(endMinutes - startMinutes, 0);
+  const offset = totalWindowMinutes > 0 ? Math.floor(seededUnit(accountSeed * 101 + dayIndex * 17) * (totalWindowMinutes + 1)) : 0;
+  const planned = new Date(createdAt);
+  planned.setDate(planned.getDate() + dayIndex);
+  planned.setHours(Math.floor((startMinutes + offset) / 60), (startMinutes + offset) % 60, 0, 0);
+  return planned.toISOString();
 }
 
 function resolveExecutionMode(platform: PublishPlatform): PublishingExecutionMode {
@@ -82,8 +104,11 @@ function summarizeContentPool(record: ContentPoolRecord): ContentPoolRecord {
 }
 
 function statusFromPublishingJob(job: PublishingJobRecord): ContentPoolItemStatus | null {
-  if (job.status === "published" || job.status === "submitted" || job.status === "pending_review") {
+  if (job.status === "published") {
     return "published";
+  }
+  if (job.status === "submitted" || job.status === "pending_review") {
+    return "pending_publish";
   }
   if (job.status === "running" || job.status === "verifying") {
     return "publishing";
@@ -105,6 +130,46 @@ function displayStatusFromContentStatus(status: ContentPoolItemStatus): ContentP
   if (status === "sample") return "ready";
   if (status === "pending_generation") return "pending";
   return status;
+}
+
+function getPublishingJobStatusLabel(status: PublishingJobStatus): string {
+  switch (status) {
+    case "queued":
+      return "排队中";
+    case "running":
+      return "执行中";
+    case "submitted":
+      return "已提交";
+    case "verifying":
+      return "核验中";
+    case "pending_review":
+      return "平台审核中";
+    case "verification_failed":
+      return "待人工确认";
+    case "manual_pending":
+      return "待人工处理";
+    case "published":
+      return "已发布";
+    case "failed":
+      return "发布失败";
+    default:
+      return status;
+  }
+}
+
+function getPublishStageMessage(status: ContentPoolItemStatus, fallback?: string): string | undefined {
+  if (status === "published") return "发布已完成。";
+  if (status === "publishing") return "正在发布中。";
+  if (status === "manual_pending") return "需要人工处理。";
+  return fallback;
+}
+
+function buildPublishingJobStageLog(jobId: string, status: PublishingJobStatus): string {
+  return `发布任务 ${jobId} 状态已更新为${getPublishingJobStatusLabel(status)}。`;
+}
+
+function buildPublishingJobReconcileLog(jobId: string, status: PublishingJobStatus): string {
+  return `已根据发布任务 ${jobId} 的最新状态同步为${getPublishingJobStatusLabel(status)}。`;
 }
 
 function hasGeneratedContent(item: ContentPoolItem) {
@@ -177,19 +242,12 @@ async function syncContentPoolPublishSnapshot(job: PublishingJobRecord) {
             ...current,
             status,
             displayStatus: displayStatusFromContentStatus(status),
-            stageMessage:
-              status === "published"
-                ? "Publish completed."
-                : status === "publishing"
-                  ? "Publishing in progress."
-                  : status === "manual_pending"
-                    ? "Manual handling required."
-                    : current.stageMessage,
+            stageMessage: getPublishStageMessage(status, current.stageMessage),
             stageLog: [
               ...(current.stageLog ?? []),
               {
                 stage: `publish_${job.status}`,
-                message: `Publishing job ${job.id} changed to ${job.status}.`,
+                message: buildPublishingJobStageLog(job.id, job.status),
                 at: timestamp,
               },
             ],
@@ -230,19 +288,12 @@ export async function reconcileContentPoolPublishingStatuses(taskId: string) {
       ...item,
       status,
       displayStatus: displayStatusFromContentStatus(status),
-      stageMessage:
-        status === "published"
-          ? "Publish completed."
-          : status === "publishing"
-            ? "Publishing in progress."
-            : status === "manual_pending"
-              ? "Manual handling required."
-              : item.stageMessage,
+      stageMessage: getPublishStageMessage(status, item.stageMessage),
       stageLog: [
         ...(item.stageLog ?? []),
         {
           stage: `publish_${job.status}`,
-          message: `Reconciled from publishing job ${job.id} (${job.status}).`,
+          message: buildPublishingJobReconcileLog(job.id, job.status),
           at: timestamp,
         },
       ],
@@ -264,6 +315,89 @@ export async function reconcileContentPoolPublishingStatuses(taskId: string) {
     summarized.pendingPublishArticleCount !== record.pendingPublishArticleCount;
 
   return changed || summaryChanged ? saveContentPool(summarized) : summarized;
+}
+
+function canRepairPlannedPublishTime(job?: PublishingJobRecord) {
+  if (!job) return false;
+  if (job.plannedPublishTimeManualOverrideAt) return false;
+  if (job.status !== "queued" && job.status !== "manual_pending" && job.status !== "drafted") return false;
+  return !job.startedAt && !job.submittedAt && !job.finishedAt && !job.publishedAt;
+}
+
+function latestJobForItem(item: ContentPoolItem, jobs: PublishingJobRecord[]) {
+  return jobs
+    .filter((job) => job.contentPoolItemId === item.id)
+    .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())[0];
+}
+
+export async function reconcilePerAccountDailyPublishSchedule(taskId: string) {
+  const [record, jobs, task] = await Promise.all([getContentPool(taskId), getPublishingJobsByTask(taskId), getTask(taskId)]);
+  if (!record || record.items.length === 0) return record;
+  const plan = task?.publishPlan;
+  if (!plan || plan.articlesPerAccountPerDay !== 1) return record;
+
+  const enabledItems = record.items
+    .filter((item) => item.publishable && item.plannedPublishTime)
+    .sort((left, right) => left.sequence - right.sequence);
+  const duplicatePerAccountDay = enabledItems.some((item, index) =>
+    enabledItems.some(
+      (other, otherIndex) =>
+        otherIndex !== index &&
+        other.accountId === item.accountId &&
+        other.publishPlatform === item.publishPlatform &&
+        other.plannedPublishTime.slice(0, 10) === item.plannedPublishTime.slice(0, 10),
+    ),
+  );
+  if (!duplicatePerAccountDay) return record;
+
+  const timestamp = now();
+  let changed = false;
+  const dayIndexByKey = new Map<string, number>();
+  const baseTimeByKey = new Map<string, string>();
+  const repairedTimesByItemId = new Map<string, string>();
+
+  const nextItems = record.items.map((item) => {
+    if (!item.publishable || !item.plannedPublishTime) return item;
+    const job = latestJobForItem(item, jobs);
+    const accountKey = `${item.publishPlatform}:${item.accountId}`;
+    if (!baseTimeByKey.has(accountKey)) baseTimeByKey.set(accountKey, item.plannedPublishTime);
+    const dayIndex = dayIndexByKey.get(accountKey) ?? 0;
+    dayIndexByKey.set(accountKey, dayIndex + 1);
+    if (item.plannedPublishTimeManualOverrideAt || job?.plannedPublishTimeManualOverrideAt) return item;
+    const baseTime = baseTimeByKey.get(accountKey)!;
+    const nextPlannedPublishTime = buildDailyRepairTime(baseTime, plan.timeWindow, dayIndex, item.accountKeywordOffset + 1);
+    if (job && !canRepairPlannedPublishTime(job)) return item;
+
+    if (nextPlannedPublishTime === item.plannedPublishTime) return item;
+    changed = true;
+    repairedTimesByItemId.set(item.id, nextPlannedPublishTime);
+    return {
+      ...item,
+      plannedPublishTime: nextPlannedPublishTime,
+      updatedAt: timestamp,
+    };
+  });
+
+  if (!changed) return record;
+
+  await Promise.all(
+    jobs
+      .filter((job) => job.contentPoolItemId && repairedTimesByItemId.has(job.contentPoolItemId) && canRepairPlannedPublishTime(job))
+      .map((job) =>
+        savePublishingJob({
+          ...job,
+          plannedPublishTime: repairedTimesByItemId.get(job.contentPoolItemId!)!,
+          updatedAt: timestamp,
+        }),
+      ),
+  );
+
+  const nextRecord = summarizeContentPool({
+    ...record,
+    items: nextItems,
+    updatedAt: timestamp,
+  });
+  return saveContentPool(nextRecord);
 }
 
 export async function createPublishingJob(input: {
@@ -425,6 +559,14 @@ export async function createContentPoolPublishingJob(input: {
   });
 
   const status = descriptor?.automationStatus === "ready" ? "queued" : "manual_pending";
+  const draftTags =
+    input.item.publishPlatform === "xiaohongshu"
+      ? normalizeXiaohongshuTags([input.item.keywordText])
+      : [input.item.keywordText].filter(Boolean);
+  const draftBody =
+    input.item.publishPlatform === "xiaohongshu"
+      ? limitXiaohongshuBodyForTags(input.item.body, draftTags)
+      : input.item.body;
   const job: PublishingJobRecord = {
     id: createRecordId(),
     taskId: input.item.taskId,
@@ -440,8 +582,8 @@ export async function createContentPoolPublishingJob(input: {
     executionMode: descriptor?.executionMode ?? resolveExecutionMode(input.item.publishPlatform),
     status,
     draftTitle: input.item.title,
-    draftBody: input.item.body,
-    draftTags: [input.item.keywordText].filter(Boolean),
+    draftBody,
+    draftTags,
     draftImages: imageUrls,
     draftImagePaths: resolvedImagePaths,
     publishMode: resolvedImagePaths.length ? "with_images" : "text_only",
@@ -453,8 +595,8 @@ export async function createContentPoolPublishingJob(input: {
       executionMode: descriptor?.executionMode ?? resolveExecutionMode(input.item.publishPlatform),
       status,
       draftTitle: input.item.title,
-      draftBody: input.item.body,
-      draftTags: [input.item.keywordText].filter(Boolean),
+      draftBody,
+      draftTags,
       draftImages: imageUrls,
       draftImagePaths: imagePaths,
       publishMode: resolvedImagePaths.length ? "with_images" : "text_only",

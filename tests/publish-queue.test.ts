@@ -105,6 +105,56 @@ describe("publish queue policy", () => {
     expect(result.reason).toBe("platform_cooldown_active");
   });
 
+  it("waits until the planned publish time before running queued jobs", async () => {
+    const { dataStore, queueService } = await loadIsolatedQueue();
+    await dataStore.savePlatformAccount(account());
+
+    const result = await queueService.evaluatePublishingJobReadiness(
+      job({
+        id: "scheduled-job",
+        plannedPublishTime: "2026-06-09T10:00:00.000Z",
+      }),
+      new Date("2026-06-09T09:59:00.000Z"),
+    );
+
+    expect(result.runnable).toBe(false);
+    expect(result.reason).toBe("job_scheduled_for_later");
+    expect(result.nextRunAt).toBe("2026-06-09T10:00:00.000Z");
+  });
+
+  it("allows queued jobs at or after the planned publish time", async () => {
+    const { dataStore, queueService } = await loadIsolatedQueue();
+    await dataStore.savePlatformAccount(account());
+
+    const result = await queueService.evaluatePublishingJobReadiness(
+      job({
+        id: "due-job",
+        plannedPublishTime: "2026-06-09T10:00:00.000Z",
+      }),
+      new Date("2026-06-09T10:00:00.000Z"),
+    );
+
+    expect(result.runnable).toBe(true);
+  });
+
+  it("ignores stale scheduled nextRunAt after a planned time manual override is due", async () => {
+    const { dataStore, queueService } = await loadIsolatedQueue();
+    await dataStore.savePlatformAccount(account());
+
+    const result = await queueService.evaluatePublishingJobReadiness(
+      job({
+        id: "manual-override-due-job",
+        plannedPublishTime: "2026-06-09T10:00:00.000Z",
+        plannedPublishTimeManualOverrideAt: "2026-06-09T09:50:00.000Z",
+        queueBlockedReason: "job_scheduled_for_later",
+        nextRunAt: "2026-06-10T10:00:00.000Z",
+      }),
+      new Date("2026-06-09T10:05:00.000Z"),
+    );
+
+    expect(result.runnable).toBe(true);
+  });
+
   it("manual resume returns a paused account to active state", async () => {
     const { dataStore, queueService } = await loadIsolatedQueue();
     await dataStore.savePlatformAccount(
@@ -135,5 +185,32 @@ describe("publish queue policy", () => {
 
     expect(queueService.materialReasonFromJob(missingImageJob)).toBe("prepare_images");
     expect(queueService.riskReasonFromJob(missingImageJob)).toBeNull();
+  });
+
+  it("scans only queued jobs whose planned time is due", async () => {
+    const { dataStore, queueService } = await loadIsolatedQueue();
+    await dataStore.savePlatformAccount(account());
+    await dataStore.savePublishingJob(
+      job({
+        id: "future-job",
+        executionMode: "manual_delivery",
+        plannedPublishTime: "2026-06-09T11:00:00.000Z",
+      }),
+    );
+    await dataStore.savePublishingJob(
+      job({
+        id: "due-job",
+        executionMode: "manual_delivery",
+        plannedPublishTime: "2026-06-09T10:00:00.000Z",
+      }),
+    );
+
+    const result = await queueService.runDuePublishingJobs(new Date("2026-06-09T10:05:00.000Z"));
+
+    expect(result.checked).toBe(2);
+    expect(result.runnable).toBe(1);
+    expect(result.executed).toBe(1);
+    expect(result.skipped).toBe(1);
+    expect(result.results.map((item) => item.jobId)).toEqual(["due-job"]);
   });
 });

@@ -102,10 +102,14 @@ function fileToAsset(file: File, kind: EnterpriseAsset["kind"]): EnterpriseAsset
   };
 }
 
+function getAssetKey(asset: EnterpriseAsset) {
+  return `${asset.kind}:${asset.name}:${asset.size}`;
+}
+
 function mergeAssets(current: EnterpriseAsset[], incoming: EnterpriseAsset[]) {
-  const byId = new Map(current.map((item) => [item.id, item]));
+  const byId = new Map(current.map((item) => [getAssetKey(item), item]));
   for (const item of incoming) {
-    byId.set(item.id, item);
+    byId.set(getAssetKey(item), item);
   }
   return Array.from(byId.values());
 }
@@ -233,8 +237,8 @@ export function EnterpriseProfileWorkbench() {
           customerCases: profile.customerCases,
         });
         setRegionSelection(parseRegion(profile.region));
-        setMaterialFiles(profile.materialFiles);
-        setImageFiles(profile.imageFiles);
+        setMaterialFiles(mergeAssets([], profile.materialFiles));
+        setImageFiles(mergeAssets([], profile.imageFiles));
         setParseStatus(profile.parseStatus);
         setParseMessage(profile.parseMessage);
         setLastSavedAt(profile.lastSavedAt);
@@ -440,10 +444,10 @@ export function EnterpriseProfileWorkbench() {
                 ) : (
                   <>
                     <span className="inline-flex items-center gap-2 font-medium">
-                      <UploadCloud className="h-4 w-4" />
-                      上传企业文档或参考图片
+                      <UploadCloud className="h-5 w-5" />
+                      上传企业文档或产品图片
                     </span>
-                    <span className="text-xs text-muted">可读取文档会自动解析回填表格，图片会作为后续生成生图的参考素材</span>
+                    <span className="text-xs text-muted">支持 txt、md、csv、json、pdf、docx、png、jpg、jpeg、webp；可读取文档会自动解析并回填表格，产品图片仅作为后续生图参考，不会识别内容或写入表单。</span>
                   </>
                 )}
                 <input
@@ -455,8 +459,8 @@ export function EnterpriseProfileWorkbench() {
                   disabled={parsing}
                 />
               </label>
-              <p className="mb-3 text-xs leading-5 text-muted">
-                上传后会自动解析可读取文档内容并回填下方表格。图片不会写入表单，只会保留为后续生成图片时的参考。
+              <p className="mb-4 text-xs leading-5 text-muted">
+                上传后会自动解析可读取文档内容并回填下方表格。产品图片仅作为后续生图参考，不会识别内容或写入表单。
               </p>
               <div className="grid gap-3 md:grid-cols-2">
                 <div>
@@ -469,9 +473,9 @@ export function EnterpriseProfileWorkbench() {
                 <div>
                   <div className="mb-1.5 flex items-center gap-2 text-sm font-medium text-ink">
                     <ImageIcon className="h-4 w-4 text-accent" />
-                    参考图片
+                    产品图片
                   </div>
-                  <AssetList assets={imageFiles} emptyText="暂无参考图片" onRemove={(assetId) => removeAsset("image", assetId)} />
+                  <AssetList assets={imageFiles} emptyText="暂无产品图片" onRemove={(assetId) => removeAsset("image", assetId)} />
                 </div>
               </div>
             </div>

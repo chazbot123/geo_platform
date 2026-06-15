@@ -79,6 +79,8 @@ export function CustomerKeywordWorkbench() {
   const generatingProgress = Math.round(((generatingStepIndex + 1) / generatingSteps.length) * 100);
   const selectedCount = selectedIds.length;
   const hasExactSelection = selectedCount === 5;
+  const keywordStale = Boolean(data.keywordSet?.staleAt);
+  const isInteractionLocked = generating || saving;
 
   async function loadData() {
     setLoading(true);
@@ -114,6 +116,7 @@ export function CustomerKeywordWorkbench() {
   }, [generating, generatingSteps.length]);
 
   function toggleCandidate(candidate: CustomerKeywordCandidate) {
+    if (isInteractionLocked || keywordStale) return;
     setMessage("");
     setError("");
     setSelectedIds((current) => {
@@ -228,7 +231,7 @@ export function CustomerKeywordWorkbench() {
             <button
               type="button"
               onClick={saveSelection}
-              disabled={!hasExactSelection || saving}
+              disabled={!hasExactSelection || saving || generating || keywordStale}
               className="inline-flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
             >
               {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
@@ -261,12 +264,19 @@ export function CustomerKeywordWorkbench() {
           </div>
         ) : null}
 
+        {keywordStale ? (
+          <div className="mt-5 rounded-md border border-warning/40 bg-warning/10 p-4 text-sm text-ink">
+            企业信息已变更，当前客户关键词已过期。请点击“生成候选”重新生成后，再保存 5 个核心问题并创建新任务。
+          </div>
+        ) : null}
+
         {generating ? (
           <div className="mt-4 rounded-xl border border-accent/30 bg-accent/5 p-4">
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <p className="text-sm font-medium text-ink">正在调用文字模型生成客户关键词...</p>
                 <p className="mt-1 text-sm text-accent transition-opacity duration-300">{currentGeneratingStep}</p>
+                <p className="mt-1 text-xs text-muted">生成期间暂不可选择，完成后会刷新候选列表。</p>
               </div>
               <span className="shrink-0 text-xs font-semibold text-accent">{generatingProgress}%</span>
             </div>
@@ -323,10 +333,13 @@ export function CustomerKeywordWorkbench() {
                         key={candidate.id}
                         type="button"
                         onClick={() => toggleCandidate(candidate)}
+                        disabled={isInteractionLocked || keywordStale}
                         className={`flex w-full items-start gap-3 rounded-md border p-3 text-left text-sm transition ${
                           selected
                             ? "border-accent bg-accent/10 text-ink"
-                            : "border-border bg-surface text-muted hover:border-border-strong hover:text-ink"
+                            : isInteractionLocked || keywordStale
+                              ? "border-border bg-surface text-muted opacity-60"
+                              : "border-border bg-surface text-muted hover:border-border-strong hover:text-ink"
                         }`}
                       >
                         <span
@@ -357,7 +370,7 @@ export function CustomerKeywordWorkbench() {
             <h3 className="text-base font-semibold text-ink">下一步</h3>
             <p className="mt-1 text-sm text-muted">保存 5 个核心问题后，才能进入创建任务。</p>
           </div>
-          {data.canCreateTask ? (
+          {data.canCreateTask && !keywordStale ? (
             <Link
               className="inline-flex items-center justify-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white"
               href="/tasks/create"

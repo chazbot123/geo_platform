@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
-import pdfParse from "pdf-parse";
+import { PDFParse } from "pdf-parse";
 import { strFromU8, unzipSync } from "fflate";
 import { getAppConfig } from "@/lib/config/service";
 import type { EnterpriseAsset, EnterpriseParseResult, EnterpriseProfileFields } from "@/lib/enterprise/types";
 import { callConfiguredTextModel, parseJsonFromModelText } from "@/lib/integrations/openai-compatible";
 import type { ModelApiConfig } from "@/lib/types";
+
+export const runtime = "nodejs";
 
 const textExtensions = new Set(["txt", "md", "csv", "json"]);
 const pdfExtensions = new Set(["pdf"]);
@@ -97,8 +99,13 @@ async function readPdfText(file: File) {
 
   try {
     const buffer = Buffer.from(await file.arrayBuffer());
-    const result = await pdfParse(buffer);
-    return result.text.replace(/\u0000/g, "").replace(/\n{3,}/g, "\n\n").trim();
+    const parser = new PDFParse({ data: buffer });
+    try {
+      const result = await parser.getText();
+      return result.text.replace(/\u0000/g, "").replace(/\n{3,}/g, "\n\n").trim();
+    } finally {
+      await parser.destroy();
+    }
   } catch {
     return "";
   }
@@ -208,7 +215,7 @@ export async function POST(request: Request) {
     const files = formData.getAll("files").filter((entry): entry is File => entry instanceof File);
 
     if (!files.length) {
-      return NextResponse.json({ error: "请选择要上传的企业资料文档或参考图片。" }, { status: 400 });
+      return NextResponse.json({ error: "请选择要上传的企业资料文档或产品图片。" }, { status: 400 });
     }
 
     const materialFiles: EnterpriseAsset[] = [];
@@ -272,10 +279,10 @@ export async function POST(request: Request) {
 
     const message =
       filledCount > 0
-        ? `已通过${parseSource}识别 ${filledCount} 个字段，请确认后保存；图片会保留为后续生图参考。`
+        ? `已通过${parseSource}识别 ${filledCount} 个字段，请确认后保存；图片仅作为后续生图参考，不会识别内容或写入表单。`
         : skipped.length
-          ? `已记录企业资料，但 ${skipped.join("、")} 暂未提取到可回填文本，可手动填写后保存。图片会保留为后续生图参考。`
-          : "已记录企业资料，可手动补充企业信息后保存。图片会保留为后续生图参考。";
+          ? `已记录企业资料，但 ${skipped.join("、")} 暂未提取到可回填文本，可手动填写后保存。图片仅作为后续生图参考，不会识别内容或写入表单。`
+          : "已记录企业资料，可手动补充企业信息后保存。图片仅作为后续生图参考，不会识别内容或写入表单。";
 
     const result: EnterpriseParseResult = {
       suggestions,

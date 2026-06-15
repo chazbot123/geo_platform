@@ -276,6 +276,14 @@ function buildPromptUrl(prompt: string) {
   return `https://coresg-normal.trae.ai/api/ide/v1/text_to_image?prompt=${encodeURIComponent(prompt)}&image_size=landscape_16_9`;
 }
 
+function normalizeImageAssetReviewStatus(status?: ArticleImageItem["reviewStatus"]): ImageAsset["reviewStatus"] {
+  return status ?? "pending";
+}
+
+function bufferToBlobPart(buffer: Buffer): ArrayBuffer {
+  return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer;
+}
+
 function createFallbackImageItem(taskId: string, prompt: string, planItem: ArticleImagePlanItem, overrides?: Partial<ArticleImageItem>): ArticleImageItem {
   return {
     id: `${taskId}-${randomUUID()}`,
@@ -324,6 +332,9 @@ function resolveOpenAIImageEndpoint(baseUrl: string) {
   if (/\/images\/generations$/i.test(trimmed)) {
     return trimmed;
   }
+  if (/^https?:\/\/[^/]+$/i.test(trimmed)) {
+    return `${trimmed}/v1/images/generations`;
+  }
   return `${trimmed}/images/generations`;
 }
 
@@ -339,6 +350,31 @@ function resolveOpenAIImageEditEndpoint(baseUrl: string) {
     return trimmed.replace(/\/images\/generations$/i, "/images/edits");
   }
   return `${trimmed}/images/edits`;
+}
+
+function resolveOpenAIResponsesEndpoint(baseUrl: string) {
+  const trimmed = baseUrl
+    .trim()
+    .replace(/\/+$/g, "")
+    .replace(/\/chat\/completions$/i, "")
+    .replace(/\/images\/generations$/i, "")
+    .replace(/\/responses$/i, "");
+
+  if (!trimmed) {
+    throw new Error("Image model API base URL is not configured.");
+  }
+  if (/^https?:\/\/[^/]+$/i.test(trimmed)) {
+    return `${trimmed}/v1/responses`;
+  }
+  return `${trimmed}/responses`;
+}
+
+function resolveResponsesImageModel(modelName: string) {
+  const normalized = modelName.trim();
+  if (/^gpt-image/i.test(normalized)) {
+    return "gpt-5.5";
+  }
+  return normalized || "gpt-5.5";
 }
 
 function resolveViduBaseUrl(baseUrl: string) {
@@ -463,6 +499,148 @@ function extractRemoteError(payload: Record<string, unknown> | null, rawText: st
   }
 
   return rawText.trim().slice(0, 200);
+}
+
+function extractOpenAIImageErrorMessage(
+  payload: { error?: { message?: string } | string; message?: string } | null,
+  rawText: string,
+) {
+  if (payload?.error && typeof payload.error === "object" && typeof payload.error.message === "string") {
+    return payload.error.message.trim();
+  }
+  if (typeof payload?.error === "string") {
+    return payload.error.trim();
+  }
+  if (typeof payload?.message === "string") {
+    return payload.message.trim();
+  }
+  return rawText.trim().slice(0, 200);
+}
+
+function isMissingImageGenerationToolError(message: string) {
+  return /tool choice ['"]?image_generation['"]?/i.test(message) && /not found in ['"]?tools['"]?/i.test(message);
+}
+
+function toImageUrlFromOpenAIResult(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+  if (/^(https?:\/\/|data:image\/)/i.test(trimmed)) {
+    return trimmed;
+  }
+  return `data:image/png;base64,${trimmed}`;
+}
+
+function extractResponsesImageResult(payload: {
+  output?: Array<{
+    id?: string;
+    type?: string;
+    result?: string;
+    image_url?: string;
+    content?: Array<{ type?: string; image_url?: string; url?: string; b64_json?: string; result?: string }>;
+  }>;
+}) {
+  for (const output of payload.output ?? []) {
+    if (output.type === "image_generation_call" && typeof output.result === "string") {
+      return {
+        url: toImageUrlFromOpenAIResult(output.result),
+        providerTaskId: output.id,
+      };
+    }
+    if (typeof output.image_url === "string") {
+      return {
+        url: toImageUrlFromOpenAIResult(output.image_url),
+        providerTaskId: output.id,
+      };
+    }
+
+    for (const content of output.content ?? []) {
+      const candidate = content.image_url || content.url || content.b64_json || content.result;
+      if (typeof candidate === "string" && candidate.trim()) {
+        return {
+          url: toImageUrlFromOpenAIResult(candidate),
+          providerTaskId: output.id,
+        };
+      }
+    }
+  }
+
+  return { url: "", providerTaskId: undefined };
+}
+
+function extractStringImageCandidate(value: unknown) {
+  if (typeof value !== "string") {
+    return "";
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+  if (/^(https?:\/\/|data:image\/)/i.test(trimmed)) {
+    return trimmed;
+  }
+  if (/^[A-Za-z0-9+/=\r\n]+$/.test(trimmed) && trimmed.length > 80) {
+    return `data:image/png;base64,${trimmed.replace(/\s+/g, "")}`;
+  }
+  return "";
+}
+
+function extractImageCandidateFromUnknown(value: unknown): string {
+  const direct = extractStringImageCandidate(value);
+  if (direct) {
+    return direct;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const candidate = extractImageCandidateFromUnknown(item);
+      if (candidate) {
+        return candidate;
+      }
+    }
+    return "";
+  }
+
+  if (!value || typeof value !== "object") {
+    return "";
+  }
+
+  const record = value as Record<string, unknown>;
+  const imageKeys = ["url", "image_url", "b64_json", "base64", "image", "result"];
+  for (const key of imageKeys) {
+    const candidate = extractImageCandidateFromUnknown(record[key]);
+    if (candidate) {
+      return candidate;
+    }
+  }
+
+  for (const key of ["data", "images", "output", "content"]) {
+    const candidate = extractImageCandidateFromUnknown(record[key]);
+    if (candidate) {
+      return candidate;
+    }
+  }
+
+  return "";
+}
+
+function extractOpenAIImageGenerationResult(payload: {
+  data?: Array<{
+    url?: unknown;
+    b64_json?: unknown;
+    image_url?: unknown;
+    revised_prompt?: string;
+    content?: unknown;
+  }>;
+  images?: unknown;
+  output?: unknown;
+}) {
+  const first = payload.data?.[0];
+  return {
+    url: extractImageCandidateFromUnknown(first ?? payload),
+    prompt: typeof first?.revised_prompt === "string" && first.revised_prompt.trim() ? first.revised_prompt : undefined,
+  };
 }
 
 function resolveViduModel(modelName: string, hasReferenceImages: boolean) {
@@ -722,7 +900,7 @@ async function runViduImageModel(
             paragraphIndex: entry.planItem.paragraphIndex,
             caption: `配图 ${entry.planItem.imageIndex}`,
           },
-        };
+        } satisfies ArticleImageItem;
       }, `vidu[${entry.planItem.imageIndex}]`),
     ),
   );
@@ -736,7 +914,7 @@ async function runViduImageModel(
     taskId: product.taskId,
     assetType: "cover",
     url: cover?.url || buildPromptUrl(prompts[0]?.prompt || product.productName),
-    reviewStatus: cover?.reviewStatus ?? "pending",
+    reviewStatus: normalizeImageAssetReviewStatus(cover?.reviewStatus),
     prompt: cover?.prompt || prompts[0]?.prompt || product.productName,
     provider: cover?.provider ?? "vidu",
     providerTaskId: cover?.providerTaskId,
@@ -803,7 +981,7 @@ async function runGenericImageModel(
         const resolvedUrl = typeof payload.url === "string" && payload.url.trim() ? payload.url.trim() : buildPromptUrl(entry.prompt);
         return {
           failed: false,
-          item: {
+          item: ({
             id: `${product.taskId}-${randomUUID()}`,
             url: resolvedUrl,
             prompt: entry.prompt,
@@ -819,7 +997,7 @@ async function runGenericImageModel(
               paragraphIndex: entry.planItem.paragraphIndex,
               caption: `配图 ${entry.planItem.imageIndex}`,
             },
-          },
+          } satisfies ArticleImageItem),
         };
       } catch (error) {
         return {
@@ -841,7 +1019,7 @@ async function runGenericImageModel(
     taskId: product.taskId,
     assetType: "cover",
     url: cover?.url ?? fallbackAsset.url,
-    reviewStatus: cover?.reviewStatus ?? "pending",
+    reviewStatus: normalizeImageAssetReviewStatus(cover?.reviewStatus),
     prompt: cover?.prompt ?? fallbackAsset.prompt,
     provider: cover?.provider ?? "generic",
     providerTaskId: cover?.providerTaskId,
@@ -851,6 +1029,61 @@ async function runGenericImageModel(
   } satisfies ImageAsset, prompts.length);
 }
 
+async function fetchOpenAIResponsesImageGeneration(
+  endpoint: string,
+  prompt: string,
+  config: ModelApiConfig,
+): Promise<{ url: string; prompt: string; providerTaskId?: string }> {
+  const response = await fetchWithTimeout(
+    endpoint,
+    {
+      method: "POST",
+      headers: buildJsonAuthHeaders(config.apiKey),
+      body: JSON.stringify({
+        model: resolveResponsesImageModel(config.modelName),
+        input: prompt,
+        tools: [{ type: "image_generation" }],
+        tool_choice: { type: "image_generation" },
+      }),
+    },
+    config.timeout ?? 300000,
+  );
+
+  const rawText = await response.text();
+  let payload: {
+    output?: Array<{
+      id?: string;
+      type?: string;
+      result?: string;
+      image_url?: string;
+      content?: Array<{ type?: string; image_url?: string; url?: string; b64_json?: string; result?: string }>;
+    }>;
+    error?: { message?: string } | string;
+    message?: string;
+  } | null = null;
+  try {
+    payload = JSON.parse(rawText) as typeof payload;
+  } catch {
+    // Keep payload empty and surface the raw body below.
+  }
+
+  if (!response.ok) {
+    const detail = extractOpenAIImageErrorMessage(payload, rawText);
+    throw new Error(`IMAGE_RESPONSES_API_${response.status}: ${detail || `HTTP ${response.status}`}`);
+  }
+
+  const result = extractResponsesImageResult(payload ?? {});
+  if (!result.url) {
+    throw new Error("Responses image tool did not return a usable image.");
+  }
+
+  return {
+    url: result.url,
+    prompt,
+    providerTaskId: result.providerTaskId,
+  };
+}
+
 async function runOpenAICompatibleImageModel(
   product: ProductProfile,
   prompts: Array<{ prompt: string; planItem: ArticleImagePlanItem }>,
@@ -858,6 +1091,7 @@ async function runOpenAICompatibleImageModel(
 ): Promise<ImageAsset> {
   const generationEndpoint = resolveOpenAIImageEndpoint(config.baseUrl);
   const editEndpoint = resolveOpenAIImageEditEndpoint(config.baseUrl);
+  const responsesEndpoint = resolveOpenAIResponsesEndpoint(config.baseUrl);
   const normalizedApiKey = normalizeApiKey(config.apiKey);
   const referenceImageFiles = await resolveReferenceImageFiles(product);
   const hasReferenceImages = referenceImageFiles.length > 0;
@@ -867,82 +1101,101 @@ async function runOpenAICompatibleImageModel(
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), resolveTimeoutMs(config.timeout));
         let response: Response;
-      try {
-        if (hasReferenceImages) {
-          const form = new FormData();
-          form.set("model", config.modelName);
-          form.set("prompt", entry.prompt);
-          form.set("size", "1024x1024");
+        try {
+          if (hasReferenceImages) {
+            const form = new FormData();
+            form.set("model", config.modelName);
+            form.set("prompt", entry.prompt);
+            form.set("size", "1024x1024");
 
-          for (const [index, file] of referenceImageFiles.entries()) {
-            const blob = new Blob([file.buffer], { type: file.mimeType });
-            form.append("image", blob, file.fileName || `reference-${index + 1}.png`);
+            for (const [index, file] of referenceImageFiles.entries()) {
+              const blob = new Blob([bufferToBlobPart(file.buffer)], { type: file.mimeType });
+              form.append("image", blob, file.fileName || `reference-${index + 1}.png`);
+            }
+
+            const headers: Record<string, string> = {};
+            if (normalizedApiKey) {
+              headers.Authorization = `Bearer ${normalizedApiKey}`;
+            }
+
+            response = await fetch(editEndpoint, {
+              method: "POST",
+              headers,
+              body: form,
+              signal: controller.signal,
+            });
+          } else {
+            const headers: Record<string, string> = {
+              "Content-Type": "application/json",
+            };
+            if (normalizedApiKey) {
+              headers.Authorization = `Bearer ${normalizedApiKey}`;
+            }
+
+            response = await fetch(generationEndpoint, {
+              method: "POST",
+              headers,
+              body: JSON.stringify({
+                model: config.modelName,
+                prompt: entry.prompt,
+                n: 1,
+                size: "1024x1024",
+                response_format: "b64_json",
+              }),
+              signal: controller.signal,
+            });
           }
-
-          const headers: Record<string, string> = {};
-          if (normalizedApiKey) {
-            headers.Authorization = `Bearer ${normalizedApiKey}`;
+        } catch (error) {
+          if (isAbortLikeError(error)) {
+            throw new Error("REQUEST_TIMEOUT");
           }
-
-          response = await fetch(editEndpoint, {
-            method: "POST",
-            headers,
-            body: form,
-            signal: controller.signal,
-          });
-        } else {
-          const headers: Record<string, string> = {
-            "Content-Type": "application/json",
-          };
-          if (normalizedApiKey) {
-            headers.Authorization = `Bearer ${normalizedApiKey}`;
-          }
-
-          response = await fetch(generationEndpoint, {
-            method: "POST",
-            headers,
-            body: JSON.stringify({
-              model: config.modelName,
-              prompt: entry.prompt,
-              n: 1,
-              size: "1024x1024",
-              response_format: "b64_json",
-            }),
-            signal: controller.signal,
-          });
+          throw error;
+        } finally {
+          clearTimeout(timeoutId);
         }
-      } catch (error) {
-        if (isAbortLikeError(error)) {
-          throw new Error("REQUEST_TIMEOUT");
-        }
-        throw error;
-      } finally {
-        clearTimeout(timeoutId);
-      }
 
       const { payload: parsedPayload, rawText } = await readJsonResponse(response);
       process.stderr.write(
         `[image-debug] provider=openai-compatible endpoint=${hasReferenceImages ? editEndpoint : generationEndpoint} status=${response.status} content-type=${response.headers.get("content-type") ?? ""} payload-keys=${parsedPayload ? Object.keys(parsedPayload).join(",") : "null"} raw-prefix=${rawText.slice(0, 800).replace(/\n/g, "\\n")}\n`,
       );
-      const payload = parsedPayload as
-        | {
-            data?: Array<{ url?: string; b64_json?: string; revised_prompt?: string }>;
-            error?: { message?: string };
-          }
-        | null;
+      const payload = parsedPayload as {
+        data?: Array<{ url?: unknown; b64_json?: unknown; image_url?: unknown; revised_prompt?: string; content?: unknown }>;
+        images?: unknown;
+        output?: unknown;
+        error?: { message?: string } | string;
+        message?: string;
+      } | null;
 
       if (!response.ok) {
-        const detail = payload?.error?.message || rawText.slice(0, 200);
+        const detail = extractOpenAIImageErrorMessage(payload, rawText);
+        if (!hasReferenceImages && response.status === 400 && isMissingImageGenerationToolError(detail)) {
+          const fallback = await fetchOpenAIResponsesImageGeneration(responsesEndpoint, entry.prompt, config);
+          return {
+            id: `${product.taskId}-${randomUUID()}`,
+            url: fallback.url,
+            prompt: fallback.prompt,
+            alt: entry.planItem.alt,
+            question: entry.planItem.question,
+            sectionHeading: entry.planItem.sectionHeading,
+            referenceMode: "article_only",
+            reviewStatus: "pending",
+            provider: "openai-responses-image",
+            providerTaskId: fallback.providerTaskId,
+            generationMode: "prompt",
+            placement: {
+              paragraphIndex: entry.planItem.paragraphIndex,
+              caption: `配图 ${entry.planItem.imageIndex}`,
+            },
+          } satisfies ArticleImageItem;
+        }
         const errPrefix = response.status === 429
           ? `IMAGE_RATE_LIMIT_${response.status}@${hasReferenceImages ? editEndpoint : generationEndpoint}`
           : `IMAGE_API_${response.status}`;
         throw new Error(`${errPrefix}: ${detail}`);
       }
 
-      const first = payload?.data?.[0];
-      const urlField = typeof first?.url === "string" ? first.url.trim() : "";
-      const b64Field = typeof first?.b64_json === "string" ? first.b64_json.trim() : "";
-      const imageUrl = urlField || (b64Field ? `data:image/png;base64,${b64Field}` : "");
+      const imageResult = extractOpenAIImageGenerationResult(payload ?? {});
+      const imageUrl = imageResult.url;
       if (!imageUrl) {
         throw new Error(`IMAGE_OUTPUT_EMPTY@${hasReferenceImages ? editEndpoint : generationEndpoint}`);
       }
@@ -950,7 +1203,7 @@ async function runOpenAICompatibleImageModel(
       return {
         id: `${product.taskId}-${randomUUID()}`,
         url: imageUrl,
-        prompt: first?.revised_prompt || entry.prompt,
+        prompt: imageResult.prompt || entry.prompt,
         alt: entry.planItem.alt,
         question: entry.planItem.question,
         sectionHeading: entry.planItem.sectionHeading,
@@ -962,7 +1215,7 @@ async function runOpenAICompatibleImageModel(
           paragraphIndex: entry.planItem.paragraphIndex,
           caption: `配图 ${entry.planItem.imageIndex}`,
         },
-      };
+      } satisfies ArticleImageItem;
       }, `openai-compatible[${entry.planItem.imageIndex}]`),
     ),
   );
@@ -976,7 +1229,7 @@ async function runOpenAICompatibleImageModel(
     taskId: product.taskId,
     assetType: "cover",
     url: cover?.url || buildPromptUrl(prompts[0]?.prompt || product.productName),
-    reviewStatus: cover?.reviewStatus ?? "pending",
+    reviewStatus: normalizeImageAssetReviewStatus(cover?.reviewStatus),
     prompt: cover?.prompt || prompts[0]?.prompt || product.productName,
     provider: cover?.provider ?? "openai-compatible-image",
     generationMode: cover?.generationMode ?? "prompt",

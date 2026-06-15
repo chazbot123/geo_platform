@@ -52,6 +52,7 @@ export async function PATCH(request: Request, context: { params: { accountId: st
         }),
       });
     }
+    const allowAuthPayloadPatch = request.headers.get("x-geo-internal-session-refresh") === "1";
     const account = loginStatus
       ? await markPlatformAccountLoginResult(context.params.accountId, {
           loginStatus,
@@ -61,9 +62,9 @@ export async function PATCH(request: Request, context: { params: { accountId: st
           displayName,
           platformAccountId,
           avatarUrl,
-          authPayload,
-          authPayloadUpdatedAt,
           lastValidatedAt,
+          authPayload: allowAuthPayloadPatch ? authPayload : undefined,
+          authPayloadUpdatedAt: allowAuthPayloadPatch ? authPayloadUpdatedAt : undefined,
         })
       : await updatePlatformAccountRecord(context.params.accountId, {
           remark,
@@ -73,8 +74,8 @@ export async function PATCH(request: Request, context: { params: { accountId: st
           avatarUrl,
           status,
           lastError,
-          authPayload,
-          authPayloadUpdatedAt,
+          authPayload: allowAuthPayloadPatch ? authPayload : undefined,
+          authPayloadUpdatedAt: allowAuthPayloadPatch ? authPayloadUpdatedAt : undefined,
           lastValidatedAt,
         });
     return NextResponse.json({ account });

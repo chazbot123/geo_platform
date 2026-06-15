@@ -2,9 +2,10 @@ import { NextResponse } from "next/server";
 import { getTaskPlanningPrerequisites, savePublishTaskPlan } from "@/lib/tasks/service";
 import type { SearchProvider, SocialPlatform } from "@/lib/types";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    const prerequisites = await getTaskPlanningPrerequisites();
+    const taskId = new URL(request.url).searchParams.get("taskId") ?? undefined;
+    const prerequisites = await getTaskPlanningPrerequisites(taskId);
     return NextResponse.json(prerequisites);
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "读取任务规划失败。" }, { status: 500 });
@@ -19,6 +20,7 @@ export async function POST(request: Request) {
       enabledPlatforms: SocialPlatform[];
       days: number;
       articlesPerAccountPerDay: number;
+      expectedImageCount?: number;
       timeWindow?: {
         start: string;
         end: string;

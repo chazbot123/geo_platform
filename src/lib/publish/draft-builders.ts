@@ -14,6 +14,8 @@ const PLATFORM_TITLE_LIMITS: Record<SocialPlatform, number> = {
   csdn: 42,
 };
 
+export const XIAOHONGSHU_NOTE_BODY_MAX_LENGTH = 1000;
+
 const INTERNAL_PUBLIC_MARKERS = [
   "sha256:",
   "PGP SIGNATURE",
@@ -201,6 +203,56 @@ function conciseTopic(topic: string, productName: string) {
 function limitChars(value: string, maxLength: number) {
   const normalized = compactText(value);
   return normalized.length > maxLength ? normalized.slice(0, maxLength) : normalized;
+}
+
+function trimAtReadableBoundary(value: string, maxLength: number) {
+  if (maxLength <= 0) return "";
+  if (value.length <= maxLength) return value;
+  const sliced = value.slice(0, maxLength).trimEnd();
+  const boundary = Math.max(
+    sliced.lastIndexOf("\n\n"),
+    sliced.lastIndexOf("\n"),
+    sliced.lastIndexOf("。"),
+    sliced.lastIndexOf("！"),
+    sliced.lastIndexOf("？"),
+    sliced.lastIndexOf("."),
+    sliced.lastIndexOf("!"),
+    sliced.lastIndexOf("?"),
+  );
+  if (boundary >= Math.floor(maxLength * 0.65)) {
+    return sliced.slice(0, boundary + 1).trim();
+  }
+  return sliced.trim();
+}
+
+export function normalizeXiaohongshuTags(tags: string[] | undefined): string[] {
+  return Array.from(
+    new Set(
+      (tags ?? [])
+        .map((tag) => compactText(tag).replace(/^#+/, ""))
+        .filter(Boolean),
+    ),
+  ).slice(0, 10);
+}
+
+export function buildXiaohongshuTagLine(tags: string[] | undefined): string {
+  return normalizeXiaohongshuTags(tags)
+    .map((tag) => `#${tag}`)
+    .join(" ");
+}
+
+export function limitXiaohongshuBodyForTags(body: string, tags: string[] | undefined): string {
+  const normalized = normalizePublishingText(body);
+  const tagLine = buildXiaohongshuTagLine(tags);
+  const suffixLength = tagLine ? `\n\n${tagLine}`.length : 0;
+  const bodyLimit = Math.max(0, XIAOHONGSHU_NOTE_BODY_MAX_LENGTH - suffixLength);
+  return trimAtReadableBoundary(normalized, bodyLimit);
+}
+
+export function buildXiaohongshuNoteBody(body: string, tags: string[] | undefined): string {
+  const tagLine = buildXiaohongshuTagLine(tags);
+  const limitedBody = limitXiaohongshuBodyForTags(body, tags);
+  return [limitedBody, tagLine].filter(Boolean).join("\n\n").slice(0, XIAOHONGSHU_NOTE_BODY_MAX_LENGTH);
 }
 
 function splitSellingPoints(value: string | undefined) {

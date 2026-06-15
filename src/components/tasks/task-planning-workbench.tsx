@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { CalendarDays, CheckCircle2, LoaderCircle, LogIn, PlayCircle, RefreshCw, Save, Settings2, ShieldCheck, Trash2 } from "lucide-react";
 import { dispatchWorkflowStatusRefresh } from "@/components/layout/app-shell";
 import { requireLicensedAction } from "@/lib/license/guard";
@@ -14,6 +14,7 @@ import {
 import { openPlatformLoginWindow, validatePlatformSessionWindow } from "@/lib/publish/electron-login-client";
 import { getPlatformsBySearchProvider, providerPublishMatrix } from "@/lib/publish/provider-platform-matrix";
 import { getSearchProviderIcon, getSocialPlatformIcon } from "@/lib/platform-icons";
+import { DEFAULT_EXPECTED_IMAGE_COUNT, MAX_EXPECTED_IMAGE_COUNT, normalizeExpectedImageCount } from "@/lib/tasks/constants";
 import type {
   PlatformAccountDetectionItem,
   PlatformAccountRecord,
@@ -47,8 +48,17 @@ const platformLabels: Record<SocialPlatform, string> = {
 const DEBUG_SERVER_URL = "http://127.0.0.1:7778/event";
 const DEBUG_SESSION_ID = "account-info-fetch";
 
+function shouldEmitDebugEvents() {
+  try {
+    return typeof window !== "undefined" && window.localStorage.getItem("geo-debug-events") === "1";
+  } catch {
+    return false;
+  }
+}
+
 function emitDebug(hypothesisId: string, location: string, msg: string, data: Record<string, unknown>) {
   // #region debug-point shared:emit
+  if (!shouldEmitDebugEvents()) return;
   fetch(DEBUG_SERVER_URL, {
     method: "POST",
     body: JSON.stringify({
@@ -74,6 +84,7 @@ interface PlanningPrerequisites {
   theme?: ThemeSet;
   selectedQuestions: string[];
   savedPlan?: PublishTaskPlan;
+  expectedImageCount?: number;
 }
 
 interface DetectionResponse {
@@ -207,13 +218,24 @@ function accountActionLabel(account: PlatformAccountRecord) {
   return "登录";
 }
 
+function resolveInlineAvatarSrc(avatarUrl: string | undefined, fallback: string) {
+  const normalized = String(avatarUrl || "").trim();
+  if (!normalized) return fallback;
+  try {
+    const parsed = new URL(normalized, typeof window !== "undefined" ? window.location.origin : "http://127.0.0.1");
+    return /(\.|^)sinaimg\.cn$/i.test(parsed.hostname) ? fallback : normalized;
+  } catch {
+    return fallback;
+  }
+}
+
 function AccountAvatar({ account, platform }: { account: PlatformAccountRecord; platform: SocialPlatform }) {
   const fallback = getSocialPlatformIcon(platform);
   return (
     <span className="flex h-11 w-11 shrink-0 overflow-hidden rounded-md border border-line bg-surface">
       <img
         className="h-full w-full object-cover"
-        src={account.avatarUrl || fallback}
+        src={resolveInlineAvatarSrc(account.avatarUrl, fallback)}
         alt={`${formatAccountDisplayLabel(account, account.id) || account.id} 头像`}
         onError={(event) => {
           event.currentTarget.src = fallback;
@@ -233,6 +255,8 @@ function EmptyAvatar({ platform }: { platform: SocialPlatform }) {
 
 export function TaskPlanningWorkbench() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const requestedTaskId = searchParams.get("taskId")?.trim() ?? "";
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [startingGeneration, setStartingGeneration] = useState(false);
@@ -247,6 +271,7 @@ export function TaskPlanningWorkbench() {
   const [selectedPlatform, setSelectedPlatform] = useState<SocialPlatform>("toutiao");
   const [daysInput, setDaysInput] = useState("5");
   const [articlesPerAccountPerDayInput, setArticlesPerAccountPerDayInput] = useState("2");
+  const [expectedImageCountInput, setExpectedImageCountInput] = useState(String(DEFAULT_EXPECTED_IMAGE_COUNT));
   const [publishStartTime, setPublishStartTime] = useState("09:00");
   const [publishEndTime, setPublishEndTime] = useState("18:00");
   const [detectionItems, setDetectionItems] = useState<PlatformAccountDetectionItem[]>([]);
@@ -284,6 +309,7 @@ export function TaskPlanningWorkbench() {
   );
   const normalizedDays = normalizePositiveInteger(daysInput, 5, 1);
   const normalizedArticlesPerAccountPerDay = normalizePositiveInteger(articlesPerAccountPerDayInput, 2, 1);
+  const normalizedExpectedImageCount = normalizeExpectedImageCount(Number.parseInt(expectedImageCountInput, 10));
   const isTimeWindowValid =
     isValidTimeValue(publishStartTime) && isValidTimeValue(publishEndTime) && publishStartTime < publishEndTime;
   const taskScopedAccountCount = enabledPlatforms.reduce(
@@ -310,6 +336,7 @@ export function TaskPlanningWorkbench() {
       savedPlan.searchProvider === searchProvider &&
       savedPlan.days === normalizedDays &&
       savedPlan.articlesPerAccountPerDay === normalizedArticlesPerAccountPerDay &&
+      normalizeExpectedImageCount(prerequisites?.expectedImageCount) === normalizedExpectedImageCount &&
       (savedPlan.timeWindow?.start ?? "09:00") === publishStartTime &&
       (savedPlan.timeWindow?.end ?? "18:00") === publishEndTime &&
       areSamePlatformSelections(savedEnabledPlatforms, enabledPlatforms)
@@ -318,7 +345,9 @@ export function TaskPlanningWorkbench() {
     articlesPerAccountPerDayInput,
     enabledPlatforms,
     normalizedArticlesPerAccountPerDay,
+    normalizedExpectedImageCount,
     normalizedDays,
+    prerequisites?.expectedImageCount,
     prerequisites?.savedPlan,
     publishEndTime,
     publishStartTime,
@@ -351,7 +380,8 @@ export function TaskPlanningWorkbench() {
     setLoading(true);
     setError("");
     try {
-      const response = await fetch("/api/tasks/plan", { cache: "no-store" });
+      const query = requestedTaskId ? `?taskId=${encodeURIComponent(requestedTaskId)}` : "";
+      const response = await fetch(`/api/tasks/plan${query}`, { cache: "no-store" });
       const data = (await response.json()) as PlanningPrerequisites & { error?: string };
       if (!response.ok) throw new Error(data.error || "读取任务规划失败。");
       setPrerequisites(data);
@@ -359,11 +389,14 @@ export function TaskPlanningWorkbench() {
         setSearchProvider(data.savedPlan.searchProvider);
         setDaysInput(String(data.savedPlan.days));
         setArticlesPerAccountPerDayInput(String(data.savedPlan.articlesPerAccountPerDay));
+        setExpectedImageCountInput(String(normalizeExpectedImageCount(data.expectedImageCount)));
         setPublishStartTime(data.savedPlan.timeWindow?.start ?? "09:00");
         setPublishEndTime(data.savedPlan.timeWindow?.end ?? "18:00");
         const savedPlatforms = data.savedPlan.enabledPlatforms.filter((item) => item.enabled).map((item) => item.platform);
         setEnabledPlatforms(savedPlatforms);
         setSelectedPlatform(savedPlatforms[0] ?? getPlatformsBySearchProvider(data.savedPlan.searchProvider)[0]);
+      } else {
+        setExpectedImageCountInput(String(normalizeExpectedImageCount(data.expectedImageCount)));
       }
       await loadAccounts();
     } catch (currentError) {
@@ -620,7 +653,7 @@ export function TaskPlanningWorkbench() {
     }
   }
 
-  async function savePlan() {
+  async function savePlan(options?: { startGenerationAfterSave?: boolean }) {
     if (!prerequisites?.taskId) return;
     setSaving(true);
     setError("");
@@ -635,6 +668,7 @@ export function TaskPlanningWorkbench() {
           enabledPlatforms,
           days: normalizedDays,
           articlesPerAccountPerDay: normalizedArticlesPerAccountPerDay,
+          expectedImageCount: normalizedExpectedImageCount,
           timeWindow: {
             start: publishStartTime,
             end: publishEndTime,
@@ -644,10 +678,16 @@ export function TaskPlanningWorkbench() {
       });
       const data = (await response.json()) as { publishPlan?: PublishTaskPlan; error?: string };
       if (!response.ok || !data.publishPlan) throw new Error(data.error || "保存任务规划失败。");
-      setPrerequisites((current) => (current ? { ...current, savedPlan: data.publishPlan } : current));
+      setPrerequisites((current) =>
+        current ? { ...current, savedPlan: data.publishPlan, expectedImageCount: normalizedExpectedImageCount } : current,
+      );
       dispatchWorkflowStatusRefresh();
-      setNotice("计划已保存，可以开始生成。");
-      router.push(`/content-pool?taskId=${encodeURIComponent(prerequisites.taskId)}`);
+      if (options?.startGenerationAfterSave) {
+        setNotice("计划已更新，正在开始生成并按计划发布。");
+        await startGeneration(data.publishPlan.taskId);
+        return;
+      }
+      setNotice("计划已保存，可以开始生成并按计划发布。");
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "保存任务规划失败。");
     } finally {
@@ -655,8 +695,7 @@ export function TaskPlanningWorkbench() {
     }
   }
 
-  async function startGeneration() {
-    const taskId = prerequisites?.savedPlan?.taskId;
+  async function startGeneration(taskId = prerequisites?.savedPlan?.taskId) {
     if (!taskId) return;
     const licenseGuard = await requireLicensedAction("generate_content");
     if (!licenseGuard.allowed) {
@@ -676,7 +715,7 @@ export function TaskPlanningWorkbench() {
       const data = (await response.json()) as { error?: string };
       if (!response.ok) throw new Error(data.error || "启动生成失败。");
       dispatchWorkflowStatusRefresh();
-      setNotice("已开始生成，正在进入生成结果中心。");
+      setNotice("已开始生成，系统会按计划时间自动发布，正在进入生成结果中心。");
       router.push(`/content-pool?taskId=${encodeURIComponent(taskId)}`);
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "启动生成失败。");
@@ -687,7 +726,7 @@ export function TaskPlanningWorkbench() {
 
   useEffect(() => {
     void loadPrerequisites();
-  }, []);
+  }, [requestedTaskId]);
 
   useEffect(() => {
     setEnabledPlatforms((current) => {
@@ -930,7 +969,7 @@ export function TaskPlanningWorkbench() {
         </div>
         <div className="mt-4 grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
           <div>
-            <div className="mt-4 grid gap-4 sm:grid-cols-4">
+            <div className="mt-4 grid gap-4 sm:grid-cols-5">
               <label className="block">
                 <span className="text-xs text-muted">发布天数</span>
                 <input
@@ -956,6 +995,19 @@ export function TaskPlanningWorkbench() {
                 />
               </label>
               <label className="block">
+                <span className="text-xs text-muted">每篇图片数量</span>
+                <input
+                  className="mt-2 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent"
+                  min={1}
+                  max={MAX_EXPECTED_IMAGE_COUNT}
+                  type="number"
+                  inputMode="numeric"
+                  value={expectedImageCountInput}
+                  onChange={(event) => setExpectedImageCountInput(sanitizePositiveIntegerInput(event.target.value))}
+                  onBlur={() => setExpectedImageCountInput(String(normalizedExpectedImageCount))}
+                />
+              </label>
+              <label className="block">
                 <span className="text-xs text-muted">开始时间</span>
                 <input
                   className="mt-2 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent"
@@ -975,6 +1027,7 @@ export function TaskPlanningWorkbench() {
               </label>
             </div>
             <p className="mt-3 text-xs text-muted">默认发布时间为 {formatTimeWindow("09:00", "18:00")}，你也可以按任务节奏自行调整。</p>
+            <p className="mt-2 text-xs text-muted">开始生成前锁定每篇图片数量，生成完成后系统会按计划时间自动发布。</p>
             {!isTimeWindowValid ? <p className="mt-2 text-xs text-red-500">结束时间必须晚于开始时间。</p> : null}
           </div>
 
@@ -995,6 +1048,7 @@ export function TaskPlanningWorkbench() {
               </div>
             </div>
             <p className="mt-4 text-xs leading-5 text-muted">预计总篇数 = 全部已登录可发布账号数 x 发布天数 x 每个账号每天篇数。</p>
+            <p className="mt-2 text-xs leading-5 text-muted">当前计划已锁定每篇 {normalizedExpectedImageCount} 张图片。</p>
             <p className="mt-2 text-xs leading-5 text-muted">
               当前全局已登录可发布账号 {totalAccounts} 个；其中当前 AI 平台可自动加入任务的账号 {taskScopedAccountCount} 个，当前 AI 平台预计 {taskScopedArticles} 篇。
             </p>
@@ -1012,19 +1066,27 @@ export function TaskPlanningWorkbench() {
                 type="button"
                 className="inline-flex items-center justify-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition disabled:cursor-not-allowed disabled:opacity-60"
                 disabled={savedPlanReady ? startingGeneration : !canSave || saving}
-                onClick={() => (savedPlanReady ? void startGeneration() : void savePlan())}
+                onClick={() =>
+                  savedPlanReady
+                    ? void startGeneration()
+                    : hasSavedPlan && hasPlanChanges
+                      ? void savePlan({ startGenerationAfterSave: true })
+                      : void savePlan()
+                }
               >
                 {savedPlanReady ? <PlayCircle className="h-4 w-4" /> : <Save className="h-4 w-4" />}
                 {savedPlanReady
                   ? startingGeneration
                     ? "启动中"
-                    : "开始生成"
+                    : "开始生成并按计划发布"
                   : saving
                     ? hasSavedPlan
-                      ? "更新中"
+                      ? hasPlanChanges
+                        ? "更新并启动中"
+                        : "更新中"
                       : "保存中"
                     : hasSavedPlan && hasPlanChanges
-                      ? "先更新计划"
+                      ? "更新计划后生成并发布"
                       : "保存计划"}
               </button>
             </div>
