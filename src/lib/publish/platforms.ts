@@ -116,7 +116,7 @@ export const publishPlatformDescriptors: PlatformDescriptor[] = [
     automationStatus: "ready",
     routeAvailability: "electron_ready",
     contentProfile: "短观点，可拆条，强调传播性和轻量互动。",
-    publishEntryUrl: "https://weibo.com/",
+    publishEntryUrl: "https://passport.weibo.com/sso/signin?entry=miniblog&source=miniblog&disp=popup&url=https%3A%2F%2Fweibo.com%2Fnewlogin%3Ftabtype%3Dweibo%26gid%3D102803%26openLoginLayer%3D0%26url%3Dhttps%3A%2F%2Fweibo.com%2F&from=weibopro",
     hint: "通过 Electron 脚本进入微博发布框自动填写正文和话题并提交；验证码、安全验证或风控会作为自动化阻断返回。",
   },
   {

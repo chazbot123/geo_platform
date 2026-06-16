@@ -212,6 +212,9 @@ function buildValidatedSessionPatch(result: Awaited<ReturnType<typeof validatePl
 }
 
 function accountActionLabel(account: PlatformAccountRecord) {
+  if (account.loginStatus === "pending") {
+    return "继续登录";
+  }
   if (account.loginStatus === "authenticated" && account.status === "valid") {
     return "校验";
   }
@@ -256,6 +259,10 @@ function EmptyAvatar({ platform }: { platform: SocialPlatform }) {
   );
 }
 
+function isPendingExternalLoginAccount(account: PlatformAccountRecord) {
+  return account.platform === "videohao" && account.loginStatus === "pending" && Boolean(account.loginSessionToken);
+}
+
 export function TaskPlanningWorkbench() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -282,6 +289,7 @@ export function TaskPlanningWorkbench() {
   const accountsRef = useRef<PlatformAccountRecord[]>([]);
   const sessionAuditRunningRef = useRef(false);
   const initialSessionAuditDoneRef = useRef(false);
+  const detectRunIdRef = useRef(0);
 
   const mappedPlatforms = useMemo(() => getPlatformsBySearchProvider(searchProvider), [searchProvider]);
   const detectionByPlatform = useMemo(() => new Map(detectionItems.map((item) => [item.platform, item])), [detectionItems]);
@@ -367,6 +375,8 @@ export function TaskPlanningWorkbench() {
           account.loginStatus === "authenticated" &&
           account.provider === "electron" &&
           account.authType !== "manual" &&
+          account.authType !== "cookie" &&
+          !account.authPayload &&
           Boolean(account.sessionPartition),
       ),
     [accounts],
@@ -377,6 +387,7 @@ export function TaskPlanningWorkbench() {
     const data = (await response.json()) as AccountsResponse;
     if (!response.ok) throw new Error(data.error || "读取账号失败。");
     setAccounts(data.items ?? []);
+    return data.items ?? [];
   }
 
   async function loadPrerequisites() {
@@ -384,7 +395,7 @@ export function TaskPlanningWorkbench() {
     setError("");
     try {
       const query = requestedTaskId ? `?taskId=${encodeURIComponent(requestedTaskId)}` : "";
-      const response = await fetch(`/api/tasks/plan${query}`, { cache: "no-store" });
+      const [response] = await Promise.all([fetch(`/api/tasks/plan${query}`, { cache: "no-store" }), loadAccounts()]);
       const data = (await response.json()) as PlanningPrerequisites & { error?: string };
       if (!response.ok) throw new Error(data.error || "读取任务规划失败。");
       setPrerequisites(data);
@@ -401,7 +412,6 @@ export function TaskPlanningWorkbench() {
       } else {
         setExpectedImageCountInput(String(normalizeExpectedImageCount(data.expectedImageCount)));
       }
-      await loadAccounts();
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "读取任务规划失败。");
     } finally {
@@ -410,6 +420,8 @@ export function TaskPlanningWorkbench() {
   }
 
   async function detectAccounts(forceRefresh = false) {
+    const runId = detectRunIdRef.current + 1;
+    detectRunIdRef.current = runId;
     setDetecting(true);
     setError("");
     setNotice("");
@@ -421,18 +433,28 @@ export function TaskPlanningWorkbench() {
       });
       const data = (await response.json()) as DetectionResponse & { error?: string };
       if (!response.ok) throw new Error(data.error || "账号检测失败。");
+      if (runId !== detectRunIdRef.current) {
+        return;
+      }
       setDetectionItems(data.items);
       const publishablePlatforms = mappedPlatforms.filter((platform) => {
         const item = data.items.find((current) => current.platform === platform);
         return (item?.accountCount ?? 0) > 0;
       });
-      setEnabledPlatforms(publishablePlatforms);
+      setEnabledPlatforms((current) => {
+        const currentMapped = current.filter((platform) => mappedPlatforms.includes(platform));
+        return Array.from(new Set([...currentMapped, ...publishablePlatforms]));
+      });
       await loadAccounts();
-      setNotice(forceRefresh ? "账号状态已刷新。" : "已同步账号状态。");
+      if (runId === detectRunIdRef.current) {
+        setNotice(forceRefresh ? "账号状态已刷新。" : "已同步账号状态。");
+      }
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "账号检测失败。");
     } finally {
-      setDetecting(false);
+      if (runId === detectRunIdRef.current) {
+        setDetecting(false);
+      }
     }
   }
 
@@ -470,10 +492,12 @@ export function TaskPlanningWorkbench() {
     }
     const currentAccounts = accountsRef.current.filter(
       (account) =>
-        account.loginStatus === "authenticated" &&
-        account.provider === "electron" &&
-        account.authType !== "manual" &&
-        Boolean(account.sessionPartition),
+          account.loginStatus === "authenticated" &&
+          account.provider === "electron" &&
+          account.authType !== "manual" &&
+          account.authType !== "cookie" &&
+          !account.authPayload &&
+          Boolean(account.sessionPartition),
     );
     if (!currentAccounts.length) {
       return;
@@ -568,6 +592,8 @@ export function TaskPlanningWorkbench() {
       }
       if (loginResult.status === "opened") {
         setNotice(loginResult.reason ?? `${platformLabels[platform]}已在外部浏览器打开，正在等待自动同步账号信息。`);
+        await loadAccounts();
+        setSelectedPlatform(platform);
         const syncedAccount = await waitForExternalLoginSync({
           accountId: payload.account.id,
           sessionToken: payload.loginRequest.loginSessionToken,
@@ -776,7 +802,14 @@ export function TaskPlanningWorkbench() {
     }
     initialSessionAuditDoneRef.current = true;
     if (auditableAccounts.length) {
-      void runSilentSessionAudit("initial");
+      const run = () => void runSilentSessionAudit("initial");
+      const requestIdleCallback = window.requestIdleCallback;
+      if (typeof requestIdleCallback === "function") {
+        const idleId = requestIdleCallback(run, { timeout: 3000 });
+        return () => window.cancelIdleCallback?.(idleId);
+      }
+      const timer = window.setTimeout(run, 1500);
+      return () => window.clearTimeout(timer);
     }
   }, [auditableAccounts.length, loading]);
 
@@ -933,6 +966,9 @@ export function TaskPlanningWorkbench() {
                           </div>
                           {account.accountName || account.platformAccountId ? (
                             <p className="mt-1 break-all text-xs text-muted">登录账号：{resolveAccountIdentifier(account, account.id)}</p>
+                          ) : null}
+                          {isPendingExternalLoginAccount(account) ? (
+                            <p className="mt-1 text-xs text-amber-500">已打开外部浏览器，扫码登录后会自动回写到这里。</p>
                           ) : null}
                           {getRecentValidationTime(account) ? (
                             <p className="mt-1 text-xs text-muted">最近校验时间：{formatTime(getRecentValidationTime(account))}</p>

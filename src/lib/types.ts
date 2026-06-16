@@ -882,19 +882,6 @@ export interface TaskBundle {
   review?: ReviewResult;
 }
 
-export interface PublishWorkbenchData {
-  taskId: string;
-  task: TaskRecord;
-  product: ProductProfile;
-  content?: ContentDraft;
-  image?: ImageAsset;
-  publish?: PublishResult;
-  drafts: PublishingDraft[];
-  accountDrafts?: AccountPublishingDraft[];
-  accounts: PlatformAccountRecord[];
-  jobs: PublishingJobRecord[];
-}
-
 export interface TaskCreateInput extends Omit<ProductProfile, "id" | "taskId"> {
   searchProvider: SearchProvider | "";
 }

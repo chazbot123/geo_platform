@@ -1,7 +1,7 @@
 const http = require("node:http");
 
 const LOCAL_BRIDGE_HOST = "127.0.0.1";
-const LOCAL_BRIDGE_PORT = 3217;
+const LOCAL_BRIDGE_PORT = Number(process.env.GEO_LOCAL_BRIDGE_PORT || 33217);
 const ALLOWED_ORIGINS = new Set([
   "http://127.0.0.1:3000",
   "http://localhost:3000",

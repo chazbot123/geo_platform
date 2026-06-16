@@ -1,5 +1,5 @@
-import { redirect } from "next/navigation";
+import { StartupScreen } from "@/components/landing/startup-screen";
 
 export default function HomePage() {
-  redirect("/enterprise");
+  return <StartupScreen />;
 }

@@ -20,6 +20,8 @@ let closeNoticeShown = false;
 const preloadPath = path.join(__dirname, "preload.js");
 const automationDirectory = path.join(__dirname, "publish-automation");
 const automationHelperFile = path.join(automationDirectory, "dom-helpers.js");
+const videohaoExtensionRelativePath = path.join("browser-extension", "platform-login-helper-videohao-sync");
+const videohaoExtensionDevPath = path.join(__dirname, "..", "scripts", "browser-extension", "platform-login-helper-videohao-sync");
 const publishProgressSessions = new Map();
 const PUBLISH_PROGRESS_TTL_MS = 10 * 60 * 1000;
 const ACCOUNT_SESSION_REFRESH_INTERVAL_MS = 30 * 60 * 1000;
@@ -90,14 +92,11 @@ function formatStageLabel(stage) {
 
 function loadDesktopIcon() {
   const candidatePaths = [
-    path.join(__dirname, "assets", "ai-search.ico"),
-    path.join(__dirname, "assets", "ai-search.png"),
     path.join(app.getAppPath(), "src", "img", "搜索.png"),
-    path.join(app.getAppPath(), "src", "img", "ai搜.png"),
-    path.join(app.getAppPath(), "src", "img", "ai搜索.png"),
-    path.join(app.getAppPath(), "src", "img", "ai搜索.svg"),
-    path.join(__dirname, "assets", "ai-search.svg"),
+    path.join(__dirname, "assets", "ai-search.png"),
     path.join(__dirname, "assets", "tray-icon.png"),
+    path.join(__dirname, "assets", "ai-search.ico"),
+    path.join(__dirname, "assets", "ai-search.svg"),
   ];
 
   for (const candidatePath of candidatePaths) {
@@ -432,6 +431,32 @@ function createScopedWindow(input = {}) {
   return scopedWindow;
 }
 
+function emitVideohaoExtensionDebug(hypothesisId, location, msg, data = {}) {
+  // #region debug-point A:videohao-extension-log
+  const envPath = path.join(process.cwd(), ".dbg", "videohao-extension-load.env");
+  let debugServerUrl = "http://127.0.0.1:7777/event";
+  let debugSessionId = "videohao-extension-load";
+  try {
+    const envContent = fs.readFileSync(envPath, "utf8");
+    debugServerUrl = envContent.match(/DEBUG_SERVER_URL=(.+)/)?.[1]?.trim() || debugServerUrl;
+    debugSessionId = envContent.match(/DEBUG_SESSION_ID=(.+)/)?.[1]?.trim() || debugSessionId;
+  } catch {}
+  fetch(debugServerUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sessionId: debugSessionId,
+      runId: process.env.GEO_DEBUG_RUN_ID || "post-fix",
+      hypothesisId,
+      location,
+      msg: `[DEBUG] ${msg}`,
+      data,
+      ts: Date.now(),
+    }),
+  }).catch(() => {});
+  // #endregion
+}
+
 function findPreferredBrowserExecutable() {
   if (process.platform !== "win32") {
     return "";
@@ -444,22 +469,129 @@ function findPreferredBrowserExecutable() {
     path.join(process.env.PROGRAMFILES || "", "Microsoft", "Edge", "Application", "msedge.exe"),
     path.join(process.env["PROGRAMFILES(X86)"] || "", "Microsoft", "Edge", "Application", "msedge.exe"),
   ].filter(Boolean);
-  return candidatePaths.find((candidatePath) => fs.existsSync(candidatePath)) || "";
+  const matchedPath = candidatePaths.find((candidatePath) => fs.existsSync(candidatePath)) || "";
+  // #region debug-point B:browser-detect
+  emitVideohaoExtensionDebug("B", "electron/main.js:findPreferredBrowserExecutable", "preferred browser detection result", {
+    platform: process.platform,
+    candidatePaths,
+    matchedPath,
+    env: {
+      LOCALAPPDATA: process.env.LOCALAPPDATA || "",
+      PROGRAMFILES: process.env.PROGRAMFILES || "",
+      PROGRAMFILES_X86: process.env["PROGRAMFILES(X86)"] || "",
+    },
+  });
+  // #endregion
+  return matchedPath;
 }
 
-async function openUrlInPreferredBrowser(url) {
+function getBundledVideohaoExtensionPath() {
+  const packagedPath = path.join(process.resourcesPath || "", videohaoExtensionRelativePath);
+  if (isDev) {
+    return fs.existsSync(videohaoExtensionDevPath) ? videohaoExtensionDevPath : "";
+  }
+  return fs.existsSync(packagedPath) ? packagedPath : "";
+}
+
+function getVideohaoBrowserProfilePath() {
+  return path.join(app.getPath("temp"), "geo-desktop", "videohao-browser-profile");
+}
+
+function ensureVideohaoBrowserProfilePath() {
+  const preferredPath = getVideohaoBrowserProfilePath();
+  try {
+    fs.mkdirSync(preferredPath, { recursive: true });
+    // #region debug-point F:profile-path-preferred
+    emitVideohaoExtensionDebug("F", "electron/main.js:ensureVideohaoBrowserProfilePath", "using preferred videohao browser profile path", {
+      preferredPath,
+      fallbackUsed: false,
+    });
+    // #endregion
+    return preferredPath;
+  } catch (error) {
+    const fallbackPath = path.join(app.getPath("userData"), "videohao-browser-profile");
+    fs.mkdirSync(fallbackPath, { recursive: true });
+    // #region debug-point F:profile-path-fallback
+    emitVideohaoExtensionDebug("F", "electron/main.js:ensureVideohaoBrowserProfilePath", "using fallback videohao browser profile path", {
+      preferredPath,
+      fallbackPath,
+      fallbackUsed: true,
+      errorMessage: error instanceof Error ? error.message : String(error || ""),
+    });
+    // #endregion
+    return fallbackPath;
+  }
+}
+
+function buildPreferredBrowserArguments(targetUrl, options = {}) {
+  const args = [targetUrl];
+  if (!options.requireBundledVideohaoExtension) {
+    return args;
+  }
+
+  const extensionPath = getBundledVideohaoExtensionPath();
+  // #region debug-point C:extension-path
+  emitVideohaoExtensionDebug("C", "electron/main.js:buildPreferredBrowserArguments", "resolved bundled extension path", {
+    targetUrl,
+    requireBundledVideohaoExtension: true,
+    extensionPath,
+    processResourcesPath: process.resourcesPath || "",
+    cwd: process.cwd(),
+    isDev,
+  });
+  // #endregion
+  if (!extensionPath) {
+    throw new Error("Missing bundled videohao browser extension.");
+  }
+
+  const profilePath = ensureVideohaoBrowserProfilePath();
+  return [
+    `--user-data-dir=${profilePath}`,
+    `--disable-extensions-except=${extensionPath}`,
+    `--load-extension=${extensionPath}`,
+    "--no-first-run",
+    "--no-default-browser-check",
+    targetUrl,
+  ];
+}
+
+async function openUrlInPreferredBrowser(url, options = {}) {
   const targetUrl = String(url || "").trim();
   if (!targetUrl) {
     throw new Error("Missing browser url.");
   }
   const browserExecutable = findPreferredBrowserExecutable();
   if (browserExecutable) {
+    const browserArgs = buildPreferredBrowserArguments(targetUrl, options);
+    // #region debug-point D:browser-launch
+    emitVideohaoExtensionDebug("D", "electron/main.js:openUrlInPreferredBrowser:before-exec", "launching preferred browser", {
+      browserExecutable,
+      browserArgs,
+      requireBundledVideohaoExtension: Boolean(options.requireBundledVideohaoExtension),
+    });
+    // #endregion
     await new Promise((resolve, reject) => {
-      execFile(browserExecutable, [targetUrl], { windowsHide: true }, (error) => {
+      execFile(browserExecutable, browserArgs, { windowsHide: true }, (error) => {
         if (error) {
+          // #region debug-point E:browser-launch-error
+          emitVideohaoExtensionDebug("E", "electron/main.js:openUrlInPreferredBrowser:exec-callback", "preferred browser launch failed", {
+            browserExecutable,
+            browserArgs,
+            code: error.code || "",
+            errno: error.errno || "",
+            syscall: error.syscall || "",
+            message: error.message || "",
+          });
+          // #endregion
           reject(error);
           return;
         }
+        // #region debug-point D:browser-launch-success
+        emitVideohaoExtensionDebug("D", "electron/main.js:openUrlInPreferredBrowser:exec-callback", "preferred browser launch succeeded", {
+          browserExecutable,
+          browserArgs,
+        });
+        // #endregion
         resolve();
       });
     });
@@ -468,25 +600,20 @@ async function openUrlInPreferredBrowser(url) {
       usedShellFallback: false,
     };
   }
+  if (options.requireBundledVideohaoExtension) {
+    // #region debug-point E:no-browser
+    emitVideohaoExtensionDebug("E", "electron/main.js:openUrlInPreferredBrowser", "missing preferred browser executable for bundled extension launch", {
+      targetUrl,
+      requireBundledVideohaoExtension: true,
+    });
+    // #endregion
+    throw new Error("Missing Chrome or Edge executable for bundled extension launch.");
+  }
   await shell.openExternal(targetUrl);
   return {
     browserExecutable: "",
     usedShellFallback: true,
   };
-}
-
-function buildVideohaoExtensionLoginGuideUrl(input = {}) {
-  const baseUrl = String(currentAppBaseUrl || "").trim();
-  const loginUrl = typeof input.loginUrl === "string" ? input.loginUrl.trim() : "";
-  const sessionToken = typeof input.loginSessionToken === "string" ? input.loginSessionToken.trim() : "";
-  if (!baseUrl || !loginUrl || !sessionToken) {
-    return "";
-  }
-  const guideUrl = new URL("/external-login/videohao", baseUrl);
-  guideUrl.searchParams.set("loginUrl", loginUrl);
-  guideUrl.searchParams.set("sessionToken", sessionToken);
-  guideUrl.searchParams.set("platform", "videohao");
-  return guideUrl.toString();
 }
 
 function parseCookieHeader(authPayload) {
@@ -2138,18 +2265,32 @@ function openPlatformLoginWindow(input = {}) {
     return { status: "unsupported" };
   }
   if (String(input.platform || "").trim() === "videohao") {
-    const guideUrl = buildVideohaoExtensionLoginGuideUrl(input) || loginUrl;
-    return openUrlInPreferredBrowser(guideUrl)
+    // #region debug-point A:videohao-login-entry
+    emitVideohaoExtensionDebug("A", "electron/main.js:openPlatformLoginWindow", "videohao login requested", {
+      loginUrl,
+      hasSessionToken: Boolean(String(input.loginSessionToken || "").trim()),
+      sessionPartition: String(input.sessionPartition || ""),
+    });
+    // #endregion
+    return openUrlInPreferredBrowser(loginUrl, { requireBundledVideohaoExtension: true })
       .then((result) => ({
         status: "opened",
         reason: result.usedShellFallback
-          ? "视频号已在系统浏览器打开。系统会先尝试清理旧登录态，再打开登录页。请在 Edge 或 Chrome 完成登录后返回 GEO。"
-          : "视频号已在 Edge 或 Chrome 打开。系统会先尝试清理旧登录态，再打开登录页。请完成登录后返回 GEO。",
+          ? "视频号已在系统浏览器打开。扩展会先清理旧登录态，再进入登录页。请在 Edge 或 Chrome 完成登录后返回 GEO。"
+          : "视频号已在 Edge 或 Chrome 打开。扩展会先清理旧登录态，再进入登录页。请完成登录后返回 GEO。",
       }))
-      .catch(() => ({
-        status: "unsupported",
-        reason: "视频号无法在外部浏览器打开，请确认本机已安装 Edge 或 Chrome。",
-      }));
+      .catch((error) => {
+        // #region debug-point E:videohao-login-catch
+        emitVideohaoExtensionDebug("E", "electron/main.js:openPlatformLoginWindow:catch", "videohao login browser handoff failed", {
+          message: error instanceof Error ? error.message : String(error || ""),
+          stack: error instanceof Error ? error.stack || "" : "",
+        });
+        // #endregion
+        return {
+          status: "unsupported",
+          reason: "视频号无法在外部浏览器打开，请确认本机已安装 Edge 或 Chrome。",
+        };
+      });
   }
 
   return new Promise((resolve) => {

@@ -1,6 +1,8 @@
 const activeLoginSessions = new Map();
 const activePublishSessions = new Map();
+const autoResolvingLoginPlatforms = new Set();
 const debugPrefix = "[ai-superweb-background]";
+const DEFAULT_API_BASE_URL = "http://127.0.0.1:33131";
 
 const platformCookieDomains = {
   xiaohongshu: ["creator.xiaohongshu.com", ".xiaohongshu.com"],
@@ -8,6 +10,24 @@ const platformCookieDomains = {
   wechat_mp: ["channels.weixin.qq.com", ".weixin.qq.com", ".qq.com"],
   kuaishou: ["cp.kuaishou.com", "passport.kuaishou.com", ".kuaishou.com"],
 };
+
+function emitVideohaoExtensionDebug(hypothesisId, location, msg, data = {}) {
+  // #region debug-point I:videohao-web-extension
+  fetch("http://127.0.0.1:7777/event", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sessionId: "videohao-extension-load",
+      runId: "web-dev",
+      hypothesisId,
+      location,
+      msg: `[DEBUG] ${msg}`,
+      data,
+      ts: Date.now(),
+    }),
+  }).catch(() => {});
+  // #endregion
+}
 
 function sendResponseSafe(sendResponse, payload) {
   try {
@@ -157,6 +177,22 @@ async function clearPlatformCookies(platform) {
   }
 
   await Promise.all(removals);
+}
+
+async function withTimeout(promise, timeoutMs, fallbackValue) {
+  let timeoutId;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((resolve) => {
+        timeoutId = setTimeout(() => resolve(fallbackValue), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
 }
 
 function parseCookieHeader(authPayload) {
@@ -381,26 +417,77 @@ function getActiveSessionByPlatform(platform) {
   return null;
 }
 
-function scheduleSync(platform, context) {
-  let session = getActiveSessionByPlatform(platform);
-  if (!session && platform === "wechat_mp") {
-    const sessionId = `auto-sync-${platform}-${Date.now()}`;
-    session = {
-      sessionId,
-      sessionToken: sessionId,
-      platform,
-      apiBaseUrl: "http://127.0.0.1:3131",
-      appTabId: null,
-      loginTabId: null,
-      status: "pending",
-      syncing: false,
+async function resolvePendingLoginSession(platform) {
+  try {
+    const response = await fetch(`${DEFAULT_API_BASE_URL}/api/publishing/platform-accounts/extension-login/session`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ platform }),
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(payload?.message || "扩展获取待同步登录会话失败");
+    }
+    const sessionToken = String(payload?.sessionToken || "").trim();
+    if (!sessionToken) {
+      return null;
+    }
+    return {
+      accountId: String(payload?.accountId || "").trim(),
+      sessionId: `auto-sync-${platform}-${sessionToken}`,
+      sessionToken,
+      apiBaseUrl: DEFAULT_API_BASE_URL,
+      loginUrl: String(payload?.loginUrl || "").trim(),
     };
-    activeLoginSessions.set(sessionId, session);
+  } catch (error) {
+    debugLog("login", "resolve-pending-session-failed", {
+      platform,
+      message: error instanceof Error ? error.message : "扩展获取待同步登录会话失败",
+    });
+    return null;
   }
-  if (!session) {
-    return;
+}
+
+async function ensureFreshWechatLoginSession(session, context, tabId) {
+  if (session?.platform !== "wechat_mp" || !Number.isInteger(tabId) || tabId <= 0) {
+    return false;
+  }
+  if (session.loginPrepStatus === "done" || session.loginPrepStatus === "running") {
+    return session.loginPrepStatus === "done";
   }
 
+  session.loginPrepStatus = "running";
+  const targetUrl = String(session.loginUrl || context?.url || "https://channels.weixin.qq.com/platform").trim();
+  try {
+    await clearPlatformCookies("wechat_mp");
+    session.loginPrepStatus = "done";
+    session.loginTabId = tabId;
+    emitVideohaoExtensionDebug("I", "background.js:ensureFreshWechatLoginSession", "cleared wechat cookies before login page", {
+      sessionId: session.sessionId,
+      tabId,
+      targetUrl,
+    });
+    if (String(targetUrl || "").trim() === String(context?.url || "").trim()) {
+      await chrome.tabs.reload(tabId);
+    } else {
+      await chrome.tabs.update(tabId, { url: targetUrl, active: true });
+    }
+    return true;
+  } catch (error) {
+    session.loginPrepStatus = "failed";
+    emitVideohaoExtensionDebug("J", "background.js:ensureFreshWechatLoginSession", "failed to clear wechat cookies before login page", {
+      sessionId: session.sessionId,
+      tabId,
+      targetUrl,
+      message: error instanceof Error ? error.message : "clear wechat cookies failed",
+    });
+    return false;
+  }
+}
+
+function syncLoginResultWithRetries(session, context) {
   void syncLoginResult(session, context);
   setTimeout(() => {
     void syncLoginResult(session, context);
@@ -411,6 +498,52 @@ function scheduleSync(platform, context) {
   setTimeout(() => {
     void syncLoginResult(session, context);
   }, 12000);
+}
+
+function scheduleSync(platform, context, tabId) {
+  const session = getActiveSessionByPlatform(platform);
+  if (session) {
+    if (platform === "wechat_mp" && session.loginPrepStatus !== "done") {
+      void ensureFreshWechatLoginSession(session, context, tabId);
+      return;
+    }
+    syncLoginResultWithRetries(session, context);
+    return;
+  }
+
+  if (platform !== "wechat_mp" || autoResolvingLoginPlatforms.has(platform)) {
+    return;
+  }
+
+  autoResolvingLoginPlatforms.add(platform);
+  void resolvePendingLoginSession(platform)
+    .then((resolved) => {
+      if (!resolved) {
+        return;
+      }
+      const nextSession =
+        getActiveSessionByPlatform(platform) ||
+        {
+          sessionId: resolved.sessionId,
+          sessionToken: resolved.sessionToken,
+          platform,
+          apiBaseUrl: resolved.apiBaseUrl,
+          loginUrl: resolved.loginUrl,
+          appTabId: null,
+          loginTabId: null,
+          status: "pending",
+          syncing: false,
+          loginPrepStatus: "idle",
+        };
+      activeLoginSessions.set(nextSession.sessionId, nextSession);
+      if (platform === "wechat_mp") {
+        return ensureFreshWechatLoginSession(nextSession, context, tabId);
+      }
+      syncLoginResultWithRetries(nextSession, context);
+    })
+    .finally(() => {
+      autoResolvingLoginPlatforms.delete(platform);
+    });
 }
 
 function getPlatformPublishUrl(platform, job) {
@@ -504,13 +637,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       void (async () => {
         try {
           const loginUrl = String(payload?.session?.loginUrl || "").trim();
+          // #region debug-point I:start-login
+          emitVideohaoExtensionDebug("I", "background.js:START_LOGIN:begin", "extension START_LOGIN received", {
+            loginUrl,
+            platform: payload.platform,
+            sessionId: payload?.session?.sessionId || "",
+            appTabId: sender.tab?.id || null,
+          });
+          // #endregion
           if (!loginUrl) {
             throw new Error("当前平台缺少登录入口 URL，扩展无法打开登录页");
           }
 
-          if (payload.forceFreshLogin) {
-            await clearPlatformCookies(payload.platform);
-          }
+          const clearResult = payload.forceFreshLogin
+            ? await withTimeout(
+                clearPlatformCookies(payload.platform)
+                  .then(() => ({ ok: true, timedOut: false, message: "" }))
+                  .catch((error) => ({
+                    ok: false,
+                    timedOut: false,
+                    message: error instanceof Error ? error.message : "清理旧登录态失败，已继续打开视频号登录页。",
+                  })),
+                4000,
+                { ok: false, timedOut: true, message: "清理旧登录态超时，已继续打开视频号登录页。" },
+              )
+            : { ok: true, timedOut: false, message: "" };
 
           const session = {
             sessionId: payload.session.sessionId,
@@ -528,14 +679,34 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             active: true,
           });
           session.loginTabId = Number(tab?.id) || null;
+          // #region debug-point I:tab-created
+          emitVideohaoExtensionDebug("I", "background.js:START_LOGIN:tabs.create", "extension login tab created", {
+            platform: payload.platform,
+            sessionId: session.sessionId,
+            loginTabId: session.loginTabId,
+            loginUrl,
+            clearTimedOut: Boolean(clearResult.timedOut),
+          });
+          // #endregion
           debugLog("login", "login-tab-created", {
             platform: payload.platform,
             sessionId: session.sessionId,
             tabId: session.loginTabId,
             loginUrl,
+            clearTimedOut: Boolean(clearResult.timedOut),
           });
-          sendResponseSafe(sendResponse, { ok: true });
+          sendResponseSafe(sendResponse, {
+            ok: true,
+            clearTimedOut: Boolean(clearResult.timedOut),
+            message: clearResult.message || "",
+          });
         } catch (error) {
+          // #region debug-point J:start-login-error
+          emitVideohaoExtensionDebug("J", "background.js:START_LOGIN:catch", "extension START_LOGIN failed", {
+            platform: payload?.platform || "",
+            message: error instanceof Error ? error.message : "扩展清理平台登录态失败",
+          });
+          // #endregion
           sendResponseSafe(sendResponse, {
             ok: false,
             message: error instanceof Error ? error.message : "扩展清理平台登录态失败",
@@ -629,7 +800,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (loginSession && sender.tab?.id) {
       loginSession.loginTabId = sender.tab.id;
     }
-    scheduleSync(message.payload.platform, message.payload);
+    scheduleSync(message.payload.platform, message.payload, sender.tab?.id);
 
     const publishSession = sender.tab?.id ? getPublishSessionByTabId(sender.tab.id) : null;
     const readyUrl = String(message.payload.url || "");

@@ -9,10 +9,12 @@ import {
 import type { PublishProgressSnapshot } from "@/lib/types";
 
 export interface ElectronPlatformLoginRequest {
+  accountId?: string;
   platform: string;
   title: string;
   loginUrl?: string;
   sessionPartition?: string;
+  loginSessionToken?: string;
 }
 
 export interface ElectronPlatformAccountProfile {

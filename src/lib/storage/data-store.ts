@@ -19,6 +19,78 @@ import type {
 } from "@/lib/types";
 
 const filePathFor = (dirPath: string, id: string) => path.join(dirPath, `${id}.json`);
+const retryablePlatformAccountErrorCodes = new Set(["EPERM", "EACCES", "EBUSY"]);
+const platformAccountWriteBackDelaysMs = [1000, 3000, 5000, 10000] as const;
+const inMemoryPlatformAccounts = new Map<string, PlatformAccountRecord>();
+const pendingPlatformAccountWriteBacks = new Map<string, Promise<void>>();
+const deletedPlatformAccountIds = new Set<string>();
+
+function sleep(ms: number) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function isRetryablePlatformAccountError(error: unknown) {
+  const nodeError = error as NodeJS.ErrnoException | undefined;
+  return Boolean(nodeError?.code && retryablePlatformAccountErrorCodes.has(nodeError.code));
+}
+
+function clonePlatformAccountRecord(account: PlatformAccountRecord) {
+  return {
+    ...account,
+  };
+}
+
+function platformAccountUpdatedAtMs(account?: PlatformAccountRecord | null) {
+  return new Date(account?.updatedAt || 0).getTime();
+}
+
+function selectNewestPlatformAccount(
+  memoryAccount: PlatformAccountRecord | null | undefined,
+  diskAccount: PlatformAccountRecord | null | undefined,
+) {
+  if (!memoryAccount) return diskAccount ?? null;
+  if (!diskAccount) return memoryAccount;
+  return platformAccountUpdatedAtMs(memoryAccount) >= platformAccountUpdatedAtMs(diskAccount) ? memoryAccount : diskAccount;
+}
+
+function syncInMemoryPlatformAccount(account: PlatformAccountRecord) {
+  const snapshot = clonePlatformAccountRecord(account);
+  inMemoryPlatformAccounts.set(snapshot.id, snapshot);
+  deletedPlatformAccountIds.delete(snapshot.id);
+  return snapshot;
+}
+
+function schedulePlatformAccountWriteBack(accountId: string) {
+  if (pendingPlatformAccountWriteBacks.has(accountId)) {
+    return;
+  }
+  const task = (async () => {
+    for (const delayMs of platformAccountWriteBackDelaysMs) {
+      await sleep(delayMs);
+      if (deletedPlatformAccountIds.has(accountId)) {
+        return;
+      }
+      const snapshot = inMemoryPlatformAccounts.get(accountId);
+      if (!snapshot) {
+        return;
+      }
+      try {
+        await writeJsonFile(filePathFor(dataDirectories.platformAccounts, accountId), snapshot);
+        return;
+      } catch (error) {
+        if (!isRetryablePlatformAccountError(error)) {
+          throw error;
+        }
+      }
+    }
+  })().finally(() => {
+    pendingPlatformAccountWriteBacks.delete(accountId);
+  });
+  pendingPlatformAccountWriteBacks.set(accountId, task);
+  void task.catch(() => undefined);
+}
 
 export async function ensureStorageReady() {
   await Promise.all(Object.values(dataDirectories).map((dirPath) => ensureDir(dirPath)));
@@ -127,25 +199,87 @@ export async function deletePublishResult(taskId: string) {
 }
 
 export async function savePlatformAccount(account: PlatformAccountRecord) {
-  await writeJsonFile(filePathFor(dataDirectories.platformAccounts, account.id), account);
-  return account;
+  const snapshot = syncInMemoryPlatformAccount(account);
+  try {
+    await writeJsonFile(filePathFor(dataDirectories.platformAccounts, snapshot.id), snapshot);
+  } catch (error) {
+    if (!isRetryablePlatformAccountError(error)) {
+      throw error;
+    }
+    schedulePlatformAccountWriteBack(snapshot.id);
+  }
+  return snapshot;
 }
 
 export async function getPlatformAccount(accountId: string) {
-  return readJsonFile<PlatformAccountRecord | null>(filePathFor(dataDirectories.platformAccounts, accountId), null);
+  const memoryAccount = deletedPlatformAccountIds.has(accountId) ? null : inMemoryPlatformAccounts.get(accountId) ?? null;
+  try {
+    const diskAccount = await readJsonFile<PlatformAccountRecord | null>(filePathFor(dataDirectories.platformAccounts, accountId), null);
+    const next = selectNewestPlatformAccount(memoryAccount, diskAccount);
+    if (next) {
+      syncInMemoryPlatformAccount(next);
+    }
+    return next;
+  } catch (error) {
+    if (!isRetryablePlatformAccountError(error)) {
+      throw error;
+    }
+    return memoryAccount;
+  }
 }
 
 export async function listPlatformAccounts() {
-  return listJsonFiles<PlatformAccountRecord>(dataDirectories.platformAccounts);
+  const mergedAccounts = new Map<string, PlatformAccountRecord>();
+  for (const [accountId, account] of inMemoryPlatformAccounts.entries()) {
+    if (!deletedPlatformAccountIds.has(accountId)) {
+      mergedAccounts.set(accountId, clonePlatformAccountRecord(account));
+    }
+  }
+
+  try {
+    const entries = await fs.readdir(dataDirectories.platformAccounts, { withFileTypes: true });
+    const files = entries.filter((entry) => entry.isFile() && entry.name.endsWith(".json"));
+    await Promise.all(
+      files.map(async (entry) => {
+        const accountId = entry.name.replace(/\.json$/i, "");
+        if (deletedPlatformAccountIds.has(accountId)) {
+          return;
+        }
+        try {
+          const diskAccount = await readJsonFile<PlatformAccountRecord | null>(
+            filePathFor(dataDirectories.platformAccounts, accountId),
+            null,
+          );
+          const next = selectNewestPlatformAccount(mergedAccounts.get(accountId), diskAccount);
+          if (next) {
+            mergedAccounts.set(accountId, syncInMemoryPlatformAccount(next));
+          }
+        } catch (error) {
+          if (!isRetryablePlatformAccountError(error)) {
+            throw error;
+          }
+        }
+      }),
+    );
+  } catch (error) {
+    const nodeError = error as NodeJS.ErrnoException;
+    if (nodeError.code !== "ENOENT" && !isRetryablePlatformAccountError(error)) {
+      throw error;
+    }
+  }
+
+  return Array.from(mergedAccounts.values());
 }
 
 export async function deletePlatformAccount(accountId: string) {
   const filePath = filePathFor(dataDirectories.platformAccounts, accountId);
+  inMemoryPlatformAccounts.delete(accountId);
+  deletedPlatformAccountIds.add(accountId);
   try {
     await fs.unlink(filePath);
   } catch (error) {
     const nodeError = error as NodeJS.ErrnoException;
-    if (nodeError.code !== "ENOENT") {
+    if (nodeError.code !== "ENOENT" && !isRetryablePlatformAccountError(error)) {
       throw error;
     }
   }

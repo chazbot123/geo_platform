@@ -55,6 +55,12 @@
       "tailwind.config.ts",
       "postcss.config.js"
     ],
+    "extraResources": [
+      {
+        "from": "scripts/browser-extension/platform-login-helper-videohao-sync",
+        "to": "browser-extension/platform-login-helper-videohao-sync"
+      }
+    ],
     "win": {
       "icon": "electron/assets/ai-search.ico",
       "target": [

@@ -1,6 +1,8 @@
 const activeLoginSessions = new Map();
 const activePublishSessions = new Map();
+const autoResolvingLoginPlatforms = new Set();
 const debugPrefix = "[ai-superweb-background]";
+const DEFAULT_API_BASE_URL = "http://127.0.0.1:33131";
 
 const platformCookieDomains = {
   xiaohongshu: ["creator.xiaohongshu.com", ".xiaohongshu.com"],
@@ -157,6 +159,22 @@ async function clearPlatformCookies(platform) {
   }
 
   await Promise.all(removals);
+}
+
+async function withTimeout(promise, timeoutMs, fallbackValue) {
+  let timeoutId;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((resolve) => {
+        timeoutId = setTimeout(() => resolve(fallbackValue), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
 }
 
 function parseCookieHeader(authPayload) {
@@ -381,26 +399,39 @@ function getActiveSessionByPlatform(platform) {
   return null;
 }
 
-function scheduleSync(platform, context) {
-  let session = getActiveSessionByPlatform(platform);
-  if (!session && platform === "wechat_mp") {
-    const sessionId = `auto-sync-${platform}-${Date.now()}`;
-    session = {
-      sessionId,
-      sessionToken: sessionId,
-      platform,
-      apiBaseUrl: "http://127.0.0.1:3131",
-      appTabId: null,
-      loginTabId: null,
-      status: "pending",
-      syncing: false,
+async function resolvePendingLoginSession(platform) {
+  try {
+    const response = await fetch(`${DEFAULT_API_BASE_URL}/api/publishing/platform-accounts/extension-login/session`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ platform }),
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(payload?.message || "扩展获取待同步登录会话失败");
+    }
+    const sessionToken = String(payload?.sessionToken || "").trim();
+    if (!sessionToken) {
+      return null;
+    }
+    return {
+      accountId: String(payload?.accountId || "").trim(),
+      sessionId: `auto-sync-${platform}-${sessionToken}`,
+      sessionToken,
+      apiBaseUrl: DEFAULT_API_BASE_URL,
     };
-    activeLoginSessions.set(sessionId, session);
+  } catch (error) {
+    debugLog("login", "resolve-pending-session-failed", {
+      platform,
+      message: error instanceof Error ? error.message : "扩展获取待同步登录会话失败",
+    });
+    return null;
   }
-  if (!session) {
-    return;
-  }
+}
 
+function syncLoginResultWithRetries(session, context) {
   void syncLoginResult(session, context);
   setTimeout(() => {
     void syncLoginResult(session, context);
@@ -411,6 +442,43 @@ function scheduleSync(platform, context) {
   setTimeout(() => {
     void syncLoginResult(session, context);
   }, 12000);
+}
+
+function scheduleSync(platform, context) {
+  const session = getActiveSessionByPlatform(platform);
+  if (session) {
+    syncLoginResultWithRetries(session, context);
+    return;
+  }
+
+  if (platform !== "wechat_mp" || autoResolvingLoginPlatforms.has(platform)) {
+    return;
+  }
+
+  autoResolvingLoginPlatforms.add(platform);
+  void resolvePendingLoginSession(platform)
+    .then((resolved) => {
+      if (!resolved) {
+        return;
+      }
+      const nextSession =
+        getActiveSessionByPlatform(platform) ||
+        {
+          sessionId: resolved.sessionId,
+          sessionToken: resolved.sessionToken,
+          platform,
+          apiBaseUrl: resolved.apiBaseUrl,
+          appTabId: null,
+          loginTabId: null,
+          status: "pending",
+          syncing: false,
+        };
+      activeLoginSessions.set(nextSession.sessionId, nextSession);
+      syncLoginResultWithRetries(nextSession, context);
+    })
+    .finally(() => {
+      autoResolvingLoginPlatforms.delete(platform);
+    });
 }
 
 function getPlatformPublishUrl(platform, job) {
@@ -508,9 +576,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             throw new Error("当前平台缺少登录入口 URL，扩展无法打开登录页");
           }
 
-          if (payload.forceFreshLogin) {
-            await clearPlatformCookies(payload.platform);
-          }
+          const clearResult = payload.forceFreshLogin
+            ? await withTimeout(
+                clearPlatformCookies(payload.platform)
+                  .then(() => ({ ok: true, timedOut: false, message: "" }))
+                  .catch((error) => ({
+                    ok: false,
+                    timedOut: false,
+                    message: error instanceof Error ? error.message : "清理旧登录态失败，已继续打开视频号登录页。",
+                  })),
+                4000,
+                { ok: false, timedOut: true, message: "清理旧登录态超时，已继续打开视频号登录页。" },
+              )
+            : { ok: true, timedOut: false, message: "" };
 
           const session = {
             sessionId: payload.session.sessionId,
@@ -533,8 +611,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             sessionId: session.sessionId,
             tabId: session.loginTabId,
             loginUrl,
+            clearTimedOut: Boolean(clearResult.timedOut),
           });
-          sendResponseSafe(sendResponse, { ok: true });
+          sendResponseSafe(sendResponse, {
+            ok: true,
+            clearTimedOut: Boolean(clearResult.timedOut),
+            message: clearResult.message || "",
+          });
         } catch (error) {
           sendResponseSafe(sendResponse, {
             ok: false,

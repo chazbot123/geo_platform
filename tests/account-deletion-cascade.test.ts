@@ -84,6 +84,36 @@ describe("account deletion cascade", () => {
       createdAt: timestamp,
       updatedAt: timestamp,
     } satisfies TaskRecord);
+    await dataStore.saveTask({
+      id: "task-keep",
+      productId: "product-1",
+      status: "task_planned",
+      publishPlan: {
+        taskId: "task-keep",
+        enterpriseTaskId: "task-keep",
+        keywordTaskId: "task-keep",
+        searchProvider: "doubao",
+        enabledPlatforms: [
+          {
+            platform: "toutiao",
+            enabled: true,
+            accountCount: 1,
+            accountIds: ["account-keep"],
+            articleCount: 10,
+          },
+        ],
+        days: 5,
+        articlesPerAccountPerDay: 2,
+        timeWindow: { start: "09:00", end: "18:00" },
+        minSameAccountIntervalHours: 3,
+        totalAccountCount: 1,
+        totalArticleCount: 10,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    } satisfies TaskRecord);
     await dataStore.savePublishingDraft({
       id: "draft-1",
       taskId: "task-1",
@@ -97,6 +127,19 @@ describe("account deletion cascade", () => {
       accountIds: ["account-delete", "account-keep"],
       updatedAt: timestamp,
     } satisfies PublishingDraft);
+    await dataStore.savePublishingDraft({
+      id: "draft-keep",
+      taskId: "task-keep",
+      platform: "toutiao",
+      title: "Keep Draft",
+      body: "Body",
+      tags: [],
+      imageUrls: [],
+      localImagePaths: [],
+      accountId: "account-keep",
+      accountIds: ["account-keep"],
+      updatedAt: timestamp,
+    } satisfies PublishingDraft);
     await dataStore.saveAccountPublishingDraft({
       id: "account-draft-1",
       taskId: "task-1",
@@ -104,6 +147,19 @@ describe("account deletion cascade", () => {
       accountId: "account-delete",
       searchProvider: "doubao",
       title: "Account draft",
+      body: "Body",
+      tags: [],
+      imageUrls: [],
+      localImagePaths: [],
+      updatedAt: timestamp,
+    } satisfies AccountPublishingDraft);
+    await dataStore.saveAccountPublishingDraft({
+      id: "account-draft-keep",
+      taskId: "task-keep",
+      platform: "toutiao",
+      accountId: "account-keep",
+      searchProvider: "doubao",
+      title: "Keep Account draft",
       body: "Body",
       tags: [],
       imageUrls: [],
@@ -126,7 +182,20 @@ describe("account deletion cascade", () => {
     const draft = await dataStore.getPublishingDraft("draft-1");
     expect(draft?.accountId).toBeUndefined();
     expect(draft?.accountIds).toEqual(["account-keep"]);
-    expect(await dataStore.listAccountPublishingDrafts()).toEqual([]);
+    expect(await dataStore.getTask("task-keep")).toMatchObject({
+      publishPlan: {
+        totalAccountCount: 1,
+        totalArticleCount: 10,
+        enabledPlatforms: [{ accountIds: ["account-keep"] }],
+      },
+    });
+    expect(await dataStore.getPublishingDraft("draft-keep")).toMatchObject({
+      accountId: "account-keep",
+      accountIds: ["account-keep"],
+    });
+    expect(await dataStore.listAccountPublishingDrafts()).toMatchObject([
+      expect.objectContaining({ id: "account-draft-keep", accountId: "account-keep" }),
+    ]);
     expect(await dataStore.getPlatformAccount("account-delete")).toBeNull();
   });
 });

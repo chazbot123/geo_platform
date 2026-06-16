@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
   Building2,
@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { settingsItems } from "@/components/layout/navigation-items";
 import { cn } from "@/lib/utils";
+import { invalidateWorkflowStatusCache, loadWorkflowStatus } from "@/lib/workflow/status-client-cache";
 import type { WorkflowStatus, WorkflowStepKey } from "@/lib/workflow/status-service";
 
 const workflowItems = [
@@ -43,17 +44,9 @@ const emptyWorkflowStatus: WorkflowStatus = {
   },
 };
 
-async function fetchWorkflowStatus() {
-  const response = await fetch("/api/workflow/status", { cache: "no-store" });
-  const data = (await response.json()) as WorkflowStatus & { error?: string };
-  if (!response.ok) {
-    throw new Error(data.error || "读取工作流状态失败。");
-  }
-  return data;
-}
-
 export function dispatchWorkflowStatusRefresh() {
   if (typeof window === "undefined") return;
+  invalidateWorkflowStatusCache();
   window.dispatchEvent(new Event("geo-workflow-status-refresh"));
 }
 
@@ -69,6 +62,7 @@ export function AppShell({
   eyebrow?: string;
 }) {
   const pathname = usePathname();
+  const router = useRouter();
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [workflowStatus, setWorkflowStatus] = useState<WorkflowStatus>(emptyWorkflowStatus);
 
@@ -85,9 +79,9 @@ export function AppShell({
   useEffect(() => {
     let disposed = false;
 
-    async function refreshStatus() {
+    async function refreshStatus(options?: { force?: boolean }) {
       try {
-        const nextStatus = await fetchWorkflowStatus();
+        const nextStatus = await loadWorkflowStatus({ force: options?.force });
         if (!disposed) {
           setWorkflowStatus(nextStatus);
         }
@@ -98,12 +92,24 @@ export function AppShell({
     }
 
     void refreshStatus();
-    window.addEventListener("geo-workflow-status-refresh", refreshStatus);
+    const handleRefresh = () => void refreshStatus({ force: true });
+    window.addEventListener("geo-workflow-status-refresh", handleRefresh);
     return () => {
       disposed = true;
-      window.removeEventListener("geo-workflow-status-refresh", refreshStatus);
+      window.removeEventListener("geo-workflow-status-refresh", handleRefresh);
     };
   }, []);
+
+  useEffect(() => {
+    const routesToPrefetch = [
+      ...workflowItems.map((item) => item.href),
+      ...workflowUtilityItems.map((item) => item.href),
+      ...settingsItems.map((item) => item.href),
+    ];
+    for (const href of routesToPrefetch) {
+      router.prefetch(href);
+    }
+  }, [router]);
 
   function toggleTheme() {
     const nextTheme = theme === "dark" ? "light" : "dark";

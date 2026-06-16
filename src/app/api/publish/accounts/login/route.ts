@@ -40,10 +40,12 @@ export async function POST(request: Request) {
     return NextResponse.json({
       account: nextAccount,
       loginRequest: {
+        accountId: nextAccount.id,
         platform,
         title: `${descriptor.label} 登录`,
         loginUrl: descriptor.publishEntryUrl,
         sessionPartition: nextAccount.sessionPartition,
+        loginSessionToken: nextAccount.loginSessionToken,
       },
     });
   } catch (error) {

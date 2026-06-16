@@ -560,16 +560,16 @@ export function ReportWorkbench({
           <h3 className="font-display text-2xl font-bold text-ink">下一步</h3>
           <p className="mt-3 text-sm leading-7 text-muted">
             {activeStep === 4
-              ? "第二阶段已完成。你可以直接进入发布工作台，后续会优先消费当前权威报告和图片资源。"
+              ? "第二阶段已完成。你可以直接进入发布结果页，后续会优先消费当前权威报告和图片资源。"
               : "请先在左侧完成文案生成、图片配置以及图文排版预览的确认，才能进入发布环节。"}
           </p>
 
           {activeStep === 4 ? (
             <Link
-              href={`/publish/${bundle.task.id}`}
+              href={`/publish-execution?taskId=${encodeURIComponent(bundle.task.id)}`}
               className="group mt-6 flex w-full items-center justify-center gap-3 rounded-[24px] bg-ink px-6 py-5 text-base font-bold text-surface shadow-panel transition-all hover:scale-[1.02] hover:bg-white active:scale-[0.98]"
             >
-              进入发布工作台
+              进入发布结果
               <ArrowRight className="h-5 w-5 transition-transform group-hover:translate-x-1" />
             </Link>
           ) : (

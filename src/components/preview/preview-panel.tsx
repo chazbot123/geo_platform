@@ -481,7 +481,7 @@ export function PreviewPanel({
         </div>
 
         <Link
-          href={`/publish/${taskId}`}
+          href={`/publish-execution?taskId=${encodeURIComponent(taskId)}`}
           className="group flex w-full items-center justify-center gap-3 rounded-[24px] bg-ink px-6 py-5 text-base font-bold text-surface shadow-panel transition-all hover:scale-[1.02] hover:bg-white active:scale-[0.98]"
         >
           确认并进入发布阶段

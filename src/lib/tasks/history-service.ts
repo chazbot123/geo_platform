@@ -45,7 +45,6 @@ export interface HistoricalTaskSummary {
     taskPlan: string;
     contentPool: string;
     report: string;
-    publishWorkbench: string;
     publishExecution: string;
   };
 }
@@ -250,7 +249,6 @@ export async function listHistoricalTaskSummaries(): Promise<HistoricalTaskSumma
           taskPlan: "/tasks/create",
           contentPool: `/content-pool?taskId=${encodeURIComponent(bundle.task.id)}`,
           report: `/reports/${encodeURIComponent(bundle.task.id)}`,
-          publishWorkbench: `/publish/${encodeURIComponent(bundle.task.id)}`,
           publishExecution: `/publish-execution?taskId=${encodeURIComponent(bundle.task.id)}`,
         },
       } satisfies HistoricalTaskSummary;

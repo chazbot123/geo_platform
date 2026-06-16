@@ -92,16 +92,58 @@ export async function readJsonFile<T>(filePath: string, fallback: T): Promise<T>
 }
 
 const retryableRenameErrorCodes = new Set(["EPERM", "EACCES", "EBUSY"]);
+const retryableWriteErrorCodes = new Set(["EPERM", "EACCES", "EBUSY"]);
 const renameRetryDelaysMs = [20, 50, 100, 150];
+const transactionRetryDelaysMs = [20, 50, 100, 150, 250, 400, 600];
+const pendingWritesByPath = new Map<string, Promise<void>>();
+const bestEffortJsonFileNames = new Set(["publish-account-detection-cache.json"]);
 
 function isRetryableRenameError(error: NodeJS.ErrnoException) {
   return Boolean(error.code && retryableRenameErrorCodes.has(error.code));
+}
+
+function isRetryableWriteError(error: NodeJS.ErrnoException) {
+  return Boolean(error.code && retryableWriteErrorCodes.has(error.code));
+}
+
+function shouldSuppressJsonWriteError(filePath: string, error: NodeJS.ErrnoException) {
+  return isRetryableWriteError(error) && bestEffortJsonFileNames.has(path.basename(filePath));
 }
 
 function sleep(ms: number) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+async function reportJsonStoreDebugEvent(
+  hypothesisId: "A" | "B" | "C" | "D",
+  location: string,
+  msg: string,
+  data: Record<string, unknown>,
+  traceId?: string,
+) {
+  let debugServerUrl = "http://127.0.0.1:7777/event";
+  let debugSessionId = "eperm-json-write";
+  try {
+    const envContent = await fs.readFile(path.join(process.cwd(), ".dbg", "eperm-json-write.env"), "utf8");
+    debugServerUrl = envContent.match(/DEBUG_SERVER_URL=(.+)/)?.[1]?.trim() || debugServerUrl;
+    debugSessionId = envContent.match(/DEBUG_SESSION_ID=(.+)/)?.[1]?.trim() || debugSessionId;
+  } catch {}
+  await fetch(debugServerUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sessionId: debugSessionId,
+      runId: "pre-fix",
+      hypothesisId,
+      location,
+      msg: `[DEBUG] ${msg}`,
+      data,
+      traceId,
+      ts: Date.now(),
+    }),
+  }).catch(() => undefined);
 }
 
 async function safeUnlink(filePath: string) {
@@ -115,6 +157,34 @@ async function safeUnlink(filePath: string) {
   }
 }
 
+async function writeFileWithRetry(filePath: string, content: string) {
+  let lastWriteError: NodeJS.ErrnoException | undefined;
+
+  for (let attempt = 0; attempt <= renameRetryDelaysMs.length; attempt += 1) {
+    try {
+      await fs.writeFile(filePath, content, "utf8");
+      return;
+    } catch (error) {
+      const nodeError = error as NodeJS.ErrnoException;
+      // #region debug-point A:write-file-error
+      void reportJsonStoreDebugEvent("A", "json-store.ts:writeFileWithRetry", "writeFile failed", {
+        filePath,
+        attempt,
+        code: nodeError.code,
+        message: nodeError.message,
+      });
+      // #endregion
+      if (!isRetryableWriteError(nodeError) || attempt === renameRetryDelaysMs.length) {
+        lastWriteError = nodeError;
+        break;
+      }
+      await sleep(renameRetryDelaysMs[attempt]);
+    }
+  }
+
+  throw lastWriteError ?? new Error(`写入 JSON 文件失败：${filePath}`);
+}
+
 async function replaceFileFromTemp(tempFilePath: string, filePath: string, nextContent: string) {
   let lastRenameError: NodeJS.ErrnoException | undefined;
 
@@ -124,6 +194,15 @@ async function replaceFileFromTemp(tempFilePath: string, filePath: string, nextC
       return;
     } catch (error) {
       const nodeError = error as NodeJS.ErrnoException;
+      // #region debug-point A:rename-error
+      void reportJsonStoreDebugEvent("A", "json-store.ts:replaceFileFromTemp", "rename failed", {
+        filePath,
+        tempFilePath,
+        attempt,
+        code: nodeError.code,
+        message: nodeError.message,
+      });
+      // #endregion
       if (!isRetryableRenameError(nodeError) || attempt === renameRetryDelaysMs.length) {
         lastRenameError = nodeError;
         break;
@@ -133,7 +212,7 @@ async function replaceFileFromTemp(tempFilePath: string, filePath: string, nextC
   }
 
   if (lastRenameError && isRetryableRenameError(lastRenameError)) {
-    await fs.writeFile(filePath, nextContent, "utf8");
+    await writeFileWithRetry(filePath, nextContent);
     await safeUnlink(tempFilePath);
     return;
   }
@@ -141,15 +220,95 @@ async function replaceFileFromTemp(tempFilePath: string, filePath: string, nextC
   throw lastRenameError ?? new Error(`写入 JSON 文件失败：${filePath}`);
 }
 
-export async function writeJsonFile<T>(filePath: string, value: T) {
+async function performWriteJsonFile<T>(filePath: string, value: T) {
   await ensureDir(path.dirname(filePath));
   const nextContent = JSON.stringify(value, null, 2);
-  const tempFilePath = `${filePath}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
-  await fs.writeFile(tempFilePath, nextContent, "utf8");
+  let lastTransactionError: NodeJS.ErrnoException | undefined;
+  const traceId = randomUUID();
+
+  // #region debug-point C:write-start
+  void reportJsonStoreDebugEvent("C", "json-store.ts:performWriteJsonFile", "write transaction started", {
+    filePath,
+    contentLength: nextContent.length,
+  }, traceId);
+  // #endregion
+
+  for (let attempt = 0; attempt <= transactionRetryDelaysMs.length; attempt += 1) {
+    const tempFilePath = `${filePath}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
+    try {
+      // #region debug-point B:write-attempt
+      void reportJsonStoreDebugEvent("B", "json-store.ts:performWriteJsonFile", "write transaction attempt", {
+        filePath,
+        tempFilePath,
+        attempt,
+      }, traceId);
+      // #endregion
+      try {
+        await writeFileWithRetry(tempFilePath, nextContent);
+      } catch (error) {
+        const nodeError = error as NodeJS.ErrnoException;
+        if (!isRetryableWriteError(nodeError)) {
+          throw error;
+        }
+        await writeFileWithRetry(filePath, nextContent);
+        return;
+      }
+      try {
+        await replaceFileFromTemp(tempFilePath, filePath, nextContent);
+      } finally {
+        await safeUnlink(tempFilePath);
+      }
+      // #region debug-point D:write-success
+      void reportJsonStoreDebugEvent("D", "json-store.ts:performWriteJsonFile", "write transaction succeeded", {
+        filePath,
+        attempt,
+      }, traceId);
+      // #endregion
+      return;
+    } catch (error) {
+      const nodeError = error as NodeJS.ErrnoException;
+      await safeUnlink(tempFilePath);
+      // #region debug-point D:write-transaction-error
+      void reportJsonStoreDebugEvent("D", "json-store.ts:performWriteJsonFile", "write transaction failed", {
+        filePath,
+        attempt,
+        code: nodeError.code,
+        message: nodeError.message,
+      }, traceId);
+      // #endregion
+      if (
+        (!isRetryableWriteError(nodeError) && !isRetryableRenameError(nodeError)) ||
+        attempt === transactionRetryDelaysMs.length
+      ) {
+        if (shouldSuppressJsonWriteError(filePath, nodeError)) {
+          return;
+        }
+        lastTransactionError = nodeError;
+        break;
+      }
+      await sleep(transactionRetryDelaysMs[attempt]);
+    }
+  }
+
+  throw lastTransactionError ?? new Error(`写入 JSON 文件失败：${filePath}`);
+}
+
+export async function writeJsonFile<T>(filePath: string, value: T) {
+  const previousWrite = pendingWritesByPath.get(filePath) ?? Promise.resolve();
+  let resolveCurrentWrite: (() => void) | undefined;
+  const currentWrite = new Promise<void>((resolve) => {
+    resolveCurrentWrite = resolve;
+  });
+  pendingWritesByPath.set(filePath, previousWrite.then(() => currentWrite));
+
   try {
-    await replaceFileFromTemp(tempFilePath, filePath, nextContent);
+    await previousWrite;
+    await performWriteJsonFile(filePath, value);
   } finally {
-    await safeUnlink(tempFilePath);
+    resolveCurrentWrite?.();
+    if (pendingWritesByPath.get(filePath) === currentWrite) {
+      pendingWritesByPath.delete(filePath);
+    }
   }
 }
 

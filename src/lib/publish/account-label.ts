@@ -82,6 +82,20 @@ export function formatAccountDisplayLabel(account: AccountLabelInput, fallback =
   return nickname || identifier || `${platformAccountLabels[account.platform]}账号`;
 }
 
+export function resolveAccountProfileName(account: AccountLabelInput) {
+  const displayName = normalizeLabel(account.displayName);
+  if (isMeaningfulAccountDisplayName(displayName, account.platform)) {
+    return displayName;
+  }
+
+  const accountName = normalizeLabel(account.accountName);
+  if (isMeaningfulAccountDisplayName(accountName, account.platform) && isHumanReadableName(accountName)) {
+    return accountName;
+  }
+
+  return "";
+}
+
 export function sanitizeAccountProfileForSave(
   platform: PlatformAccountRecord["platform"],
   incoming: {

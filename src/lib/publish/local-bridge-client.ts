@@ -9,7 +9,8 @@ import type {
 } from "./electron-login-client";
 import type { PublishProgressSnapshot } from "@/lib/types";
 
-export const LOCAL_BRIDGE_BASE_URL = "http://127.0.0.1:3217";
+export const LOCAL_BRIDGE_PORT = Number(process.env.NEXT_PUBLIC_GEO_LOCAL_BRIDGE_PORT || "33217");
+export const LOCAL_BRIDGE_BASE_URL = `http://127.0.0.1:${LOCAL_BRIDGE_PORT}`;
 
 export type DesktopBridgeMode = "electron_bridge" | "local_bridge" | "bridge_unreachable";
 

@@ -16,6 +16,24 @@
     console.log(`${debugPrefix}[${scope}] ${detail}`, extra);
   }
 
+  function emitVideohaoExtensionDebug(hypothesisId, location, msg, data = {}) {
+    // #region debug-point K:videohao-web-content
+    fetch("http://127.0.0.1:7777/event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: "videohao-extension-load",
+        runId: "web-dev",
+        hypothesisId,
+        location,
+        msg: `[DEBUG] ${msg}`,
+        data,
+        ts: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
+  }
+
   function resolvePlatformFromHost(hostname) {
     if (hostname.includes("xiaohongshu.com")) return "xiaohongshu";
     if (hostname.includes("douyin.com")) return "douyin";
@@ -495,6 +513,14 @@
     };
   }
 
+  // #region debug-point K:content-script-ready
+  emitVideohaoExtensionDebug("K", "content.js:init", "content script booted", {
+    href: window.location.href,
+    hostname: window.location.hostname,
+    title: document.title || "",
+  });
+  // #endregion
+
   window.addEventListener("message", (event) => {
     if (event.source !== window) {
       return;
@@ -505,6 +531,13 @@
       return;
     }
 
+    // #region debug-point L:page-message-forward
+    emitVideohaoExtensionDebug("L", "content.js:window-message", "content script received page request", {
+      href: window.location.href,
+      requestId: data.requestId || "",
+      action: data.payload?.action || "",
+    });
+    // #endregion
     chrome.runtime.sendMessage(
       {
         type: "AI_SUPERWEB_FROM_PAGE",
@@ -512,6 +545,15 @@
         payload: data.payload,
       },
       (response) => {
+        // #region debug-point L:page-message-response
+        emitVideohaoExtensionDebug("L", "content.js:window-message:callback", "content script received background response", {
+          href: window.location.href,
+          requestId: data.requestId || "",
+          ok: Boolean(response?.ok),
+          runtimeError: chrome.runtime.lastError?.message || "",
+          responseMessage: response?.message || "",
+        });
+        // #endregion
         window.postMessage(
           {
             source: EXTENSION_SOURCE,

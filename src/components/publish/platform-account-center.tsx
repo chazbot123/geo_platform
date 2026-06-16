@@ -7,7 +7,7 @@ import { openPlatformLoginWindow, validatePlatformSessionWindow } from "@/lib/pu
 import { waitForExternalLoginSync } from "@/lib/publish/external-login-sync";
 import { toDisplayImageItems } from "@/lib/publish/image-display";
 import { detectDesktopBridge, hasElectronDesktopBridge, type DesktopBridgeAvailability } from "@/lib/publish/local-bridge-client";
-import { formatAccountDisplayLabel, resolveAccountIdentifier } from "@/lib/publish/account-label";
+import { formatAccountDisplayLabel, resolveAccountIdentifier, resolveAccountProfileName } from "@/lib/publish/account-label";
 import {
   auditPlatformAccountSession,
   buildDesktopSessionFailureReason,
@@ -843,6 +843,7 @@ export function PlatformAccountCenter({
                 {(() => {
                   const publishedJobs = publishedJobsByAccount[account.id] ?? [];
                   const latestPublishedJob = publishedJobs[0];
+                  const videohaoProfileName = account.platform === "videohao" ? resolveAccountProfileName(account) : "";
                   return (
                     <>
                 <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
@@ -865,6 +866,7 @@ export function PlatformAccountCenter({
                         </span>
                       </div>
                       <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted">
+                        {videohaoProfileName ? <span>平台名：{videohaoProfileName}</span> : null}
                         <span className="break-all font-mono">平台ID：{account.platformAccountId || "--"}</span>
                         <span className="break-all font-mono">账号名：{resolveAccountIdentifier(account, "--")}</span>
                         <span>最近校验时间：{formatAuditTime(getRecentValidationTime(account))}</span>
