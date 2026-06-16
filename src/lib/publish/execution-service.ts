@@ -1,10 +1,10 @@
-import { getCurrentContentPool } from "@/lib/content/service";
+﻿import { getContentGenerationStatus, getCurrentContentPool } from "@/lib/content/service";
 import {
   getContentPool,
   getPublishingJobsByTask,
   saveContentPool,
 } from "@/lib/storage/data-store";
-import { createContentPoolPublishingJob, recordPublishingJobResult } from "@/lib/publish/jobs-service";
+import { createContentPoolPublishingJob, recordPublishingJobResult, updatePublishingJobRecord } from "@/lib/publish/jobs-service";
 import { getPlatformDescriptor, publishPlatformDescriptors } from "@/lib/publish/platforms";
 import { runDuePublishingJob } from "@/lib/publish/publish-queue-service";
 import type {
@@ -58,7 +58,28 @@ function stageFromJob(job?: PublishingJobRecord) {
 }
 
 function isPublished(item: ContentPoolItem, job?: PublishingJobRecord) {
-  return job?.status === "published" || job?.status === "submitted" || job?.status === "pending_review";
+  return job?.status === "published";
+}
+
+async function normalizeStaleScheduledJobs(jobs: PublishingJobRecord[], at: Date) {
+  const normalizedJobs = await Promise.all(
+    jobs.map(async (job) => {
+      if (
+        job.status !== "queued" ||
+        job.queueBlockedReason !== "job_scheduled_for_later" ||
+        !job.plannedPublishTime ||
+        new Date(job.plannedPublishTime).getTime() > at.getTime()
+      ) {
+        return job;
+      }
+      return updatePublishingJobRecord(job.id, {
+        queueBlockedReason: undefined,
+        nextRunAt: undefined,
+        executionStage: "queued",
+      });
+    }),
+  );
+  return normalizedJobs;
 }
 
 function isManualPending(item: ContentPoolItem, job?: PublishingJobRecord) {
@@ -66,16 +87,21 @@ function isManualPending(item: ContentPoolItem, job?: PublishingJobRecord) {
 }
 
 function isMaterialIssue(job?: PublishingJobRecord) {
-  const text = [
-    job?.failureStage,
-    job?.errorMessage,
-    job?.verificationEvidence,
-    ...(job?.executionLog ?? []),
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-  return /(prepare_images|upload_images|图片|image|素材|未提供|missing_images|without images)/i.test(text);
+  const failureStage = String(job?.failureStage || "").toLowerCase();
+  const executionStage = String(job?.executionStage || "").toLowerCase();
+  const errorText = [job?.errorMessage, job?.verificationEvidence].filter(Boolean).join(" ").toLowerCase();
+  const logText = (job?.executionLog ?? []).join(" ").toLowerCase();
+  const stageIndicatesMissingImages =
+    failureStage === "prepare_images" || failureStage === "upload_images" || failureStage === "missing_images";
+  const textIndicatesMissingImages =
+    /(缂哄皯鍙笂浼犲浘鐗噟缂哄皯鍥剧墖|鍥剧墖绱犳潗缂哄け|鏈彁渚涘浘鐗噟missing images?|missing image|without images?|without image|no images?|no image)/i.test(
+      errorText,
+    );
+  const logIndicatesMissingImages =
+    /(prepare_images:.*(failed|missing|without images|without image|no images|no image|鏈彁渚泑缂哄皯)|upload_images:.*(failed|missing|without images|without image|no images|no image|鏈彁渚泑缂哄皯)|missing_images)/i.test(
+      logText,
+    );
+  return stageIndicatesMissingImages || executionStage === "missing_images" || textIndicatesMissingImages || logIndicatesMissingImages;
 }
 
 function canAutoRun(item: ContentPoolItem, job?: PublishingJobRecord) {
@@ -135,6 +161,22 @@ async function markContentStatus(job: PublishingJobRecord, status: ContentPoolIt
 
 function buildManualNotes(job: PublishingJobRecord) {
   const descriptor = getPlatformDescriptor(job.platform);
+  const needsManualConfirmation =
+    job.status === "verification_failed" ||
+    job.failureStage === "submit" ||
+    /验证|审核|风控|captcha|verification|blocking|pending_review|submitted|success_then_blocking/i.test(
+      [job.errorMessage, job.verificationEvidence].filter(Boolean).join(" "),
+    );
+  if (needsManualConfirmation) {
+    return [
+      `${platformLabel(job.platform)} 提交后出现验证、审核或风控提示，当前文章已转为待人工确认。`,
+      job.accountName ? `账号：${job.accountName}` : "",
+      descriptor?.publishEntryUrl ? `创作入口：${descriptor.publishEntryUrl}` : "",
+      "平台侧可能已经接收本次提交，但系统未能自动完成核验；请人工检查是否已发布，确认后回填发布结果。",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
   return [
     `${platformLabel(job.platform)} 自动发布未完成，当前文章已转为手动待处理。`,
     job.accountName ? `账号：${job.accountName}` : "",
@@ -154,8 +196,9 @@ function chooseCurrentArticle(items: ContentPoolItem[], jobsByItem: Map<string, 
   return items.find((item) => canAutoRun(item, jobsByItem.get(item.id))) ?? null;
 }
 
-export async function getPublishExecutionState() {
-  const { current } = await getCurrentContentPool();
+export async function getPublishExecutionState(taskId?: string, at = new Date()) {
+  const requestedTaskId = String(taskId || "").trim();
+  const { current } = requestedTaskId ? await getContentGenerationStatus(requestedTaskId) : await getCurrentContentPool();
   if (!current) {
     return {
       current: null,
@@ -167,7 +210,7 @@ export async function getPublishExecutionState() {
   }
 
   const items = current.items.sort((left, right) => left.sequence - right.sequence);
-  const jobs = await getPublishingJobsByTask(current.taskId);
+  const jobs = await normalizeStaleScheduledJobs(await getPublishingJobsByTask(current.taskId), at);
   const jobsByItem = latestJobByArticle(items, jobs);
   const articles = items.map((item) => {
     const job = jobsByItem.get(item.id);
@@ -203,8 +246,8 @@ export async function getPublishExecutionState() {
   };
 }
 
-export async function runNextPublishArticle() {
-  const state = await getPublishExecutionState();
+export async function runNextPublishArticle(taskId?: string) {
+  const state = await getPublishExecutionState(taskId);
   if (!state.current || !state.currentArticle) {
     return state;
   }
@@ -214,7 +257,7 @@ export async function runNextPublishArticle() {
 
   if (job.status === "manual_pending" && !isMaterialIssue(job)) {
     await markContentStatus(job, "manual_pending");
-    return getPublishExecutionState();
+    return getPublishExecutionState(taskId);
   }
 
   if (job.status === "manual_pending" && isMaterialIssue(job)) {
@@ -234,17 +277,12 @@ export async function runNextPublishArticle() {
 
   if (job.status === "queued" && job.queueBlockedReason) {
     await markContentStatus(job, "pending_publish");
-    return getPublishExecutionState();
+    return getPublishExecutionState(taskId);
   }
 
   if (job.status === "published") {
     await markContentStatus(job, "published");
-    return getPublishExecutionState();
-  }
-
-  if (job.status === "submitted" || job.status === "pending_review") {
-    await markContentStatus(job, "published");
-    return getPublishExecutionState();
+    return getPublishExecutionState(taskId);
   }
 
   if (job.status === "failed" || job.status === "verification_failed") {
@@ -261,24 +299,29 @@ export async function runNextPublishArticle() {
       platformItemId: job.platformItemId,
     });
     await markContentStatus(manualJob, "manual_pending");
-    return getPublishExecutionState();
+    return getPublishExecutionState(taskId);
   }
 
   if (job.status === "manual_pending") {
     await markContentStatus(job, "manual_pending");
   }
 
-  return getPublishExecutionState();
+  return getPublishExecutionState(taskId);
 }
 
 export async function markArticleManualPublished(jobId: string, publishUrl?: string) {
+  const normalizedPublishUrl = String(publishUrl || "").trim();
   const job = await recordPublishingJobResult({
     jobId,
     status: "published",
-    publishUrl,
-    notes: "人工处理完成，已回填发布结果。",
-    verificationEvidence: publishUrl ? "manual_publish_url" : "manual_confirmed",
+    publishUrl: normalizedPublishUrl || undefined,
+    notes: normalizedPublishUrl
+      ? "人工确认已发布，已回填平台发布链接。"
+      : "人工确认账号后台已有已发布内容，未回填发布链接。",
+    verificationEvidence: normalizedPublishUrl ? "manual_publish_url" : "manual_operator_confirmation",
   });
   await markContentStatus(job, "published");
-  return getPublishExecutionState();
+  return getPublishExecutionState(job.taskId);
 }
+
+

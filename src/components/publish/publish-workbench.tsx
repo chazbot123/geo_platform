@@ -9,6 +9,7 @@ import { toDisplayImageItems } from "@/lib/publish/image-display";
 import { getPlatformPublisher } from "@/lib/publish/platform-publishers";
 import { detectDesktopBridge, hasElectronDesktopBridge, type DesktopBridgeAvailability } from "@/lib/publish/local-bridge-client";
 import { publishPlatformDescriptors } from "@/lib/publish/platforms";
+import { publishStageLabel } from "@/lib/publish/status-labels";
 import { countToutiaoTitleLength, TOUTIAO_TITLE_MAX_LENGTH } from "@/lib/publish/toutiao-title";
 import type { AccountPublishingDraft, PlatformAccountRecord, PublishProgressSnapshot, PublishWorkbenchData, PublishingDraft, PublishingJobRecord } from "@/lib/types";
 
@@ -366,7 +367,7 @@ function stageLabel(stage?: string) {
   if (!stage) {
     return "未知阶段";
   }
-  return map[stage] ?? stage.replace(/_/g, " ");
+  return map[stage] ?? publishStageLabel(stage);
 }
 
 export function PublishWorkbench({

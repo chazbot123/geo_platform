@@ -14,9 +14,17 @@ import {
 import { runStage1Model } from "@/lib/integrations/stage1/client";
 import { dataRoot } from "@/lib/paths";
 import { ensureDir, readJsonFile, writeJsonFile } from "@/lib/storage/json-store";
+import { archiveCurrentWorkbenchRound } from "@/lib/tasks/round-archive-service";
 import { getTaskBundle, markTaskFailed, updateTaskStatus } from "@/lib/tasks/service";
 import { saveTheme } from "@/lib/storage/data-store";
 import type { QuestionCandidate, SelectedQuestionBundle, ThemeSet } from "@/lib/types";
+import {
+  getKeywordEnterpriseChangedFields,
+  isCustomerKeywordSetStale,
+  withKeywordStaleState,
+  type EnterpriseKeywordCoreField,
+} from "@/lib/keywords/staleness";
+export { getEnterpriseKeywordChangedFields, isCustomerKeywordSetStale } from "@/lib/keywords/staleness";
 
 export type CustomerKeywordHeat = "high" | "medium" | "low";
 
@@ -53,6 +61,9 @@ export interface CustomerKeywordSet {
   selectedQuestions: CustomerKeywordCandidate[];
   generatedAt?: string;
   savedAt?: string;
+  staleAt?: string;
+  staleReason?: string;
+  staleFields?: EnterpriseKeywordCoreField[];
   updatedAt: string;
 }
 
@@ -257,6 +268,7 @@ export async function generateCustomerKeywords() {
   }
 
   const now = new Date().toISOString();
+  await archiveCurrentWorkbenchRound({ reason: "before_keyword_regeneration" });
   const previous = await getCustomerKeywordSet();
   const keywordSet: CustomerKeywordSet = {
     id: previous?.id ?? randomUUID(),
@@ -269,6 +281,9 @@ export async function generateCustomerKeywords() {
     selectedQuestions: [],
     generatedAt: now,
     savedAt: undefined,
+    staleAt: undefined,
+    staleReason: undefined,
+    staleFields: undefined,
     updatedAt: now,
   };
 
@@ -282,9 +297,13 @@ function flattenCandidates(keywordSet: CustomerKeywordSet) {
 }
 
 export async function saveCustomerKeywordSelection(selectedIds: string[]) {
-  const keywordSet = await getCustomerKeywordSet();
+  const [keywordSet, enterprise] = await Promise.all([getCustomerKeywordSet(), getSavedEnterpriseProfile()]);
   if (!keywordSet) {
     throw new Error("请先生成客户关键词候选。");
+  }
+
+  if (isCustomerKeywordSetStale(keywordSet, enterprise)) {
+    throw new Error("企业信息已变更，请重新生成客户关键词后再保存。");
   }
 
   const ids = Array.from(new Set(selectedIds.map((id) => id.trim()).filter(Boolean)));
@@ -313,11 +332,14 @@ export async function saveCustomerKeywordSelection(selectedIds: string[]) {
 
 export async function getCustomerKeywordWorkbenchData() {
   const [enterprise, keywordSet] = await Promise.all([getSavedEnterpriseProfile(), getCustomerKeywordSet()]);
+  const staleFields = getKeywordEnterpriseChangedFields(keywordSet, enterprise);
+  const effectiveKeywordSet = keywordSet ? withKeywordStaleState(keywordSet, staleFields) : null;
+  const keywordStale = isCustomerKeywordSetStale(effectiveKeywordSet, enterprise);
   return {
     enterprise,
-    keywordSet,
+    keywordSet: effectiveKeywordSet,
     canGenerate: Boolean(enterprise),
-    canCreateTask: (keywordSet?.selectedQuestions.length ?? 0) === 5 && Boolean(keywordSet?.savedAt),
+    canCreateTask: !keywordStale && (effectiveKeywordSet?.selectedQuestions.length ?? 0) === 5 && Boolean(effectiveKeywordSet?.savedAt),
   };
 }
 

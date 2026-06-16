@@ -448,6 +448,20 @@ function toContentPoolImages(images: NonNullable<Awaited<ReturnType<typeof runIm
   }));
 }
 
+function createFailedImagePlaceholders(input: {
+  contentItemId: string;
+  imagePrompt: string;
+  expectedImageCount: number;
+  errorMessage: string;
+}): ContentPoolImageItem[] {
+  return Array.from({ length: input.expectedImageCount }, (_, index) => ({
+    id: `${input.contentItemId}-image-${index + 1}`,
+    prompt: input.imagePrompt,
+    errorMessage: input.errorMessage,
+    status: "failed",
+  }));
+}
+
 function formatImageGenerationError(error: unknown) {
   if (!(error instanceof Error)) return "图片生成失败。";
   const message = error.message.trim();
@@ -616,6 +630,12 @@ export async function generateArticleForContentPool(context: ArticleGenerationCo
       log.push(stageLog("finalizing", `图片生成完成，共 ${imageList.length} 张。`));
     } catch (error) {
       imageGenerationMessage = formatImageGenerationError(error);
+      imageList = createFailedImagePlaceholders({
+        contentItemId: context.contentItemId,
+        imagePrompt,
+        expectedImageCount,
+        errorMessage: imageGenerationMessage,
+      });
       log.push(stageLog("finalizing", `图片生成已跳过：${imageGenerationMessage}`));
     }
   }

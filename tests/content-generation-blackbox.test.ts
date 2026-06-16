@@ -13,6 +13,7 @@ async function resetDataDir() {
 }
 
 afterEach(async () => {
+  vi.useRealTimers();
   if (tempDataDir) {
     await rm(tempDataDir, { recursive: true, force: true });
     tempDataDir = undefined;
@@ -21,7 +22,7 @@ afterEach(async () => {
   vi.resetModules();
 });
 
-function buildPublishPlan(updatedAt: string): PublishTaskPlan {
+function buildPublishPlan(updatedAt: string, patch: Partial<PublishTaskPlan> = {}): PublishTaskPlan {
   return {
     taskId: "task-1",
     enterpriseTaskId: "task-1",
@@ -44,15 +45,16 @@ function buildPublishPlan(updatedAt: string): PublishTaskPlan {
     totalArticleCount: 1,
     createdAt: updatedAt,
     updatedAt,
+    ...patch,
   };
 }
 
-async function seedPlannedTask() {
+async function seedPlannedTask(options: { timestamp?: string; publishPlan?: Partial<PublishTaskPlan> } = {}) {
   await resetDataDir();
   const dataStore = await import("@/lib/storage/data-store");
   await dataStore.ensureStorageReady();
 
-  const timestamp = "2026-06-10T08:00:00.000Z";
+  const timestamp = options.timestamp ?? "2026-06-10T08:00:00.000Z";
   const product: ProductProfile = {
     id: "product-1",
     taskId: "task-1",
@@ -92,7 +94,7 @@ async function seedPlannedTask() {
     productId: product.id,
     status: "task_planned",
     searchProvider: "doubao",
-    publishPlan: buildPublishPlan(timestamp),
+    publishPlan: buildPublishPlan(timestamp, options.publishPlan),
     createdAt: timestamp,
     updatedAt: timestamp,
   };
@@ -143,5 +145,59 @@ describe("content pool blackbox generation", () => {
     expect(record?.items[0]?.status).toBe("pending_publish");
     expect(record?.items[0]?.body.trim().length).toBeGreaterThan(200);
     expect(record?.items[0]?.body).not.toContain("建议从需求背景、选择标准、风险提醒和行动建议四段组织");
+  });
+
+  it("creates queued publishing jobs after final articles are generated", async () => {
+    const dataStore = await seedPlannedTask();
+    const { startContentGenerationBatch } = await import("@/lib/content/service");
+
+    await startContentGenerationBatch("task-1");
+
+    const jobs = await dataStore.getPublishingJobsByTask("task-1");
+    const record = await dataStore.getContentPool("task-1");
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.status).toBe("queued");
+    expect(jobs[0]?.contentPoolItemId).toBe("task-1-0001");
+    expect(jobs[0]?.plannedPublishTime).toBe(record?.items[0]?.plannedPublishTime);
+  });
+
+  it("does not schedule pending publish articles before generation time", async () => {
+    vi.useFakeTimers({ now: new Date("2026-06-15T06:28:00.000Z"), toFake: ["Date"] });
+    const dataStore = await seedPlannedTask({
+      timestamp: "2026-06-15T01:20:00.000Z",
+      publishPlan: {
+        timeWindow: { start: "09:00", end: "18:00" },
+        articlesPerAccountPerDay: 1,
+      },
+    });
+    const { startContentGenerationBatch } = await import("@/lib/content/service");
+
+    await startContentGenerationBatch("task-1");
+
+    const record = await dataStore.getContentPool("task-1");
+    const item = record?.items[0];
+    expect(item?.status).toBe("pending_publish");
+    expect(new Date(item?.plannedPublishTime ?? 0).getTime()).toBeGreaterThanOrEqual(
+      new Date(item?.updatedAt ?? 0).getTime(),
+    );
+  });
+
+  it("keeps one planned publish slot per day when a multi-day plan starts after today's slot", async () => {
+    vi.useFakeTimers({ now: new Date("2026-06-15T07:35:00.000Z"), toFake: ["Date"] });
+    const dataStore = await seedPlannedTask({
+      timestamp: "2026-06-15T07:35:03.636Z",
+      publishPlan: {
+        days: 3,
+        articlesPerAccountPerDay: 1,
+        totalArticleCount: 3,
+      },
+    });
+    const { startContentGenerationBatch } = await import("@/lib/content/service");
+
+    await startContentGenerationBatch("task-1");
+
+    const record = await dataStore.getContentPool("task-1");
+    const plannedDays = (record?.items ?? []).map((item) => item.plannedPublishTime.slice(0, 10));
+    expect(plannedDays).toEqual(["2026-06-16", "2026-06-17", "2026-06-18"]);
   });
 });

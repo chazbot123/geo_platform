@@ -164,7 +164,7 @@ async function syncWorkbenchPlanningTask() {
     id: WORKBENCH_TASK_ID,
     productId,
     status:
-      existingPublishPlan
+      existingPublishPlan && existingTask
         ? existingTask.status
         : selectedQuestions.length === 5
           ? existingTask?.status && existingTask.status !== "created"
@@ -301,8 +301,32 @@ export async function markTaskFailed(taskId: string, failedStage: string, errorM
   });
 }
 
-export async function getTaskPlanningPrerequisites() {
+function buildPlanningPrerequisitesFromBundle(bundle: TaskBundle | null) {
+  return {
+    enterpriseReady: Boolean(bundle && hasEnterpriseProfile(bundle.product)),
+    keywordReady: Boolean(bundle && hasEnterpriseProfile(bundle.product) && getSelectedQuestions(bundle.theme).length === 5),
+    enterpriseTaskId: bundle?.task.id,
+    keywordTaskId: getSelectedQuestions(bundle?.theme).length === 5 ? bundle?.task.id : undefined,
+    taskId: getSelectedQuestions(bundle?.theme).length === 5 ? bundle?.task.id : undefined,
+    product: bundle?.product,
+    theme: bundle?.theme,
+    selectedQuestions: getSelectedQuestions(bundle?.theme),
+    savedPlan: bundle?.task.publishPlan,
+    expectedImageCount: normalizeExpectedImageCount(bundle?.task.expectedImageCount),
+  };
+}
+
+export async function getTaskPlanningPrerequisites(taskId?: string) {
   await ensureStorageReady();
+  const normalizedTaskId = taskId?.trim();
+  if (normalizedTaskId) {
+    if (normalizedTaskId === WORKBENCH_TASK_ID) {
+      await syncWorkbenchPlanningTask();
+    }
+    const bundle = await getTaskBundle(normalizedTaskId);
+    return buildPlanningPrerequisitesFromBundle(bundle);
+  }
+
   await syncWorkbenchPlanningTask();
   const bundles = await listTaskBundles();
   const enterpriseBundle = bundles.find((bundle) => hasEnterpriseProfile(bundle.product)) ?? null;
@@ -319,6 +343,7 @@ export async function getTaskPlanningPrerequisites() {
     theme: keywordBundle?.theme,
     selectedQuestions: getSelectedQuestions(keywordBundle?.theme),
     savedPlan: keywordBundle?.task.publishPlan,
+    expectedImageCount: normalizeExpectedImageCount(keywordBundle?.task.expectedImageCount),
   };
 }
 
@@ -331,7 +356,7 @@ function normalizeArticlesPerAccountPerDay(value: number) {
 }
 
 function normalizeAccountCount(value: number | undefined) {
-  return Math.max(0, Math.floor(Number.isFinite(value) ? value : 0));
+  return Math.max(0, Math.floor(typeof value === "number" && Number.isFinite(value) ? value : 0));
 }
 
 function isValidTimeValue(value: string) {
@@ -489,6 +514,7 @@ export async function savePublishTaskPlan(input: {
   enabledPlatforms: SocialPlatform[];
   days: number;
   articlesPerAccountPerDay: number;
+  expectedImageCount?: number;
   timeWindow?: {
     start: string;
     end: string;
@@ -496,7 +522,7 @@ export async function savePublishTaskPlan(input: {
   forceRefreshAccounts?: boolean;
 }) {
   await ensureStorageReady();
-  const prerequisite = await getTaskPlanningPrerequisites();
+  const prerequisite = await getTaskPlanningPrerequisites(input.taskId);
   if (!prerequisite.enterpriseReady) {
     throw new Error("请先保存企业信息。");
   }
@@ -513,6 +539,7 @@ export async function savePublishTaskPlan(input: {
   const mappedPlatformSet = new Set(getPlatformsBySearchProvider(input.searchProvider));
   const days = normalizeDays(input.days);
   const articlesPerAccountPerDay = normalizeArticlesPerAccountPerDay(input.articlesPerAccountPerDay);
+  const expectedImageCount = normalizeExpectedImageCount(input.expectedImageCount);
   const timeWindow = normalizeTimeWindow(input.timeWindow);
   const detection = await detectPublishablePlatformAccounts(allPlatforms, { forceRefresh: input.forceRefreshAccounts });
   const detectionByPlatform = new Map(detection.items.map((item) => [item.platform, item]));
@@ -555,6 +582,7 @@ export async function savePublishTaskPlan(input: {
   const nextTask: TaskRecord = {
     ...task,
     searchProvider: input.searchProvider,
+    expectedImageCount,
     publishPlan,
     status: "task_planned",
     updatedAt: timestamp,

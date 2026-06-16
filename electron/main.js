@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const http = require("node:http");
 const next = require("next");
 const path = require("node:path");
+const { createAutoPublishScheduler } = require("./auto-publish-scheduler");
 const { createLocalBridge } = require("./local-bridge");
 
 const isDev = !app.isPackaged;
@@ -21,6 +22,10 @@ const automationDirectory = path.join(__dirname, "publish-automation");
 const automationHelperFile = path.join(automationDirectory, "dom-helpers.js");
 const publishProgressSessions = new Map();
 const PUBLISH_PROGRESS_TTL_MS = 10 * 60 * 1000;
+const ACCOUNT_SESSION_REFRESH_INTERVAL_MS = 30 * 60 * 1000;
+const ACCOUNT_SESSION_STARTUP_REFRESH_DELAY_MS = 8000;
+const AUTO_PUBLISH_INTERVAL_MS = 60 * 1000;
+const AUTO_PUBLISH_STARTUP_DELAY_MS = 15000;
 const AUTOMATION_SUCCESS_STATUSES = new Set(["published", "submitted", "verifying", "pending_review", "verification_failed"]);
 const AUTOMATION_TERMINAL_STATUSES = new Set([...AUTOMATION_SUCCESS_STATUSES, "failed", "unsupported"]);
 const GLOBAL_SESSION_AUDIT_INTERVAL_MS = 60 * 60 * 1000;
@@ -28,6 +33,11 @@ let activeBridgeOperations = 0;
 let currentAppBaseUrl = "";
 let globalSessionAuditTimer = null;
 let globalSessionAuditRunning = false;
+let accountSessionRefreshTimer = null;
+let accountSessionStartupRefreshTimer = null;
+let accountSessionRefreshRunning = false;
+let autoPublishScheduler = null;
+let appServerUrl = "";
 
 const STAGE_LABELS = {
   init: "准备启动",
@@ -367,6 +377,7 @@ async function createWindow() {
   ensureDataDir();
   const appUrl = await startNextServer();
   currentAppBaseUrl = appUrl;
+  appServerUrl = appUrl;
   const desktopIcon = loadDesktopIcon();
 
   mainWindow = new BrowserWindow({
@@ -660,6 +671,41 @@ async function applyAuthPayloadToPartition(input = {}) {
   }
   const results = await Promise.all(writes);
   return { applied: results.some(Boolean), count: results.filter(Boolean).length };
+}
+
+async function exportAuthPayloadFromPartition(input = {}) {
+  const partition = typeof input.sessionPartition === "string" ? input.sessionPartition.trim() : "";
+  if (!partition) return "";
+
+  const spec = getPlatformSessionSpec(input.platform, input.publishUrl);
+  if (!spec.publishUrl) return "";
+
+  const partitionSession = session.fromPartition(partition);
+  const cookiesByKey = new Map();
+  for (const targetUrl of getCookieTargetUrls(input.platform, spec.publishUrl)) {
+    try {
+      const cookies = await partitionSession.cookies.get({ url: targetUrl });
+      for (const cookie of cookies) {
+        const key = [cookie.domain || "", cookie.path || "/", cookie.name || ""].join("|");
+        if (!cookie.name || cookiesByKey.has(key)) continue;
+        cookiesByKey.set(key, {
+          name: cookie.name,
+          value: cookie.value,
+          domain: cookie.domain,
+          path: cookie.path || "/",
+          secure: Boolean(cookie.secure),
+          httpOnly: Boolean(cookie.httpOnly),
+          sameSite: cookie.sameSite,
+          expirationDate: cookie.expirationDate,
+        });
+      }
+    } catch (_) {
+      // Ignore per-domain cookie export failures.
+    }
+  }
+
+  const cookies = Array.from(cookiesByKey.values());
+  return cookies.length ? JSON.stringify(cookies) : "";
 }
 
 function getPlatformSessionSpec(platform, publishUrl) {
@@ -1833,12 +1879,14 @@ async function inspectPlatformSession(input = {}) {
     };
   }
 
-  await applyAuthPayloadToPartition({
-    platform: input.platform,
-    publishUrl: spec.publishUrl,
-    sessionPartition: input.sessionPartition,
-    authPayload: input.authPayload,
-  });
+  if (!input.skipAuthPayloadApply) {
+    await applyAuthPayloadToPartition({
+      platform: input.platform,
+      publishUrl: spec.publishUrl,
+      sessionPartition: input.sessionPartition,
+      authPayload: input.authPayload,
+    });
+  }
 
   const cookieCount = await getSessionCookieCount(spec, partition);
 
@@ -1853,7 +1901,7 @@ async function inspectPlatformSession(input = {}) {
   try {
     await validationWindow.loadURL(spec.publishUrl);
     await waitForWindowStable(validationWindow);
-    const storageApplied = await applyAuthStorageToWindow(validationWindow, input.authPayload);
+    const storageApplied = input.skipAuthPayloadApply ? false : await applyAuthStorageToWindow(validationWindow, input.authPayload);
     if (storageApplied) {
       await validationWindow.loadURL(spec.publishUrl);
       await waitForWindowStable(validationWindow);
@@ -1888,6 +1936,200 @@ async function inspectPlatformSession(input = {}) {
       validationWindow.close();
     }
   }
+}
+
+function buildPlatformSessionFailureReason(status, reason) {
+  const normalizedReason = String(reason || "").trim();
+  if (normalizedReason) {
+    return normalizedReason;
+  }
+
+  switch (String(status || "")) {
+    case "expired":
+      return "检测到平台登录会话已失效，请重新登录。";
+    case "missing_session":
+      return "未检测到有效的平台登录会话，请重新登录。";
+    case "unknown":
+      return "暂时无法确认当前平台登录状态，请重新登录后再发布。";
+    default:
+      return "桌面登录未完成。";
+  }
+}
+
+function getAppServerUrl() {
+  return String(appServerUrl || (isDev ? DEV_SERVER_URL : PROD_SERVER_URL)).replace(/\/+$/g, "");
+}
+
+async function fetchAppJson(pathname, options = {}) {
+  const response = await fetch(`${getAppServerUrl()}${pathname}`, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || payload.message || `App API request failed: ${response.status}`);
+  }
+  return payload;
+}
+
+function shouldRefreshPlatformAccountSession(account) {
+  const blockedStatuses = new Set(["disabled", "cooling_down", "verification_blocked"]);
+  return (
+    account &&
+    account.loginStatus === "authenticated" &&
+    account.provider === "electron" &&
+    account.authType !== "manual" &&
+    !blockedStatuses.has(account.status) &&
+    !blockedStatuses.has(account.riskState) &&
+    typeof account.sessionPartition === "string" &&
+    account.sessionPartition.trim().length > 0
+  );
+}
+
+async function updatePlatformAccountFromSessionRefresh(account, validation) {
+  const authenticated = validation.status === "authenticated";
+  const patch = authenticated
+    ? {
+        loginStatus: "authenticated",
+        status: "valid",
+        lastError: undefined,
+      }
+    : {
+        loginStatus: "failed",
+        status: "invalid",
+        lastError: buildPlatformSessionFailureReason(validation.status, validation.reason),
+      };
+
+  if (authenticated) {
+    const authPayload = await exportAuthPayloadFromPartition({
+      platform: account.platform,
+      publishUrl: account.loginUrl,
+      sessionPartition: account.sessionPartition,
+    });
+    if (authPayload) {
+      patch.authPayload = authPayload;
+      patch.authPayloadUpdatedAt = now();
+    }
+  }
+
+  await fetchAppJson(`/api/publish/accounts/${encodeURIComponent(account.id)}`, {
+    method: "PATCH",
+    headers: {
+      "x-geo-internal-session-refresh": "1",
+    },
+    body: JSON.stringify(patch),
+  });
+
+  return {
+    status: authenticated ? "refreshed" : "downgraded",
+    validationStatus: validation.status,
+  };
+}
+
+async function refreshSavedPlatformAccountSessions(reason = "interval") {
+  if (accountSessionRefreshRunning) {
+    return { skipped: true, reason: "already_running" };
+  }
+  accountSessionRefreshRunning = true;
+
+  try {
+    const payload = await fetchAppJson("/api/publish/accounts");
+    const accounts = Array.isArray(payload.items) ? payload.items.filter(shouldRefreshPlatformAccountSession) : [];
+    let refreshedCount = 0;
+    let downgradedCount = 0;
+
+    for (const account of accounts) {
+      try {
+        const validation = await inspectPlatformSession({
+          platform: account.platform,
+          publishUrl: account.loginUrl,
+          sessionPartition: account.sessionPartition,
+          skipAuthPayloadApply: true,
+        });
+        const result = await updatePlatformAccountFromSessionRefresh(account, validation);
+        if (result.status === "refreshed") {
+          refreshedCount += 1;
+        } else {
+          downgradedCount += 1;
+        }
+      } catch (error) {
+        console.error(
+          `Failed to refresh platform session for ${account.platform}/${account.id}:`,
+          error instanceof Error ? error.message : error,
+        );
+      }
+    }
+
+    if (accounts.length) {
+      console.info(
+        `GEO platform session refresh (${reason}) completed: ${refreshedCount} refreshed, ${downgradedCount} downgraded.`,
+      );
+    }
+    return { skipped: false, total: accounts.length, refreshedCount, downgradedCount };
+  } catch (error) {
+    console.error("Failed to run GEO platform session refresh:", error instanceof Error ? error.message : error);
+    return { skipped: false, error: error instanceof Error ? error.message : "unknown" };
+  } finally {
+    accountSessionRefreshRunning = false;
+  }
+}
+
+function startPlatformAccountSessionRefreshLoop() {
+  if (accountSessionRefreshTimer) {
+    clearInterval(accountSessionRefreshTimer);
+  }
+  if (accountSessionStartupRefreshTimer) {
+    clearTimeout(accountSessionStartupRefreshTimer);
+  }
+
+  accountSessionStartupRefreshTimer = setTimeout(() => {
+    accountSessionStartupRefreshTimer = null;
+    void refreshSavedPlatformAccountSessions("startup");
+  }, ACCOUNT_SESSION_STARTUP_REFRESH_DELAY_MS);
+  if (typeof accountSessionStartupRefreshTimer.unref === "function") {
+    accountSessionStartupRefreshTimer.unref();
+  }
+
+  accountSessionRefreshTimer = setInterval(() => {
+    void refreshSavedPlatformAccountSessions("interval");
+  }, ACCOUNT_SESSION_REFRESH_INTERVAL_MS);
+  if (typeof accountSessionRefreshTimer.unref === "function") {
+    accountSessionRefreshTimer.unref();
+  }
+}
+
+function stopPlatformAccountSessionRefreshLoop() {
+  if (accountSessionStartupRefreshTimer) {
+    clearTimeout(accountSessionStartupRefreshTimer);
+    accountSessionStartupRefreshTimer = null;
+  }
+  if (accountSessionRefreshTimer) {
+    clearInterval(accountSessionRefreshTimer);
+    accountSessionRefreshTimer = null;
+  }
+}
+
+function startAutoPublishScheduler() {
+  if (!autoPublishScheduler) {
+    autoPublishScheduler = createAutoPublishScheduler({
+      getBaseUrl: () => getAppServerUrl(),
+      intervalMs: AUTO_PUBLISH_INTERVAL_MS,
+      startupDelayMs: AUTO_PUBLISH_STARTUP_DELAY_MS,
+      notifyFrontend: () => notifyFrontendAccountsRefresh(),
+      logger: console,
+    });
+  }
+  autoPublishScheduler.start();
+}
+
+function stopAutoPublishScheduler() {
+  if (!autoPublishScheduler) {
+    return;
+  }
+  autoPublishScheduler.stop();
 }
 
 function openPlatformLoginWindow(input = {}) {
@@ -2885,6 +3127,7 @@ function normalizeAutomationResult(rawResult, fallback = {}) {
       : status === "failed" && failureStage
         ? `failed_at_${failureStage}`
         : undefined;
+  const closeWindow = result.closeWindow === true;
 
   return {
     status,
@@ -2898,6 +3141,7 @@ function normalizeAutomationResult(rawResult, fallback = {}) {
     platformItemId: result.platformItemId,
     failureStage,
     errorMessage,
+    closeWindow,
   };
 }
 
@@ -2963,6 +3207,7 @@ async function runPlatformPublish(input = {}) {
   const publishWindow = createScopedWindow({
     title: typeof input.title === "string" && input.title.trim() ? input.title.trim() : "平台发布",
     sessionPartition: input.sessionPartition,
+    show: false,
   });
   let shouldCloseWindow = false;
   const detachNetworkLogger = attachPublishNetworkLogger(publishWindow, sessionToken, input.platform);
@@ -2987,6 +3232,9 @@ async function runPlatformPublish(input = {}) {
   publishWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url).catch(() => {});
     return { action: "deny" };
+  });
+  publishWindow.webContents.on("will-prevent-unload", (event) => {
+    event.preventDefault();
   });
 
   try {
@@ -3125,7 +3373,7 @@ async function runPlatformPublish(input = {}) {
       errorMessage: "自动化脚本没有返回有效的发布结果。",
     });
     // 只有明确成功或要求关闭时才关闭
-    shouldCloseWindow = result.status === "published" || result.status === "pending_review" || result.status === "submitted";
+    shouldCloseWindow = result.closeWindow || result.status === "published" || result.status === "pending_review" || result.status === "submitted";
     const resultExecutionLog = result.executionLog;
     resultExecutionLog.forEach((item) => appendProgressLog(sessionToken, input.platform, item));
     updateProgressStatus(sessionToken, input.platform, {
@@ -3196,11 +3444,14 @@ app.whenReady().then(async () => {
   }
 
   await createWindow();
+  startPlatformAccountSessionRefreshLoop();
+  startAutoPublishScheduler();
 });
 
 app.on("before-quit", () => {
   isQuitting = true;
   stopGlobalSessionAuditScheduler();
+  stopAutoPublishScheduler();
 });
 
 ipcMain.handle("geo:open-platform-login", async (_, input) => openPlatformLoginWindow(input));
@@ -3213,6 +3464,8 @@ app.on("window-all-closed", () => {
     return;
   }
 
+  stopPlatformAccountSessionRefreshLoop();
+  stopAutoPublishScheduler();
   if (server) {
     server.close();
   }
@@ -3232,6 +3485,9 @@ app.on("activate", () => {
     return;
   }
   if (BrowserWindow.getAllWindows().length === 0) {
-    createWindow();
+    createWindow().then(() => {
+      startPlatformAccountSessionRefreshLoop();
+      startAutoPublishScheduler();
+    });
   }
 });

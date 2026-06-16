@@ -1,8 +1,9 @@
 import { getEnterpriseProfile, validateEnterpriseProfile } from "@/lib/enterprise/service";
-import { getCustomerKeywordSet } from "@/lib/keywords/service";
+import { getCustomerKeywordSet, isCustomerKeywordSetStale } from "@/lib/keywords/service";
 import { getContentPool, getPublishingJobsByTask } from "@/lib/storage/data-store";
+import { contentPoolReadyStatuses } from "@/lib/tasks/constants";
 import { listTaskBundles } from "@/lib/tasks/service";
-import type { ContentPoolItemStatus, TaskBundle } from "@/lib/types";
+import type { TaskBundle } from "@/lib/types";
 
 export type WorkflowStepKey = "enterprise" | "customerKeywords" | "taskCreate" | "contentPool" | "publishExecution";
 
@@ -18,8 +19,6 @@ export interface WorkflowStatus {
   currentTaskId?: string;
   updatedAt: string;
 }
-
-const contentPoolReadyStatuses = new Set<ContentPoolItemStatus>(["sample", "ready", "pending_publish", "publishing", "manual_pending", "published"]);
 
 function stepStatus(key: WorkflowStepKey, completed: boolean, reason: string, completedAt?: string): WorkflowStepStatus {
   return {
@@ -44,7 +43,8 @@ export async function getWorkflowStatus(): Promise<WorkflowStatus> {
   const enterpriseComplete = Boolean(
     enterpriseProfile?.lastSavedAt && validateEnterpriseProfile(enterpriseProfile).length === 0,
   );
-  const keywordComplete = Boolean(keywordSet?.savedAt && keywordSet.selectedQuestions.length === 5);
+  const keywordStale = isCustomerKeywordSetStale(keywordSet, enterpriseProfile);
+  const keywordComplete = Boolean(!keywordStale && keywordSet?.savedAt && keywordSet.selectedQuestions.length === 5);
   const plannedBundle = getCurrentPlannedBundle(taskBundles);
   const publishPlan = plannedBundle?.task.publishPlan;
   const taskComplete = Boolean(publishPlan && publishPlan.totalArticleCount > 0);
@@ -69,7 +69,11 @@ export async function getWorkflowStatus(): Promise<WorkflowStatus> {
       customerKeywords: stepStatus(
         "customerKeywords",
         keywordComplete,
-        keywordComplete ? "已保存 5 个客户问题。" : "需要保存正好 5 个客户问题。",
+        keywordComplete
+          ? "已保存 5 个客户问题。"
+          : keywordStale
+            ? "企业信息已变更，需要重新生成客户关键词。"
+            : "需要保存正好 5 个客户问题。",
         keywordSet?.savedAt,
       ),
       taskCreate: stepStatus(

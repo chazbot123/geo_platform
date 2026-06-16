@@ -41,8 +41,12 @@ async (input) => {
     ? payload.draftTags.map((tag) => normalize(tag).replace(/^#+/, "")).filter(Boolean).slice(0, 10)
     : [];
   const preparedImages = Array.isArray(payload.preparedImages) ? payload.preparedImages : [];
+  const noteBodyMaxLength = 1000;
   const tagLine = draftTags.length ? draftTags.map((tag) => `#${tag}`).join(" ") : "";
-  const noteBody = [draftBody, tagLine].filter(Boolean).join("\n\n").slice(0, 9000);
+  const tagSuffixLength = tagLine ? `\n\n${tagLine}`.length : 0;
+  const noteBodyLimit = Math.max(0, noteBodyMaxLength - tagSuffixLength);
+  const limitedDraftBody = draftBody.slice(0, noteBodyLimit).trim();
+  const noteBody = [limitedDraftBody, tagLine].filter(Boolean).join("\n\n").slice(0, noteBodyMaxLength);
 
   function findTitleInput() {
     return query([

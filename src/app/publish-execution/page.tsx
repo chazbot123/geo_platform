@@ -4,8 +4,8 @@ import { PublishExecutionWorkbench } from "@/components/publish/publish-executio
 export default function PublishExecutionPage() {
   return (
     <AppShell
-      title="执行发布"
-      description="按文章记录发布进度，支持中断后继续，并保留手动处理入口。"
+      title="发布结果"
+      description="系统按计划时间自动发布，用户查看结果并处理需要人工介入的文章。"
     >
       <PublishExecutionWorkbench />
     </AppShell>

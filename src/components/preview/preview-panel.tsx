@@ -18,6 +18,11 @@ interface ReportBlock {
   summary?: string;
 }
 
+type ImageAssetState =
+  | { status: "ready"; count: number; hasLegacyCoverOnly: boolean }
+  | { status: "incomplete_images"; count: number; hasLegacyCoverOnly: boolean }
+  | { status: "missing_images"; count: number; hasLegacyCoverOnly: boolean };
+
 function splitContentParagraphs(content?: string) {
   if (!content?.trim()) {
     return [] as string[];
@@ -33,7 +38,7 @@ function getRenderableImages(image?: ImageAsset) {
   return image?.images ?? [];
 }
 
-function getImageAssetState(image?: ImageAsset) {
+function getImageAssetState(image?: ImageAsset): ImageAssetState {
   const imageItems = image?.images ?? [];
   const hasLegacyCoverOnly = Boolean(image?.url && imageItems.length === 0);
   if (imageItems.length > 0) {

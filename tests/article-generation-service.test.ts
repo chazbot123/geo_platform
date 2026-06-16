@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ArticleGenerationContext } from "@/lib/content/article-generation-service";
 import { generateArticleForContentPool } from "@/lib/content/article-generation-service";
 import { loadPlatformStrategy, loadRiskWords } from "@/lib/content/prompt-loader";
+import type { PlatformStrategy, RiskWordsConfig } from "@/lib/content/prompt-loader";
 import { runImageModel } from "@/lib/integrations/images/client";
 import type { ReviewResult } from "@/lib/content/review-service";
 
@@ -34,7 +35,7 @@ let reviewResult: ReviewResult = {
   },
 };
 
-const defaultPlatformStrategy = {
+const defaultPlatformStrategy: PlatformStrategy = {
   platform: "toutiao",
   platformLabel: "今日头条",
   title: {
@@ -64,16 +65,16 @@ const defaultPlatformStrategy = {
     mustHave: ["判断标准", "适用场景"],
     mustNotHave: [],
   },
-} as const;
+};
 
-const defaultRiskWords = {
+const defaultRiskWords: RiskWordsConfig = {
   version: "test",
   description: "test",
   blockingWords: ["保证"],
   warningWords: ["最好"],
   contextualRules: [],
   preferredPhrases: [],
-} as const;
+};
 
 vi.mock("@/lib/config/service", () => ({
   getAppConfig: vi.fn(async () => appConfig),
@@ -135,6 +136,14 @@ function createContext(): ArticleGenerationContext {
       taskId: "task-1",
       title: "主题",
       searchProvider: "doubao",
+      audienceChannels: ["social"],
+      mainKeyword: "GEO优化",
+      backupKeywords: [],
+      relatedKeywords: [],
+      trendKeywords: [],
+      candidateKeywords: [],
+      scoreSummary: "test",
+      rankingSummary: "test",
       sourceQuestionIds: [],
       keywords: [],
       outline: [],
@@ -280,7 +289,13 @@ describe("generateArticleForContentPool", () => {
 
     expect(result.item.status).toBe("pending_publish");
     expect(result.item.publishable).toBe(true);
-    expect(result.item.imageList).toHaveLength(0);
+    expect(result.item.imageList).toHaveLength(5);
+    expect(result.item.imageList[0]).toMatchObject({
+      id: "item-1-image-1",
+      status: "failed",
+      prompt: result.item.imagePrompt,
+    });
+    expect(result.item.imageList[0].errorMessage).toContain("图片模型请求超时或被中断");
     expect(result.item.pipeline.imageGeneration.status).toBe("needs_action");
     expect(result.item.stageLog?.some((entry) => entry.message.includes("图片模型请求超时或被中断"))).toBe(true);
     expect(result.item.stageLog?.some((entry) => entry.message.includes("This operation was aborted"))).toBe(false);

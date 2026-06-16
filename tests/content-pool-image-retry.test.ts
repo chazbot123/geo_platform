@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { retryContentPoolItemImage } from "@/lib/content/service";
+import { retryAllFailedContentPoolImages, retryContentPoolItemImage } from "@/lib/content/service";
 
 const record = {
   taskId: "task-1",
@@ -129,5 +129,18 @@ describe("retryContentPoolItemImage", () => {
     expect(retriedImage.url).toBe("/generated-images/item-1/image-2.png");
     expect(retriedImage.errorMessage).toBeUndefined();
     expect(item.pipeline.imageGeneration.status).toBe("passed");
+  });
+
+  it("retries every failed image in the content pool without rewriting articles", async () => {
+    const result = await retryAllFailedContentPoolImages("task-1");
+    const item = result.current.items[0];
+
+    expect(result.totalFailedImages).toBe(1);
+    expect(result.retriedImages).toBe(1);
+    expect(result.remainingFailedImages).toBe(0);
+    expect(item.imageList[0]?.url).toBe("https://example.test/1.png");
+    expect(item.imageList[1]?.status).toBe("generated");
+    expect(item.imageList[1]?.url).toBe("/generated-images/item-1/image-2.png");
+    expect(item.body).toBe("测试正文");
   });
 });

@@ -24,8 +24,28 @@ const DEBUG_SERVER_URL = "http://127.0.0.1:7778/event";
 const DEBUG_SESSION_ID = "account-info-fetch";
 const ACCOUNT_DELETE_TIMEOUT_MS = 15000;
 
+function shouldEmitDebugEvents() {
+  try {
+    return typeof window !== "undefined" && window.localStorage.getItem("geo-debug-events") === "1";
+  } catch {
+    return false;
+  }
+}
+
+function canRenderInlineAvatar(url?: string) {
+  const normalized = String(url || "").trim();
+  if (!normalized) return false;
+  try {
+    const parsed = new URL(normalized, typeof window !== "undefined" ? window.location.origin : "http://127.0.0.1");
+    return !/(\.|^)sinaimg\.cn$/i.test(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
 function emitDebug(hypothesisId: string, location: string, msg: string, data: Record<string, unknown>) {
   // #region debug-point shared:emit
+  if (!shouldEmitDebugEvents()) return;
   fetch(DEBUG_SERVER_URL, {
     method: "POST",
     body: JSON.stringify({
@@ -170,7 +190,7 @@ function buildJobBodyPreview(body: string) {
 
 function AccountAvatar({ account }: { account: PlatformAccountRecord }) {
   const label = formatAccountDisplayLabel(account, platformLabel(account.platform));
-  if (account.avatarUrl) {
+  if (canRenderInlineAvatar(account.avatarUrl)) {
     return (
       <img
         src={account.avatarUrl}

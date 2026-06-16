@@ -39,6 +39,13 @@ function addMinutes(date: Date, minutes: number) {
   return new Date(date.getTime() + minutes * 60 * 1000).toISOString();
 }
 
+function hasActiveScheduledNextRun(job: PublishingJobRecord, at: Date) {
+  if (!job.nextRunAt || new Date(job.nextRunAt).getTime() <= at.getTime()) return false;
+  if (job.queueBlockedReason !== "job_scheduled_for_later") return true;
+  if (!job.plannedPublishTime) return true;
+  return new Date(job.plannedPublishTime).getTime() > at.getTime();
+}
+
 function normalizeRiskState(account: PlatformAccountRecord): PlatformAccountRiskState {
   if (account.riskState) return account.riskState;
   if (account.status === "disabled") return "disabled";
@@ -86,18 +93,22 @@ export function riskReasonFromJob(job: PublishingJobRecord) {
 }
 
 export function materialReasonFromJob(job: PublishingJobRecord) {
-  const haystack = [
-    job.failureStage,
-    job.errorMessage,
-    job.verificationEvidence,
-    ...(job.executionLog ?? []),
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-
-  if (/(prepare_images|upload_images|图片|image|素材|未提供|missing_images|without images)/i.test(haystack)) {
-    return job.failureStage || "prepare_images";
+  const failureStage = String(job.failureStage || "").toLowerCase();
+  const executionStage = String(job.executionStage || "").toLowerCase();
+  const errorText = [job.errorMessage, job.verificationEvidence].filter(Boolean).join(" ").toLowerCase();
+  const logText = (job.executionLog ?? []).join(" ").toLowerCase();
+  const stageIndicatesMissingImages =
+    failureStage === "prepare_images" || failureStage === "upload_images" || failureStage === "missing_images";
+  const textIndicatesMissingImages =
+    /(缺少可上传图片|缺少图片|图片素材缺失|未提供图片|missing images?|missing image|without images?|without image|no images?|no image)/i.test(
+      errorText,
+    );
+  const logIndicatesMissingImages =
+    /(prepare_images:.*(failed|missing|without images|without image|no images|no image|未提供|缺少)|upload_images:.*(failed|missing|without images|without image|no images|no image|未提供|缺少)|missing_images)/i.test(
+      logText,
+    );
+  if (stageIndicatesMissingImages || executionStage === "missing_images" || textIndicatesMissingImages || logIndicatesMissingImages) {
+    return failureStage || executionStage || "prepare_images";
   }
   return null;
 }
@@ -162,8 +173,11 @@ export async function evaluatePublishingJobReadiness(job: PublishingJobRecord, a
   if (job.status !== "queued") {
     return { runnable: false, reason: `job_status_${job.status}` };
   }
-  if (job.nextRunAt && new Date(job.nextRunAt).getTime() > at.getTime()) {
+  if (hasActiveScheduledNextRun(job, at)) {
     return { runnable: false, reason: "job_scheduled_for_later", nextRunAt: job.nextRunAt };
+  }
+  if (job.plannedPublishTime && new Date(job.plannedPublishTime).getTime() > at.getTime()) {
+    return { runnable: false, reason: "job_scheduled_for_later", nextRunAt: job.plannedPublishTime };
   }
   if (job.backoffUntil && new Date(job.backoffUntil).getTime() > at.getTime()) {
     return { runnable: false, reason: "retry_backoff_active", nextRunAt: job.backoffUntil };
@@ -402,4 +416,30 @@ export async function runDuePublishingJob(jobId: string) {
   }
 
   return result;
+}
+
+export async function runDuePublishingJobs(at = new Date()) {
+  const jobs = (await listPublishingJobs()).filter((job) => job.status === "queued");
+  const results: Array<{ jobId: string; status: PublishingJobRecord["status"] }> = [];
+  let runnable = 0;
+  let skipped = 0;
+
+  for (const job of jobs) {
+    const readiness = await evaluatePublishingJobReadiness(job, at);
+    if (!readiness.runnable) {
+      skipped += 1;
+      continue;
+    }
+    runnable += 1;
+    const result = await runDuePublishingJob(job.id);
+    results.push({ jobId: result.id, status: result.status });
+  }
+
+  return {
+    checked: jobs.length,
+    runnable,
+    executed: results.length,
+    skipped,
+    results,
+  };
 }

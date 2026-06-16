@@ -1,0 +1,129 @@
+import { AppShell } from "@/components/layout/app-shell";
+
+const quickStart = [
+  "先完成设备授权，确认当前设备可以使用生成、发布和账号管理能力。",
+  "进入模型设置，填写文字模型和图片模型的 API 配置，并用探测功能确认可用。",
+  "准备企业资料、产品卖点、服务区域、目标客户和合规说明，再开始生成流程。",
+];
+
+const workflowSections = [
+  {
+    title: "1. 首次使用准备",
+    items: [
+      "打开设备授权，输入授权码并确认设备状态为可用。",
+      "打开模型设置，配置文字模型、图片模型、超时时间和服务商地址。",
+      "如果图片生成经常超时，适当调高图片模型超时时间，并确认 API Key 有图片生成权限。",
+    ],
+  },
+  {
+    title: "2. 企业信息填写",
+    items: [
+      "在企业信息中填写产品名称、品类、核心卖点、目标客户、服务场景和品牌语气。",
+      "资料越具体，后续客户关键词、文章正文和发布文案越稳定。",
+      "企业信息变更后，建议重新生成客户关键词，避免旧关键词继续沿用过期定位。",
+    ],
+  },
+  {
+    title: "3. 客户关键词生成",
+    items: [
+      "系统会根据企业信息生成 AI 用户可能会问的问题。",
+      "确认 5 个核心问题后，再创建内容任务。",
+      "如果问题方向不准确，先回到企业信息修正资料，再重新生成关键词。",
+    ],
+  },
+  {
+    title: "4. 登录账号与发布计划",
+    items: [
+      "在登录账号步骤选择发布平台、绑定账号，并完成平台登录。",
+      "设置每个平台、每个账号的文章数量和计划发布时间窗口。",
+      "计划发布数量会锁定每篇文章的目标图片数量，后续页面只展示或重试，不随意改变任务规模。",
+    ],
+  },
+  {
+    title: "5. 内容生成结果",
+    items: [
+      "生成结果页展示每篇文章的正文、风险状态、图片数量和后台处理记录。",
+      "低风险且素材完整的文章会进入待发布状态。",
+      "高风险、素材缺失或生成失败的文章，需要先处理后再发布。",
+    ],
+  },
+  {
+    title: "6. 图片失败与重新生成",
+    items: [
+      "图片模型失败时，详情页会显示失败图片卡片和错误原因。",
+      "点击重新生成这张图只会重试当前失败图片，不会重写正文，也不会重跑整篇文章。",
+      "认证失败、无权限、限流、超时等错误优先检查模型设置和 API Key 配额。",
+    ],
+  },
+  {
+    title: "7. 发布结果与静默自动发布",
+    items: [
+      "发布结果页用于查看计划任务、当前阶段、进度和发布结果。",
+      "点击立即执行到点任务后，自动发布默认在后台静默执行，不弹出平台网页操作过程。",
+      "页面会持续显示执行阶段、最近更新时间和阶段记录；登录窗口是例外，因为扫码或验证需要用户操作。",
+    ],
+  },
+  {
+    title: "8. 账号登录失效、风控与人工确认",
+    items: [
+      "账号登录失效时，先点击重新登录账号，完成登录后再继续发布。",
+      "遇到验证码、风控、审核不确定或平台疑似已发布时，系统会进入人工处理或人工确认。",
+      "人工确认已发布时，可以选填平台发布链接，方便后续追踪。",
+    ],
+  },
+  {
+    title: "9. 模型设置",
+    items: [
+      "文字模型用于企业分析、关键词、正文和风险修正。",
+      "图片模型用于文章配图，支持按任务目标数量生成多张图片。",
+      "更换模型或 Key 后，建议先用单篇任务验证效果，再批量生成。",
+    ],
+  },
+  {
+    title: "10. 常见问题",
+    items: [
+      "看不到发布进度：确认 GEO 桌面端正在运行，并刷新发布结果页。",
+      "图片一直失败：检查图片模型名称、API Key 权限、余额和超时时间。",
+      "发布卡在人工处理：查看错误原因，按提示重新登录账号、补齐图片素材或人工确认平台结果。",
+    ],
+  },
+];
+
+export default function HelpPage() {
+  return (
+    <AppShell title="帮助中心" description="查看 GEO 平台完整操作手册和常见处理方式。" eyebrow="功能手册">
+      <div className="space-y-5">
+        <section className="section-card">
+          <p className="text-xs font-medium uppercase tracking-[0.16em] text-accent">GEO 操作手册</p>
+          <h2 className="mt-2 text-xl font-semibold tracking-tight text-ink">从企业资料到自动发布的完整流程</h2>
+          <p className="mt-3 max-w-3xl text-sm leading-6 text-muted">
+            本手册按实际使用顺序整理，适合新用户第一次配置，也适合发布异常时快速定位处理入口。
+          </p>
+          <div className="mt-5 grid gap-3 md:grid-cols-3">
+            {quickStart.map((item, index) => (
+              <div key={item} className="subtle-card">
+                <p className="text-xs font-medium text-muted">准备 {index + 1}</p>
+                <p className="mt-2 text-sm leading-6 text-ink">{item}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="grid gap-4 xl:grid-cols-2">
+          {workflowSections.map((section) => (
+            <article key={section.title} className="section-card">
+              <h3 className="page-section-title">{section.title}</h3>
+              <ul className="mt-4 space-y-3 text-sm leading-6 text-muted">
+                {section.items.map((item) => (
+                  <li key={item} className="rounded-md border border-line bg-surface px-3 py-2">
+                    {item}
+                  </li>
+                ))}
+              </ul>
+            </article>
+          ))}
+        </section>
+      </div>
+    </AppShell>
+  );
+}

@@ -108,6 +108,8 @@ async (input) => {
 
   async function submit() {
     setStage("submit", "提交微博发布");
+    const successHints = ["发布成功", "发送成功", "已发布"];
+    const blockingHints = ["验证码", "安全验证", "频繁", "审核", "违规"];
     const candidates = queryAll(
       [
         'button:has-text("发布")',
@@ -128,12 +130,38 @@ async (input) => {
     }
     simulateClick(button);
     log("submit_clicked: weibo");
-    await sleep(5000);
-    const pg = pageText();
-    if (["发布成功", "发送成功", "已发布"].some((hint) => pg.includes(hint))) {
+    let sawSuccessHint = false;
+    let sawBlockingHint = false;
+    let lastPageText = "";
+    for (let index = 0; index < 12; index += 1) {
+      await sleep(500);
+      lastPageText = pageText();
+      if (!sawSuccessHint && successHints.some((hint) => lastPageText.includes(hint))) {
+        sawSuccessHint = true;
+        log("weibo_submit_success_hint_detected");
+      }
+      if (!sawBlockingHint && blockingHints.some((hint) => lastPageText.includes(hint))) {
+        sawBlockingHint = true;
+        log("weibo_submit_blocking_hint_detected");
+      }
+      if (sawSuccessHint && sawBlockingHint) {
+        break;
+      }
+    }
+    if (sawSuccessHint && sawBlockingHint) {
+      return complete({
+        status: "verification_failed",
+        failureStage: "submit",
+        errorMessage: "微博提交后出现验证、审核或风控提示。",
+        publishUrl: window.location.href,
+        verificationEvidence: "weibo_submit_success_then_blocking_text",
+        closeWindow: true,
+      });
+    }
+    if (sawSuccessHint) {
       return complete({ status: "published", publishUrl: window.location.href, verificationEvidence: "weibo_submit_success_text" });
     }
-    if (["验证码", "安全验证", "频繁", "审核", "违规"].some((hint) => pg.includes(hint))) {
+    if (sawBlockingHint) {
       return complete({ status: "verification_failed", failureStage: "submit", errorMessage: "微博提交后出现验证、审核或风控提示。", publishUrl: window.location.href, verificationEvidence: "weibo_platform_blocking_text" });
     }
     return complete({ status: "submitted", publishUrl: window.location.href, verificationEvidence: "weibo_submit_clicked" });

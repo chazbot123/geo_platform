@@ -373,7 +373,7 @@ export interface ImageAsset {
   url: string;
   localCoverPath?: string;
   localImageDir?: string;
-  reviewStatus: "pending" | "passed" | "fallback";
+  reviewStatus: "pending" | "passed" | "fallback" | "failed";
   prompt: string;
   provider?: string;
   providerTaskId?: string;
@@ -518,6 +518,7 @@ export interface PublishingJobRecord {
   contentPoolItemId?: string;
   contentSequence?: number;
   plannedPublishTime?: string;
+  plannedPublishTimeManualOverrideAt?: string;
   keywordText?: string;
   accountPublishingDraftId?: string;
   sourceSearchProvider?: SearchProvider;
@@ -746,6 +747,7 @@ export interface ContentPoolItem {
   keywordText: string;
   accountKeywordOffset: number;
   plannedPublishTime: string;
+  plannedPublishTimeManualOverrideAt?: string;
   title: string;
   summary: string;
   body: string;

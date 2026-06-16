@@ -254,9 +254,9 @@ function buildLoginResultPatch(
   if (typeof result.avatarUrl === "string") {
     patch.avatarUrl = result.avatarUrl.trim() || undefined;
   }
-  if (typeof result.authPayload === "string" && result.authPayload.trim()) {
-    patch.authPayload = result.authPayload.trim();
-    patch.authPayloadUpdatedAt = result.authPayloadUpdatedAt ?? patch.lastValidatedAt;
+  if (typeof result.authPayload === "string") {
+    patch.authPayload = result.authPayload.trim() || undefined;
+    patch.authPayloadUpdatedAt = result.authPayloadUpdatedAt || now();
   }
   return patch;
 }
@@ -283,9 +283,9 @@ function buildSessionAuditPatch(
     sessionPartition: current.sessionPartition,
     loginUrl: current.loginUrl,
   };
-  if (typeof result.authPayload === "string" && result.authPayload.trim()) {
-    patch.authPayload = result.authPayload.trim();
-    patch.authPayloadUpdatedAt = result.authPayloadUpdatedAt ?? patch.lastValidatedAt;
+  if (typeof result.authPayload === "string") {
+    patch.authPayload = result.authPayload.trim() || undefined;
+    patch.authPayloadUpdatedAt = result.authPayloadUpdatedAt || patch.lastValidatedAt;
   }
   return patch;
 }
