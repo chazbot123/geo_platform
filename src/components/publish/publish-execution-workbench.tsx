@@ -16,6 +16,7 @@ import { dispatchWorkflowStatusRefresh } from "@/components/layout/app-shell";
 import { requireLicensedAction } from "@/lib/license/guard";
 import { formatAccountDisplayLabel } from "@/lib/publish/account-label";
 import { openPlatformLoginWindow, validatePlatformSessionWindow } from "@/lib/publish/electron-login-client";
+import { waitForExternalLoginSync } from "@/lib/publish/external-login-sync";
 import type {
   ContentPoolItem,
   ContentPoolRecord,
@@ -451,10 +452,12 @@ export function PublishExecutionWorkbench() {
       const payload = (await response.json()) as {
         error?: string;
         loginRequest?: {
+          accountId?: string;
           platform: string;
           title: string;
           loginUrl?: string;
           sessionPartition?: string;
+          loginSessionToken?: string;
         };
       };
       if (!response.ok || !payload.loginRequest) {
@@ -464,6 +467,21 @@ export function PublishExecutionWorkbench() {
       const loginResult = await openPlatformLoginWindow(payload.loginRequest);
       if (loginResult.status === "unsupported") {
         throw new Error("当前未检测到可用桌面桥，请先启动 GEO 桌面版后再登录账号。");
+      }
+      if (loginResult.status === "opened") {
+        setNotice(loginResult.reason ?? `${platformLabels[article.item.publishPlatform]}已在外部浏览器打开，正在等待自动同步账号信息。`);
+        const syncedAccount = await waitForExternalLoginSync({
+          accountId,
+          sessionToken: payload.loginRequest.loginSessionToken,
+        });
+        if (syncedAccount) {
+          setNotice(`${platformLabels[article.item.publishPlatform]}账号已重新登录，已自动同步账号信息。`);
+          await loadState({ silent: true });
+          dispatchWorkflowStatusRefresh();
+          return;
+        }
+        setNotice(`${platformLabels[article.item.publishPlatform]}已在外部浏览器完成登录，但暂未同步到系统。请重新读取后再继续。`);
+        return;
       }
 
       if (loginResult.status === "authenticated") {

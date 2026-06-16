@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import pdfParse from "pdf-parse";
+import { PDFParse } from "pdf-parse";
 import { strFromU8, unzipSync } from "fflate";
 import { getAppConfig } from "@/lib/config/service";
 import type { EnterpriseAsset, EnterpriseParseResult, EnterpriseProfileFields } from "@/lib/enterprise/types";
@@ -97,7 +97,9 @@ async function readPdfText(file: File) {
 
   try {
     const buffer = Buffer.from(await file.arrayBuffer());
-    const result = await pdfParse(buffer);
+    const parser = new PDFParse({ data: buffer });
+    const result = await parser.getText();
+    await parser.destroy().catch(() => undefined);
     return result.text.replace(/\u0000/g, "").replace(/\n{3,}/g, "\n\n").trim();
   } catch {
     return "";

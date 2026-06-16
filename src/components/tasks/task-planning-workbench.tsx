@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CalendarDays, CheckCircle2, LoaderCircle, LogIn, PlayCircle, RefreshCw, Save, Settings2, ShieldCheck, Trash2 } from "lucide-react";
 import { dispatchWorkflowStatusRefresh } from "@/components/layout/app-shell";
+import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { requireLicensedAction } from "@/lib/license/guard";
 import { formatAccountDisplayLabel, resolveAccountIdentifier } from "@/lib/publish/account-label";
 import {
@@ -12,6 +13,7 @@ import {
   PLATFORM_SESSION_AUDIT_INTERVAL_MS,
 } from "@/lib/publish/account-session-validator";
 import { openPlatformLoginWindow, validatePlatformSessionWindow } from "@/lib/publish/electron-login-client";
+import { waitForExternalLoginSync } from "@/lib/publish/external-login-sync";
 import { getPlatformsBySearchProvider, providerPublishMatrix } from "@/lib/publish/provider-platform-matrix";
 import { getSearchProviderIcon, getSocialPlatformIcon } from "@/lib/platform-icons";
 import type {
@@ -25,6 +27,7 @@ import type {
 } from "@/lib/types";
 
 const providerOrder: SearchProvider[] = ["doubao", "yuanbao", "deepseek", "tongyi"];
+const ACCOUNT_DELETE_TIMEOUT_MS = 15000;
 
 const providerLabels: Record<SearchProvider, string> = {
   doubao: "豆包",
@@ -500,10 +503,12 @@ export function TaskPlanningWorkbench() {
       const payload = (await response.json()) as {
         account?: PlatformAccountRecord;
         loginRequest?: {
+          accountId?: string;
           platform: string;
           title: string;
           loginUrl?: string;
           sessionPartition?: string;
+          loginSessionToken?: string;
         };
         error?: string;
       };
@@ -527,6 +532,22 @@ export function TaskPlanningWorkbench() {
       // #endregion
       if (loginResult.status === "unsupported") {
         throw new Error("当前环境缺少桌面登录桥，请启动 GEO 桌面版。");
+      }
+      if (loginResult.status === "opened") {
+        setNotice(loginResult.reason ?? `${platformLabels[platform]}已在外部浏览器打开，正在等待自动同步账号信息。`);
+        const syncedAccount = await waitForExternalLoginSync({
+          accountId: payload.account.id,
+          sessionToken: payload.loginRequest.loginSessionToken,
+        });
+        if (syncedAccount) {
+          await detectAccounts(true);
+          setEnabledPlatforms((current) => (current.includes(platform) ? current : [...current, platform]));
+          setNotice(`${platformLabels[platform]}账号已登录，已自动同步账号信息。`);
+          window.dispatchEvent(new Event("geo-workflow-status-refresh"));
+          return;
+        }
+        setNotice(`${platformLabels[platform]}已在外部浏览器完成登录，但暂未同步到系统。请刷新账号状态后再继续。`);
+        return;
       }
 
       if (loginResult.status === "authenticated") {
@@ -604,9 +625,14 @@ export function TaskPlanningWorkbench() {
     setError("");
     setNotice("");
     try {
-      const response = await fetch(`/api/publish/accounts/${account.id}`, {
+      const response = await fetchWithTimeout(
+        `/api/publish/accounts/${account.id}`,
+        {
         method: "DELETE",
-      });
+        },
+        ACCOUNT_DELETE_TIMEOUT_MS,
+        `${platformLabels[account.platform]}账号删除超时，请稍后重试。若该账号绑定的任务较多，请刷新后确认是否已删除。`,
+      );
       const data = (await response.json()) as { error?: string };
       if (!response.ok) throw new Error(data.error || "移除账号失败。");
       setNotice(`${platformLabels[account.platform]}账号已移除。`);

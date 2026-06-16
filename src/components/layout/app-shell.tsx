@@ -96,7 +96,7 @@ export function AppShell({ title, description, children }: { title: string; desc
   }
 
   return (
-    <div className="min-h-screen px-3 py-3 sm:px-5 lg:px-6">
+    <div className="min-h-screen px-3 py-3 sm:px-5 lg:px-6 geo-page-enter">
       <div className="mx-auto grid max-w-[1680px] items-start gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
         <aside className="glass-panel sticky top-3 rounded-lg p-3">
           <div className="border-b border-stroke px-2 pb-4">

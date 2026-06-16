@@ -12,7 +12,8 @@
     "check": "tsc --noEmit",
     "test": "vitest run",
     "scan:mojibake": "node scripts/scan-mojibake.mjs",
-    "dist": "electron-builder --win dir --config.electronDist=node_modules/electron/dist --config.win.signAndEditExecutable=false",
+    "dist": "npm run build:web && npm run dist:app",
+    "dist:app": "electron-builder --win dir --config.electronDist=node_modules/electron/dist --config.win.signAndEditExecutable=false",
     "dist:installer": "npm run dist"
   },
   "dependencies": {

@@ -1,4 +1,5 @@
 const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, shell, session } = require("electron");
+const { execFile } = require("node:child_process");
 const fs = require("node:fs");
 const http = require("node:http");
 const next = require("next");
@@ -7,7 +8,8 @@ const { createLocalBridge } = require("./local-bridge");
 
 const isDev = !app.isPackaged;
 const DEV_SERVER_URL = process.env.GEO_DEV_SERVER_URL || "http://localhost:3000";
-const PROD_SERVER_URL = "http://127.0.0.1:3131";
+const PROD_SERVER_PORT = Number(process.env.GEO_DESKTOP_WEB_PORT || 33131);
+const PROD_SERVER_URL = `http://127.0.0.1:${PROD_SERVER_PORT}`;
 let mainWindow;
 let appTray;
 let server;
@@ -80,6 +82,7 @@ function loadDesktopIcon() {
   const candidatePaths = [
     path.join(__dirname, "assets", "ai-search.ico"),
     path.join(__dirname, "assets", "ai-search.png"),
+    path.join(app.getAppPath(), "src", "img", "搜索.png"),
     path.join(app.getAppPath(), "src", "img", "ai搜.png"),
     path.join(app.getAppPath(), "src", "img", "ai搜索.png"),
     path.join(app.getAppPath(), "src", "img", "ai搜索.svg"),
@@ -354,7 +357,7 @@ async function startNextServer() {
   server = http.createServer((request, response) => handle(request, response));
 
   await new Promise((resolve) => {
-    server.listen(3131, "127.0.0.1", resolve);
+    server.listen(PROD_SERVER_PORT, "127.0.0.1", resolve);
   });
 
   return PROD_SERVER_URL;
@@ -416,6 +419,63 @@ function createScopedWindow(input = {}) {
   });
   hideWindowMenu(scopedWindow);
   return scopedWindow;
+}
+
+function findPreferredBrowserExecutable() {
+  if (process.platform !== "win32") {
+    return "";
+  }
+  const candidatePaths = [
+    path.join(process.env.LOCALAPPDATA || "", "Google", "Chrome", "Application", "chrome.exe"),
+    path.join(process.env.PROGRAMFILES || "", "Google", "Chrome", "Application", "chrome.exe"),
+    path.join(process.env["PROGRAMFILES(X86)"] || "", "Google", "Chrome", "Application", "chrome.exe"),
+    path.join(process.env.LOCALAPPDATA || "", "Microsoft", "Edge", "Application", "msedge.exe"),
+    path.join(process.env.PROGRAMFILES || "", "Microsoft", "Edge", "Application", "msedge.exe"),
+    path.join(process.env["PROGRAMFILES(X86)"] || "", "Microsoft", "Edge", "Application", "msedge.exe"),
+  ].filter(Boolean);
+  return candidatePaths.find((candidatePath) => fs.existsSync(candidatePath)) || "";
+}
+
+async function openUrlInPreferredBrowser(url) {
+  const targetUrl = String(url || "").trim();
+  if (!targetUrl) {
+    throw new Error("Missing browser url.");
+  }
+  const browserExecutable = findPreferredBrowserExecutable();
+  if (browserExecutable) {
+    await new Promise((resolve, reject) => {
+      execFile(browserExecutable, [targetUrl], { windowsHide: true }, (error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
+    return {
+      browserExecutable,
+      usedShellFallback: false,
+    };
+  }
+  await shell.openExternal(targetUrl);
+  return {
+    browserExecutable: "",
+    usedShellFallback: true,
+  };
+}
+
+function buildVideohaoExtensionLoginGuideUrl(input = {}) {
+  const baseUrl = String(currentAppBaseUrl || "").trim();
+  const loginUrl = typeof input.loginUrl === "string" ? input.loginUrl.trim() : "";
+  const sessionToken = typeof input.loginSessionToken === "string" ? input.loginSessionToken.trim() : "";
+  if (!baseUrl || !loginUrl || !sessionToken) {
+    return "";
+  }
+  const guideUrl = new URL("/external-login/videohao", baseUrl);
+  guideUrl.searchParams.set("loginUrl", loginUrl);
+  guideUrl.searchParams.set("sessionToken", sessionToken);
+  guideUrl.searchParams.set("platform", "videohao");
+  return guideUrl.toString();
 }
 
 function parseCookieHeader(authPayload) {
@@ -966,6 +1026,7 @@ function buildPlatformAccountProfileProbe(platform) {
     case "baijiahao":
       return {
         displayNameSelectors: [
+          "a[href*='/builder/rc/settings/accountSet']",
           ".FeReactApp-_67642abe502443cd-userName",
           "[class*='userName']",
           "[class*='user-name']",
@@ -1077,18 +1138,22 @@ function buildPlatformAccountProfileProbe(platform) {
     case "zhihu":
       return {
         displayNameSelectors: [
+          "span.ProfileHeader-name",
           ".ProfileHeader-name",
           ".AppHeader-profileEntry-name",
           "[class*='ProfileHeader-name']",
           "[class*='profileEntry'] [class*='name']",
         ],
         avatarSelectors: [
+          "img.Avatar.AppHeader-profileAvatar",
+          ".AppHeader-profileAvatar",
           ".ProfileHeader-avatar img",
           ".AppHeader-profile img",
           "[class*='Avatar'] img",
           "img[src*='zhimg.com']",
         ],
         accountIdSelectors: [
+          "a.Menu-item[href*='/people/']",
           "a[href*='/people/']",
           ".ProfileHeader-content a[href*='/people/']",
         ],
@@ -1104,7 +1169,10 @@ function buildPlatformAccountProfileProbe(platform) {
           "[class*='nickname']",
         ],
         avatarSelectors: [
+          "img[class*='_avatar_']",
+          "img[alt='profile']",
           "[class*='avatar'] img",
+          "[class*='_avatar_'] img",
           ".woo-avatar-img",
           "img[src*='sinaimg.cn']",
           "img[src*='weiboimg.com']",
@@ -1158,7 +1226,7 @@ function buildPlatformAccountProfileProbe(platform) {
 async function extractPlatformAccountProfile(windowInstance, input = {}) {
   const probe = buildPlatformAccountProfileProbe(input.platform);
   return windowInstance.webContents.executeJavaScript(
-    `(() => {
+    `(async () => {
       const probe = ${JSON.stringify(probe)};
       const platform = ${JSON.stringify(String(input.platform || "").trim())};
       const blockedNames = new Set(["主页", "创作", "文章", "视频", "微头条", "管理", "数据", "收益", "任务", "创作中心", "发布", "发布作品", "内容管理", "作品管理", "首页", "消息", "登录", "退出登录", "去发布", "发作品", "发布内容", "高清发布", "立即发布", "定时发布", "发布设置", "活动管理"]);
@@ -1175,6 +1243,7 @@ async function extractPlatformAccountProfile(windowInstance, input = {}) {
           ? /nickname|nick_name|screen_name|display_name|displayname|remark_name|nick/i
           : /nickname|nick_name|screen_name|display_name|displayname|name|user_name|username|authorname/i;
       const normalizeText = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+      const sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
       const sanitizeDisplayNameByPlatform = (value) => {
         const text = normalizeText(value);
         if (!text) return "";
@@ -1211,12 +1280,79 @@ async function extractPlatformAccountProfile(windowInstance, input = {}) {
           return text;
         }
       };
+      const ensureZhihuProfilePage = async () => {
+        if (platform !== "zhihu") return;
+        const currentUrl = toAbsoluteUrl(window.location.href);
+        if (/\\/people\\/(?!self(?:[/?#]|$))[^/?#]+/i.test(currentUrl)) {
+          return;
+        }
+        const avatarNode =
+          document.querySelector("img.AppHeader-profileAvatar") ||
+          document.querySelector(".AppHeader-profileAvatar") ||
+          document.querySelector(".AppHeader-profile img") ||
+          document.querySelector(".AppHeader-profile");
+        const avatarTrigger = avatarNode?.closest?.("button, a, [role='button']") || avatarNode;
+        if (avatarTrigger && typeof avatarTrigger.click === "function") {
+          avatarTrigger.click();
+          await sleep(250);
+        }
+        const menuItems = Array.from(document.querySelectorAll("a[href*='/people/']"));
+        const homeLink = menuItems.find((node) => {
+          const text = normalizeText(node.textContent || node.getAttribute("aria-label") || node.getAttribute("title") || "");
+          const href = toAbsoluteUrl(node.getAttribute("href") || "");
+          return (/我的主页/.test(text) || /\\/people\\/(?!self(?:[/?#]|$))[^/?#]+/i.test(href)) && /^https?:\\/\\//i.test(href);
+        });
+        const profileUrl = toAbsoluteUrl(homeLink?.getAttribute?.("href") || "");
+        if (profileUrl && profileUrl !== currentUrl && /\\/people\\/(?!self(?:[/?#]|$))[^/?#]+/i.test(profileUrl)) {
+          window.location.href = profileUrl;
+          await sleep(250);
+        }
+      };
+      const ensureBaijiahaoAccountMenu = async () => {
+        if (platform !== "baijiahao") return;
+        const accountLinkSelector = "a[href*='/builder/rc/settings/accountSet']";
+        const hasVisibleGreeting = () =>
+          Array.from(document.querySelectorAll(accountLinkSelector)).some((node) =>
+            isVisible(node) && /^(?:上午好|中午好|下午好|晚上好)[,，]\\s*.+$/.test(normalizeText(node.textContent || ""))
+          );
+        if (hasVisibleGreeting()) {
+          return;
+        }
+        const triggerCandidates = Array.from(
+          document.querySelectorAll(
+            "header [role='button'], header button, header a, header div, nav [role='button'], nav button, nav a, nav div",
+          ),
+        ).filter((node) => {
+          if (!node || !isVisible(node)) return false;
+          const text = normalizeText(node.textContent || node.getAttribute("aria-label") || node.getAttribute("title") || "");
+          const classText = normalizeText(node.className || "");
+          return (
+            /user|avatar|account|header|profile/i.test(classText) ||
+            /账号|头像|个人|用户/.test(text) ||
+            Boolean(node.querySelector?.("img, svg"))
+          );
+        });
+        for (const trigger of triggerCandidates.slice(0, 8)) {
+          ["mouseenter", "mouseover", "mousemove"].forEach((eventName) => {
+            trigger.dispatchEvent(new MouseEvent(eventName, { bubbles: true, cancelable: true, view: window }));
+          });
+          if (typeof trigger.click === "function") {
+            trigger.click();
+          }
+          await sleep(250);
+          if (hasVisibleGreeting()) {
+            return;
+          }
+        }
+      };
       const isVisible = (element) => {
         if (!element) return false;
         const style = window.getComputedStyle(element);
         const rect = element.getBoundingClientRect();
         return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
       };
+      await ensureZhihuProfilePage();
+      await ensureBaijiahaoAccountMenu();
       const pickTextBySelectors = (selectors, validator = isMeaningfulName) => {
         for (const selector of selectors || []) {
           const nodes = Array.from(document.querySelectorAll(selector));
@@ -1281,9 +1417,21 @@ async function extractPlatformAccountProfile(windowInstance, input = {}) {
         for (const selector of selectors || []) {
           const nodes = Array.from(document.querySelectorAll(selector));
           for (const node of nodes) {
-            if (!node || !isVisible(node)) continue;
+            if (!node) continue;
+            const currentSrc = toAbsoluteUrl(
+              node.currentSrc ||
+                node.getAttribute("src") ||
+                node.getAttribute("data-src") ||
+                "",
+            );
+            const hasRenderableImageSignal =
+              /^https?:\/\//i.test(currentSrc) &&
+              ((typeof node.naturalWidth === "number" && node.naturalWidth >= 32) ||
+                (typeof node.naturalHeight === "number" && node.naturalHeight >= 32));
+            if (!isVisible(node) && !hasRenderableImageSignal) continue;
             const src = toAbsoluteUrl(
-              node.getAttribute("src") ||
+              node.currentSrc ||
+                node.getAttribute("src") ||
                 node.getAttribute("data-src") ||
                 node.getAttribute("data-avatar") ||
                 node.getAttribute("poster") ||
@@ -1381,8 +1529,8 @@ async function extractPlatformAccountProfile(windowInstance, input = {}) {
       );
       const fallbackAvatar = Array.from(document.querySelectorAll("img"))
         .filter((element) => isVisible(element) && element.naturalWidth >= 32 && element.naturalHeight >= 32)
-        .map((element) => toAbsoluteUrl(element.getAttribute("src") || element.getAttribute("data-src") || ""))
-        .find((src) => /avatar|head|portrait|douyinpic|toutiaoimg|byteimg|pstatp/i.test(src)) || "";
+        .map((element) => toAbsoluteUrl(element.currentSrc || element.getAttribute("src") || element.getAttribute("data-src") || ""))
+        .find((src) => /avatar|head|portrait|douyinpic|toutiaoimg|byteimg|pstatp|sinaimg|weiboimg/i.test(src)) || "";
       const pageText = normalizeText(document.body?.innerText || "");
       let platformAccountId = pickPlatformIdBySelectors(probe.accountIdSelectors)
         || pickStorageValue(
@@ -1585,7 +1733,7 @@ async function resolvePlatformAccountProfile(windowInstance, input = {}) {
   const initialProfile = await resolvePlatformAccountProfileFromWindow(windowInstance, input, 12000);
   const probeUrls = getPlatformAccountProfileProbeUrls({ ...input, currentProfile: initialProfile });
   const hasMeaningfulDisplayName = isMeaningfulAccountProfileText(initialProfile.displayName);
-  const forceProbeProfile = ["weibo", "csdn"].includes(platform);
+  const forceProbeProfile = ["weibo", "csdn", "zhihu"].includes(platform);
   if (!forceProbeProfile && (!probeUrls.length || hasMeaningfulDisplayName) && hasMeaningfulAccountProfile(initialProfile) && (initialProfile.avatarUrl || initialProfile.platformAccountId)) {
     return initialProfile;
   }
@@ -1607,6 +1755,7 @@ async function resolvePlatformAccountProfile(windowInstance, input = {}) {
     for (const probeUrl of probeUrls) {
       const isWeiboProfilePage = platform === "weibo" && /^https:\/\/me\.weibo\.com\/?/i.test(probeUrl);
       const isCsdnProfilePage = platform === "csdn" && /^https:\/\/blog\.csdn\.net\/[^/?#]+/i.test(probeUrl);
+      const isZhihuProfileProbe = platform === "zhihu";
       await loadWindowUrlWithTimeout(probeWindow, probeUrl, 20000);
       await waitForWindowStable(probeWindow);
       const profile = await resolvePlatformAccountProfileFromWindow(
@@ -1632,6 +1781,15 @@ async function resolvePlatformAccountProfile(windowInstance, input = {}) {
           lockedAccountName = String(profile.accountName || profile.displayName || "").trim();
           lockedPlatformAccountId = String(profile.platformAccountId || profile.displayName || "").trim();
         }
+        if (
+          isZhihuProfileProbe &&
+          /^https:\/\/www\.zhihu\.com\/people\/(?!self(?:[/?#]|$))[^/?#]+/i.test(String(profile.sourceUrl || "").trim()) &&
+          isMeaningfulAccountProfileText(profile.displayName)
+        ) {
+          lockedDisplayName = String(profile.displayName || "").trim();
+          lockedAccountName = String(profile.accountName || profile.displayName || "").trim();
+          lockedPlatformAccountId = String(profile.platformAccountId || "").trim();
+        }
         if (lockedDisplayName) {
           latestProfile.displayName = lockedDisplayName;
         }
@@ -1642,7 +1800,7 @@ async function resolvePlatformAccountProfile(windowInstance, input = {}) {
           latestProfile.platformAccountId = lockedPlatformAccountId;
         }
       }
-      if ((platform === "weibo" || platform === "csdn") && lockedDisplayName) {
+      if ((platform === "weibo" || platform === "csdn" || platform === "zhihu") && lockedDisplayName) {
         break;
       }
       if (hasMeaningfulAccountProfile(latestProfile) && latestProfile.avatarUrl && latestProfile.platformAccountId) {
@@ -1656,7 +1814,7 @@ async function resolvePlatformAccountProfile(windowInstance, input = {}) {
       probeWindow.close();
     }
   }
-  if ((platform === "weibo" || platform === "csdn") && !lockedDisplayName) {
+  if ((platform === "weibo" || platform === "csdn" || platform === "zhihu") && !lockedDisplayName) {
     delete latestProfile.displayName;
     delete latestProfile.accountName;
   }
@@ -1736,6 +1894,20 @@ function openPlatformLoginWindow(input = {}) {
   const loginUrl = typeof input.loginUrl === "string" ? input.loginUrl.trim() : "";
   if (!loginUrl) {
     return { status: "unsupported" };
+  }
+  if (String(input.platform || "").trim() === "videohao") {
+    const guideUrl = buildVideohaoExtensionLoginGuideUrl(input) || loginUrl;
+    return openUrlInPreferredBrowser(guideUrl)
+      .then((result) => ({
+        status: "opened",
+        reason: result.usedShellFallback
+          ? "视频号已在系统浏览器打开。系统会先尝试清理旧登录态，再打开登录页。请在 Edge 或 Chrome 完成登录后返回 GEO。"
+          : "视频号已在 Edge 或 Chrome 打开。系统会先尝试清理旧登录态，再打开登录页。请完成登录后返回 GEO。",
+      }))
+      .catch(() => ({
+        status: "unsupported",
+        reason: "视频号无法在外部浏览器打开，请确认本机已安装 Edge 或 Chrome。",
+      }));
   }
 
   return new Promise((resolve) => {

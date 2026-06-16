@@ -2,7 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, ExternalLink, FileImage, LoaderCircle, LogIn, RefreshCcw, Trash2, UserCircle2, XCircle } from "lucide-react";
+import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { openPlatformLoginWindow, validatePlatformSessionWindow } from "@/lib/publish/electron-login-client";
+import { waitForExternalLoginSync } from "@/lib/publish/external-login-sync";
 import { toDisplayImageItems } from "@/lib/publish/image-display";
 import { detectDesktopBridge, hasElectronDesktopBridge, type DesktopBridgeAvailability } from "@/lib/publish/local-bridge-client";
 import { formatAccountDisplayLabel, resolveAccountIdentifier } from "@/lib/publish/account-label";
@@ -20,6 +22,7 @@ const TOUTIAO_PLATFORM = "toutiao";
 const TOUTIAO_LABEL = "今日头条";
 const DEBUG_SERVER_URL = "http://127.0.0.1:7778/event";
 const DEBUG_SESSION_ID = "account-info-fetch";
+const ACCOUNT_DELETE_TIMEOUT_MS = 15000;
 
 function emitDebug(hypothesisId: string, location: string, msg: string, data: Record<string, unknown>) {
   // #region debug-point shared:emit
@@ -353,10 +356,12 @@ export function PlatformAccountCenter({
       const targetAccountId = payload.account?.id ?? accountId;
       const loginRequest = payload.loginRequest as
         | {
+            accountId?: string;
             platform: string;
             title: string;
             loginUrl?: string;
             sessionPartition?: string;
+            loginSessionToken?: string;
           }
         | undefined;
 
@@ -380,6 +385,21 @@ export function PlatformAccountCenter({
       // #endregion
       if (loginResult.status === "unsupported") {
         throw new Error("当前桌面壳未暴露登录桥，无法打开平台登录窗。");
+      }
+      if (loginResult.status === "opened") {
+        setMessage(loginResult.reason ?? `${platformLabel(platform)}已在外部浏览器打开，正在等待自动同步账号信息。`);
+        const syncedAccount = await waitForExternalLoginSync({
+          accountId: targetAccountId,
+          sessionToken: loginRequest.loginSessionToken,
+        });
+        if (syncedAccount) {
+          await refreshAccounts();
+          setMessage(`${platformLabel(platform)}登录完成，已自动同步账号信息。`);
+          window.dispatchEvent(new Event("geo-workflow-status-refresh"));
+          return;
+        }
+        setMessage(`${platformLabel(platform)}已在外部浏览器完成登录，但暂未同步到系统。请回到当前页面刷新账号状态。`);
+        return;
       }
 
       if (loginResult.status === "authenticated") {
@@ -505,7 +525,12 @@ export function PlatformAccountCenter({
     setLoadingKey(accountId);
     setMessage("");
     try {
-      const response = await fetch(`/api/publish/accounts/${accountId}`, { method: "DELETE" });
+      const response = await fetchWithTimeout(
+        `/api/publish/accounts/${accountId}`,
+        { method: "DELETE" },
+        ACCOUNT_DELETE_TIMEOUT_MS,
+        "删除账号超时，请稍后重试。若该账号绑定了较多任务或草稿，请刷新后确认是否已删除。",
+      );
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error ?? "删除账号失败");
       await refreshAccounts();

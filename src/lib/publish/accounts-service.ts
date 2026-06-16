@@ -1,4 +1,5 @@
 import path from "node:path";
+import { promises as fs } from "node:fs";
 import { dataDirectories } from "@/lib/paths";
 import { isMeaningfulAccountIdentifier, sanitizeAccountProfileForSave } from "@/lib/publish/account-label";
 import { getSocialPlatformDescriptor } from "@/lib/publish/platforms";
@@ -20,14 +21,17 @@ import {
 } from "@/lib/storage/data-store";
 import { readJsonFile, writeJsonFile } from "@/lib/storage/json-store";
 import type {
+  AccountPublishingDraft,
   AccountPublishedJobsGroup,
   PlatformAccountDetectionItem,
   PlatformAccountDetectionResult,
   PlatformAccountLoginStatus,
   PlatformAccountRecord,
   PlatformAccountStatus,
+  PublishingDraft,
   PublishableAccountSummary,
   SocialPlatform,
+  TaskRecord,
 } from "@/lib/types";
 
 const ACCOUNT_DETECTION_CACHE_TTL_MS = 30 * 60 * 1000;
@@ -39,6 +43,8 @@ interface CachedAccountDetection {
   items: PlatformAccountDetectionItem[];
   updatedAt: string;
 }
+
+let inMemoryAccountDetectionCache: CachedAccountDetection | null = null;
 
 function now() {
   return new Date().toISOString();
@@ -69,8 +75,103 @@ function uniqueValues(values: string[]) {
   return Array.from(new Set(values));
 }
 
+async function listJsonFilePaths(dirPath: string) {
+  try {
+    const entries = await fs.readdir(dirPath, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => path.join(dirPath, entry.name));
+  } catch (error) {
+    const nodeError = error as NodeJS.ErrnoException;
+    if (nodeError.code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+}
+
+async function removeAccountFromTaskPlans(accountId: string) {
+  const filePaths = await listJsonFilePaths(dataDirectories.tasks);
+
+  for (const filePath of filePaths) {
+    const task = await readJsonFile<TaskRecord | null>(filePath, null);
+    const publishPlan = task?.publishPlan;
+    if (!task || !publishPlan?.enabledPlatforms.some((platform) => platform.accountIds.includes(accountId))) {
+      continue;
+    }
+
+    const enabledPlatforms = publishPlan.enabledPlatforms.map((platform) => {
+      const accountIds = platform.accountIds.filter((id) => id !== accountId);
+      const enabled = platform.enabled && accountIds.length > 0;
+      const accountCount = enabled ? accountIds.length : 0;
+      return {
+        ...platform,
+        enabled,
+        accountIds: enabled ? accountIds : [],
+        accountCount,
+        articleCount: accountCount * publishPlan.days * publishPlan.articlesPerAccountPerDay,
+      };
+    });
+
+    const totalAccountCount = enabledPlatforms.reduce((total, platform) => total + (platform.enabled ? platform.accountCount : 0), 0);
+    const totalArticleCount = enabledPlatforms.reduce((total, platform) => total + platform.articleCount, 0);
+    await saveTask({
+      ...task,
+      publishPlan: {
+        ...publishPlan,
+        enabledPlatforms,
+        totalAccountCount,
+        totalArticleCount,
+        updatedAt: now(),
+      },
+      updatedAt: now(),
+    });
+  }
+}
+
+async function removeAccountFromPublishingDrafts(accountId: string) {
+  const filePaths = await listJsonFilePaths(dataDirectories.publishingDrafts);
+
+  for (const filePath of filePaths) {
+    const draft = await readJsonFile<PublishingDraft | null>(filePath, null);
+    if (!draft) {
+      continue;
+    }
+
+    const currentAccountIds = Array.isArray(draft.accountIds) ? draft.accountIds : undefined;
+    const nextAccountIds = currentAccountIds?.filter((id) => id !== accountId);
+    const accountIdChanged = draft.accountId === accountId;
+    const accountIdsChanged = Boolean(currentAccountIds && nextAccountIds && nextAccountIds.length !== currentAccountIds.length);
+    if (!accountIdChanged && !accountIdsChanged) {
+      continue;
+    }
+
+    await savePublishingDraft({
+      ...draft,
+      accountId: accountIdChanged ? undefined : draft.accountId,
+      accountIds: nextAccountIds,
+      updatedAt: now(),
+    });
+  }
+}
+
+async function deleteAccountScopedPublishingDrafts(accountId: string) {
+  const filePaths = await listJsonFilePaths(dataDirectories.accountPublishingDrafts);
+
+  for (const filePath of filePaths) {
+    const draft = await readJsonFile<AccountPublishingDraft | null>(filePath, null);
+    if (draft?.accountId === accountId) {
+      await deleteAccountPublishingDraft(draft.id);
+    }
+  }
+}
+
 function buildSessionPartition(accountId: string) {
   return `persist:geo-platform-${accountId}`;
+}
+
+function buildLoginSessionToken(accountId: string) {
+  return `login-${accountId}-${Date.now()}`;
 }
 
 function buildAuthPayloadPreview(authPayload?: string) {
@@ -505,14 +606,38 @@ function isDetectionFresh(item: PlatformAccountDetectionItem, nowMs: number) {
 }
 
 async function readAccountDetectionCache() {
-  return readJsonFile<CachedAccountDetection>(ACCOUNT_DETECTION_CACHE_FILE, { items: [], updatedAt: "" });
+  let diskCache: CachedAccountDetection = { items: [], updatedAt: "" };
+  try {
+    diskCache = await readJsonFile<CachedAccountDetection>(ACCOUNT_DETECTION_CACHE_FILE, { items: [], updatedAt: "" });
+  } catch (error) {
+    const nodeError = error as NodeJS.ErrnoException;
+    if (nodeError.code !== "EPERM" && nodeError.code !== "EACCES" && nodeError.code !== "EBUSY") {
+      throw error;
+    }
+  }
+  if (!inMemoryAccountDetectionCache) {
+    return diskCache;
+  }
+  const diskUpdatedAt = new Date(diskCache.updatedAt || 0).getTime();
+  const memoryUpdatedAt = new Date(inMemoryAccountDetectionCache.updatedAt || 0).getTime();
+  return memoryUpdatedAt > diskUpdatedAt ? inMemoryAccountDetectionCache : diskCache;
 }
 
 async function writeAccountDetectionCache(items: PlatformAccountDetectionItem[]) {
-  await writeJsonFile<CachedAccountDetection>(ACCOUNT_DETECTION_CACHE_FILE, {
+  const nextCache: CachedAccountDetection = {
     items,
     updatedAt: now(),
-  });
+  };
+  inMemoryAccountDetectionCache = nextCache;
+  try {
+    await writeJsonFile<CachedAccountDetection>(ACCOUNT_DETECTION_CACHE_FILE, nextCache);
+  } catch (error) {
+    const nodeError = error as NodeJS.ErrnoException;
+    if (nodeError.code === "EPERM" || nodeError.code === "EACCES" || nodeError.code === "EBUSY") {
+      return;
+    }
+    throw error;
+  }
 }
 
 function buildDetectionItem(platform: SocialPlatform, accounts: PlatformAccountRecord[], detectedAt: string): PlatformAccountDetectionItem {
@@ -642,69 +767,9 @@ export async function removePlatformAccount(accountId: string) {
     throw new Error("账号不存在");
   }
 
-  const [tasks, publishingDrafts, accountPublishingDrafts] = await Promise.all([
-    listTasks(),
-    listPublishingDrafts(),
-    listAccountPublishingDrafts(),
-  ]);
-
-  await Promise.all(
-    tasks.map(async (task) => {
-      if (!task.publishPlan?.enabledPlatforms.some((platform) => platform.accountIds.includes(accountId))) {
-        return;
-      }
-
-      const enabledPlatforms = task.publishPlan.enabledPlatforms.map((platform) => {
-        const accountIds = platform.accountIds.filter((id) => id !== accountId);
-        const enabled = platform.enabled && accountIds.length > 0;
-        const accountCount = enabled ? accountIds.length : 0;
-        return {
-          ...platform,
-          enabled,
-          accountIds: enabled ? accountIds : [],
-          accountCount,
-          articleCount: accountCount * task.publishPlan!.days * task.publishPlan!.articlesPerAccountPerDay,
-        };
-      });
-
-      const totalAccountCount = enabledPlatforms.reduce((total, platform) => total + (platform.enabled ? platform.accountCount : 0), 0);
-      const totalArticleCount = enabledPlatforms.reduce((total, platform) => total + platform.articleCount, 0);
-      await saveTask({
-        ...task,
-        publishPlan: {
-          ...task.publishPlan,
-          enabledPlatforms,
-          totalAccountCount,
-          totalArticleCount,
-          updatedAt: now(),
-        },
-        updatedAt: now(),
-      });
-    }),
-  );
-
-  await Promise.all(
-    publishingDrafts.map(async (draft) => {
-      const nextAccountIds = draft.accountIds?.filter((id) => id !== accountId);
-      const accountIdChanged = draft.accountId === accountId;
-      const accountIdsChanged = Boolean(draft.accountIds && nextAccountIds && nextAccountIds.length !== draft.accountIds.length);
-      if (!accountIdChanged && !accountIdsChanged) {
-        return;
-      }
-      await savePublishingDraft({
-        ...draft,
-        accountId: accountIdChanged ? undefined : draft.accountId,
-        accountIds: nextAccountIds,
-        updatedAt: now(),
-      });
-    }),
-  );
-
-  await Promise.all(
-    accountPublishingDrafts
-      .filter((draft) => draft.accountId === accountId)
-      .map((draft) => deleteAccountPublishingDraft(draft.id)),
-  );
+  await removeAccountFromTaskPlans(accountId);
+  await removeAccountFromPublishingDrafts(accountId);
+  await deleteAccountScopedPublishingDrafts(accountId);
 
   await deletePlatformAccount(accountId);
 }
@@ -717,6 +782,7 @@ export async function markPlatformAccountLoginStarted(accountId: string) {
     riskReason: undefined,
     cooldownUntil: undefined,
     lastLoginStartedAt: now(),
+    loginSessionToken: buildLoginSessionToken(accountId),
     lastError: undefined,
   });
 }

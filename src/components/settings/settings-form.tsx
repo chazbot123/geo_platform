@@ -19,15 +19,13 @@ interface ProbeResult {
   image: ProbeOutcome;
 }
 
-const modelLabels: Record<ModelSection, { title: string; description: string; icon: typeof Type }> = {
+const modelLabels: Record<ModelSection, { title: string; description?: string; icon: typeof Type }> = {
   text: {
     title: "文字模型",
-    description: "用于资料解析、客户关键词、内容生成、平台适配和自动改写。",
     icon: Type,
   },
   image: {
     title: "图片模型",
-    description: "用于内容配图生成。GPT 服务商默认使用 gpt-image-2；无参考图时走文生图，有参考图时会走 OpenAI 兼容图生图编辑接口。",
     icon: ImageIcon,
   },
 };
@@ -139,7 +137,9 @@ export function SettingsForm({ initialConfig }: { initialConfig: AppConfig }) {
                 </span>
                 <div>
                   <h3 className="font-display text-lg font-bold text-ink">{modelLabels[section].title}</h3>
-                  <p className="mt-1 text-sm leading-6 text-muted">{modelLabels[section].description}</p>
+                  {modelLabels[section].description ? (
+                    <p className="mt-1 text-sm leading-6 text-muted">{modelLabels[section].description}</p>
+                  ) : null}
                 </div>
               </div>
 
