@@ -5,6 +5,7 @@ import {
 } from "@/lib/storage/data-store";
 import { recordPublishingJobResult } from "@/lib/publish/jobs-service";
 import { LOCAL_BRIDGE_BASE_URL } from "@/lib/publish/local-bridge-client";
+import { buildXiaohongshuNoteBody, normalizeDouyinTags, normalizeXiaohongshuTags, validateDraftForPlatform } from "@/lib/publish/draft-builders";
 import { resolvePublishImagePaths } from "@/lib/publish/publish-image-resolver";
 import type {
   AccountPublishingDraft,
@@ -47,6 +48,25 @@ function formatBridgeTimeoutMessage(timeoutMs: number) {
   return `桌面发布执行超时（>${timeoutSeconds} 秒），请检查 Electron 发布窗口是否卡在登录、风控、图片上传或提交确认步骤。`;
 }
 
+function buildAutomationPayload(job: PublishingJobRecord, resolvedImagePaths: string[]) {
+  const draftTags =
+    job.platform === "xiaohongshu"
+      ? normalizeXiaohongshuTags(job.draftTags)
+      : job.platform === "douyin"
+        ? normalizeDouyinTags(job.draftTags)
+        : job.draftTags;
+  const draftBody = job.platform === "xiaohongshu" ? buildXiaohongshuNoteBody(job.draftBody ?? "", draftTags) : job.draftBody;
+
+  return {
+    draftTitle: job.draftTitle,
+    draftBody,
+    draftTags,
+    draftImages: job.draftImages,
+    draftImagePaths: resolvedImagePaths,
+    publishMode: resolvedImagePaths.length ? "with_images" : (job.publishMode ?? "text_only"),
+  };
+}
+
 async function requestLocalBridge<T>(pathname: string, body: unknown, timeoutMs: number): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -60,7 +80,7 @@ async function requestLocalBridge<T>(pathname: string, body: unknown, timeoutMs:
     });
     const payload = (await response.json().catch(() => ({}))) as T & { error?: string; reason?: string };
     if (!response.ok) {
-      throw new Error(payload.error || payload.reason || "local bridge request failed");
+      throw new Error(payload.error || payload.reason || "本地桌面桥请求失败，请确认 GEO 桌面版正在运行。");
     }
     return payload;
   } catch (error) {
@@ -117,7 +137,7 @@ async function resolveJobDraft(job: PublishingJobRecord): Promise<PublishingDraf
 export async function runQueuedPublishingJob(jobId: string) {
   const job = await getPublishingJob(jobId);
   if (!job) {
-    throw new Error("publishing job not found");
+    throw new Error("发布任务不存在。");
   }
   if (job.status !== "queued") {
     return job;
@@ -150,6 +170,27 @@ export async function runQueuedPublishingJob(jobId: string) {
     imageUrls: draft.imageUrls,
     localImagePaths: job.draftImagePaths?.length ? job.draftImagePaths : draft.localImagePaths,
   });
+  const validationErrors = validateDraftForPlatform(
+    {
+      title: draft.title,
+      body: draft.body,
+      tags: draft.tags,
+      imageUrls: draft.imageUrls,
+      localImagePaths: resolvedImagePaths,
+      publishMode: resolvedImagePaths.length ? "with_images" : (draft.publishMode ?? "text_only"),
+      coverImageUrl: draft.coverImageUrl,
+    },
+    draft.platform,
+  );
+  if (validationErrors.length > 0) {
+    return recordPublishingJobResult({
+      jobId: job.id,
+      status: "failed",
+      failureStage: "preflight",
+      errorMessage: validationErrors.map((error) => error.message).join("；"),
+      executionLog: ["发布前校验未通过，已阻断自动化发布。"],
+    });
+  }
   const bridgeReady = await checkLocalBridgeReady();
   if (!bridgeReady) {
     return recordPublishingJobResult({
@@ -193,14 +234,7 @@ export async function runQueuedPublishingJob(jobId: string) {
         authPayload: account.authPayload,
         sessionToken,
         timeoutMs: ELECTRON_PUBLISH_TIMEOUT_MS,
-        payload: {
-          draftTitle: job.draftTitle,
-          draftBody: job.draftBody,
-          draftTags: job.draftTags,
-          draftImages: job.draftImages,
-          draftImagePaths: resolvedImagePaths,
-          publishMode: resolvedImagePaths.length ? "with_images" : (job.publishMode ?? "text_only"),
-        },
+        payload: buildAutomationPayload(job, resolvedImagePaths),
       },
       bridgeRequestTimeoutMs,
     );

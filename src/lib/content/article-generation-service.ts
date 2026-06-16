@@ -1,5 +1,7 @@
 import { getAppConfig } from "@/lib/config/service";
-import { loadPlatformStrategy, loadRiskWords } from "@/lib/content/prompt-loader";
+import { loadAiScenarioTemplate, loadPlatformStrategy, loadRiskWords, renderPlatformStrategyInstructions } from "@/lib/content/prompt-loader";
+import { renderArticleTemplateInstructions, selectArticleTemplate } from "@/lib/content/article-templates";
+import { normalizePlatformTopicTags } from "@/lib/content/platform-content-rules";
 import { materializeScopedImageAssetToLocal } from "@/lib/images/local-image-store";
 import { reviewContent, type ReviewResult } from "@/lib/content/review-service";
 import { runImageModel } from "@/lib/integrations/images/client";
@@ -69,6 +71,13 @@ interface ArticlePayload {
   notes?: string[];
 }
 
+interface QualityReviewDecision {
+  passed?: boolean;
+  rewriteRequired?: boolean;
+  issues?: string[];
+  revisionInstruction?: string;
+}
+
 interface ArticleStageResult {
   payload: Required<ArticlePayload>;
   usedFallback: boolean;
@@ -119,6 +128,19 @@ function normalizeTags(tags: unknown, keyword: string) {
   const values = Array.isArray(tags) ? tags : [];
   const normalized = values.map((item) => (typeof item === "string" ? item.trim() : "")).filter(Boolean);
   return Array.from(new Set([keyword.replace(/[？?]/g, ""), ...normalized])).slice(0, 6);
+}
+
+function normalizeArticleTopicTags(input: { tags?: unknown; keyword: string; platform: SocialPlatform; product: ProductProfile }) {
+  const generatedTags = Array.isArray(input.tags) ? input.tags.filter((tag): tag is string => typeof tag === "string") : [];
+  return normalizePlatformTopicTags(
+    [
+      ...generatedTags,
+      input.keyword,
+      input.product.productName,
+      input.product.category,
+    ],
+    input.platform,
+  );
 }
 
 function buildDevArticle(context: ArticlePromptContext, stage: ArticleInternalStage): Required<ArticlePayload> {
@@ -238,9 +260,13 @@ function buildMustHaveSnippet(required: string, context: ArticleGenerationContex
 async function finalizeArticlePayload(
   context: ArticleGenerationContext,
   payload: Required<ArticlePayload>,
+  preloaded?: {
+    strategy?: Awaited<ReturnType<typeof loadPlatformStrategy>>;
+    riskConfig?: Awaited<ReturnType<typeof loadRiskWords>>;
+  },
 ): Promise<Required<ArticlePayload>> {
-  const strategy = await loadPlatformStrategy(context.platform);
-  const riskConfig = await loadRiskWords();
+  const strategy = preloaded?.strategy ?? await loadPlatformStrategy(context.platform);
+  const riskConfig = preloaded?.riskConfig ?? await loadRiskWords();
   const strategyRiskWords = strategy?.review.riskWords ?? [];
   const blockingRiskWords = riskConfig?.blockingWords ?? [];
   const warningRiskWords = riskConfig?.warningWords ?? [];
@@ -339,6 +365,41 @@ async function callArticleStage(input: {
   }
 
   throw lastError instanceof Error ? lastError : new Error("ARTICLE_STAGE_FAILED");
+}
+
+async function callQualityReviewDecision(input: {
+  config: ModelApiConfig;
+  context: ArticlePromptContext;
+  prompt: string;
+  forceFallback?: boolean;
+}): Promise<QualityReviewDecision> {
+  if (input.forceFallback || !hasConfiguredModel(input.config)) {
+    return { passed: true, rewriteRequired: false, issues: [], revisionInstruction: "" };
+  }
+
+  const messages: OpenAICompatibleMessage[] = [
+    {
+      role: "system",
+      content: [
+        "你是 GEO 内容生产系统的最终质检节点。",
+        "必须只输出 JSON 复检结论，不要输出文章正文，不要解释。",
+      ].join("\n"),
+    },
+    { role: "user", content: input.prompt },
+  ];
+
+  try {
+    const result = await callConfiguredTextModel(input.config, messages);
+    const parsed = parseJsonFromModelText<QualityReviewDecision>(result.rawText);
+    return {
+      passed: parsed?.passed !== false,
+      rewriteRequired: parsed?.rewriteRequired === true,
+      issues: Array.isArray(parsed?.issues) ? parsed.issues.filter((item): item is string => typeof item === "string") : [],
+      revisionInstruction: typeof parsed?.revisionInstruction === "string" ? parsed.revisionInstruction.trim() : "",
+    };
+  } catch {
+    return { passed: true, rewriteRequired: false, issues: [], revisionInstruction: "" };
+  }
 }
 
 function toReviewDraft(context: ArticleGenerationContext, payload: Required<ArticlePayload>, timestamp: string): ContentDraft {
@@ -522,14 +583,35 @@ export async function generateArticleForContentPool(context: ArticleGenerationCo
   const log = [stageLog("brief_ready", "文章 brief 已生成。")];
   const timestamp = now();
   const latestComparable = context.previousComparableArticles.at(-1);
+  const initialTopicTags = normalizePlatformTopicTags([context.keywordText, context.product.productName, context.product.category], context.platform);
+  const platformStrategy = await loadPlatformStrategy(context.platform);
+  const aiScenarioTemplate = await loadAiScenarioTemplate(context.searchProvider);
+  const riskWordsConfig = await loadRiskWords();
+  const articleTemplate = selectArticleTemplate({
+    question: context.keywordText,
+    keywords: [context.theme.mainKeyword, ...(context.theme.selectedKeywords ?? [])].filter(Boolean),
+    sequence: context.sequence,
+  });
+  const platformInstructions = renderPlatformStrategyInstructions(platformStrategy);
+  const articleTemplateInstructions = renderArticleTemplateInstructions({
+    template: articleTemplate,
+    platform: context.platform,
+    complianceNotes: [context.product.complianceNotes, "禁止 AI 投毒、虚假宣传、黑五类、宗教敏感引导和不可核验承诺。"].filter(
+      (item): item is string => Boolean(item?.trim()),
+    ),
+  });
   const promptContext: ArticlePromptContext = {
     product: context.product,
     keyword: context.keywordText,
+    topicTags: initialTopicTags,
     platform: context.platform,
     searchProvider: context.searchProvider,
     accountName: context.accountName,
     plannedPublishTime: context.plannedPublishTime,
     sequence: context.sequence,
+    platformInstructions,
+    articleTemplateInstructions,
+    aiScenarioInstructions: aiScenarioTemplate ?? undefined,
     previousTitle: latestComparable?.title,
     previousOpening: getOpening(latestComparable?.body),
   };
@@ -581,16 +663,48 @@ export async function generateArticleForContentPool(context: ArticleGenerationCo
     prompt: buildRiskRewritePrompt({ ...promptContext, previousBody: deduped.body }),
   });
   log.push(stageLog("risk_ready", "风险语言修正完成。"));
-  const finalizedPayload = await finalizeArticlePayload(context, finalPayload);
+  let finalizedPayload = await finalizeArticlePayload(context, finalPayload, {
+    strategy: platformStrategy,
+    riskConfig: riskWordsConfig,
+  });
+  let qualityRevisionApplied = false;
 
   log.push(stageLog("quality_reviewing", "正在进行最终复检。"));
   if (hasConfiguredModel(config) && !forceFallbackStages) {
-    await runStage({
+    const qualityDecision = await callQualityReviewDecision({
+      config,
       context: { ...promptContext, previousBody: finalizedPayload.body },
-      stage: "quality_passed",
       prompt: buildQualityReviewPrompt({ ...promptContext, previousBody: finalizedPayload.body }),
     });
+    if (qualityDecision.rewriteRequired || qualityDecision.passed === false) {
+      qualityRevisionApplied = true;
+      const revisionInstruction =
+        qualityDecision.revisionInstruction ||
+        qualityDecision.issues?.join("；") ||
+        "最终复检认为文章仍需按平台规则和合规边界修订。";
+      log.push(stageLog("risk_rewriting", `最终复检要求二次修订：${revisionInstruction}`));
+      const revisedPayload = await runStage({
+        context: { ...promptContext, previousBody: finalizedPayload.body, qualityRevisionInstruction: revisionInstruction },
+        stage: "risk_ready",
+        prompt: buildRiskRewritePrompt({
+          ...promptContext,
+          previousBody: finalizedPayload.body,
+          qualityRevisionInstruction: revisionInstruction,
+        }),
+      });
+      finalizedPayload = await finalizeArticlePayload(context, revisedPayload, {
+        strategy: platformStrategy,
+        riskConfig: riskWordsConfig,
+      });
+      log.push(stageLog("risk_ready", "最终复检二次修订完成。"));
+    }
   }
+  const topicTags = normalizeArticleTopicTags({
+    tags: finalizedPayload.tags,
+    keyword: context.keywordText,
+    platform: context.platform,
+    product: context.product,
+  });
 
   const reviewDraft = toReviewDraft(context, finalizedPayload, timestamp);
   const reviewResult = await reviewContent(
@@ -662,6 +776,7 @@ export async function generateArticleForContentPool(context: ArticleGenerationCo
     keywordId: context.keywordId,
     keywordSequence: context.keywordSequence,
     keywordText: context.keywordText,
+    topicTags,
     accountKeywordOffset: context.accountKeywordOffset,
     plannedPublishTime: context.plannedPublishTime,
     title: finalizedPayload.title,
@@ -679,11 +794,21 @@ export async function generateArticleForContentPool(context: ArticleGenerationCo
     stageMessage: publishable ? "已完成" : risk.message,
     stageLog: [...log, stageLog(publishable ? "ready" : "failed", publishable ? "文章生成完成。" : risk.message)],
     generationAttemptCount: 1,
-    rewriteAttemptCount: 1,
+    rewriteAttemptCount: qualityRevisionApplied ? 2 : 1,
     dedupeAttemptCount: 1,
-    reviewAttemptCount: 1,
+    reviewAttemptCount: qualityRevisionApplied ? 2 : 1,
     riskCodes: risk.riskCodes,
     failedReason: publishable ? undefined : risk.message,
+    generationInputSnapshot: {
+      productName: context.product.productName,
+      category: context.product.category,
+      region: [context.product.province, context.product.city, context.product.district].filter(Boolean).join("") || context.product.scenarios,
+      keywordText: context.keywordText,
+      publishPlatform: context.platform,
+      searchProvider: context.searchProvider,
+      accountId: context.accountId,
+      plannedPublishTime: context.plannedPublishTime,
+    },
     createdAt: timestamp,
     updatedAt: timestamp,
   };

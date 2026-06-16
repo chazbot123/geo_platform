@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ArticleGenerationContext } from "@/lib/content/article-generation-service";
 import { generateArticleForContentPool } from "@/lib/content/article-generation-service";
-import { loadPlatformStrategy, loadRiskWords } from "@/lib/content/prompt-loader";
+import { loadAiScenarioTemplate, loadPlatformStrategy, loadRiskWords } from "@/lib/content/prompt-loader";
 import type { PlatformStrategy, RiskWordsConfig } from "@/lib/content/prompt-loader";
 import { runImageModel } from "@/lib/integrations/images/client";
 import type { ReviewResult } from "@/lib/content/review-service";
+import { callConfiguredTextModel } from "@/lib/integrations/openai-compatible";
 
 const appConfig = {
   contentModelApiConfig: {
@@ -85,8 +86,10 @@ vi.mock("@/lib/content/review-service", () => ({
 }));
 
 vi.mock("@/lib/content/prompt-loader", () => ({
+  loadAiScenarioTemplate: vi.fn(async () => "AI 场景模板：先给结论，再给依据。"),
   loadPlatformStrategy: vi.fn(async () => defaultPlatformStrategy),
   loadRiskWords: vi.fn(async () => defaultRiskWords),
+  renderPlatformStrategyInstructions: vi.fn(() => "平台策略资产：标题短、正文清晰、必须有判断标准。"),
 }));
 
 vi.mock("@/lib/integrations/openai-compatible", () => ({
@@ -178,6 +181,165 @@ describe("generateArticleForContentPool", () => {
     };
     vi.mocked(loadPlatformStrategy).mockImplementation(async () => defaultPlatformStrategy);
     vi.mocked(loadRiskWords).mockImplementation(async () => defaultRiskWords);
+    vi.mocked(loadAiScenarioTemplate).mockImplementation(async () => "AI 场景模板：先给结论，再给依据。");
+    vi.mocked(callConfiguredTextModel).mockClear();
+  });
+
+  it("injects platform limits, article template and short topic tags into generation prompts", async () => {
+    payloadQueue = Array.from({ length: 5 }, () => ({
+      title: "正常标题",
+      summary: "正常摘要",
+      body: "正文包含判断标准和适用场景。",
+      imagePrompt: "配图提示",
+      riskLevel: "low",
+      tags: ["#GEO优化/服务商", "客户问：北京企业做GEO优化怎么判断服务商是否靠谱？需要看哪些案例和风险？"],
+      notes: [],
+    }));
+
+    const result = await generateArticleForContentPool({
+      ...createContext(),
+      platform: "xiaohongshu",
+      keywordText: "客户问：北京企业做GEO优化怎么判断服务商是否靠谱？需要看哪些案例和风险？",
+    });
+
+    const prompts = vi.mocked(callConfiguredTextModel).mock.calls
+      .map((call) => call[1]?.map((message) => message.content).join("\n"))
+      .join("\n\n---\n\n");
+    expect(prompts).toContain("正文硬限制：1000 字");
+    expect(prompts).toContain("文章模板：问题解答类");
+    expect(prompts).toContain("客户问题只用于正文回答，不要直接把完整客户问题当作平台话题标签");
+    expect(prompts).toContain("服务商靠谱");
+    expect(result.item.topicTags).toEqual(expect.arrayContaining(["北京企业", "GEO优化", "服务商靠谱"]));
+    expect(result.item.topicTags).not.toContain("客户问：北京企业做GEO优化怎么判断服务商是否靠谱？需要看哪些案例和风险？");
+  });
+
+  it("uses one quality-review revision when the final model review requires it", async () => {
+    payloadQueue = [
+      {
+        title: "首稿标题",
+        summary: "首稿摘要",
+        body: "首稿正文包含判断标准和适用场景。",
+        imagePrompt: "配图提示",
+        riskLevel: "low",
+        tags: ["标签"],
+        notes: [],
+      },
+      {
+        title: "风格稿标题",
+        summary: "风格稿摘要",
+        body: "风格稿正文包含判断标准和适用场景。",
+        imagePrompt: "配图提示",
+        riskLevel: "low",
+        tags: ["标签"],
+        notes: [],
+      },
+      {
+        title: "降重稿标题",
+        summary: "降重稿摘要",
+        body: "降重稿正文包含判断标准和适用场景。",
+        imagePrompt: "配图提示",
+        riskLevel: "low",
+        tags: ["标签"],
+        notes: [],
+      },
+      {
+        title: "风险稿标题",
+        summary: "风险稿摘要",
+        body: "风险稿正文仍然像平台规则说明，不像真实文章。",
+        imagePrompt: "配图提示",
+        riskLevel: "low",
+        tags: ["标签"],
+        notes: [],
+      },
+      {
+        passed: false,
+        rewriteRequired: true,
+        issues: ["不符合小红书口语表达"],
+        revisionInstruction: "改成真实问题解答类笔记，压缩到平台限制内。",
+      },
+      {
+        title: "修订稿标题",
+        summary: "修订稿摘要",
+        body: "这是最终修订稿正文，先回答问题，再说明判断依据、风险边界和下一步。",
+        imagePrompt: "修订稿配图",
+        riskLevel: "low",
+        tags: ["修订标签"],
+        notes: [],
+      },
+    ];
+
+    const result = await generateArticleForContentPool({ ...createContext(), platform: "xiaohongshu" });
+
+    expect(result.item.title).toBe("修订稿标题");
+    expect(result.item.body).toContain("最终修订稿正文");
+    expect(result.item.rewriteAttemptCount).toBe(2);
+    expect(result.item.reviewAttemptCount).toBe(2);
+    expect(result.item.stageLog?.some((entry) => entry.message.includes("最终复检要求二次修订"))).toBe(true);
+    expect(vi.mocked(callConfiguredTextModel)).toHaveBeenCalledTimes(6);
+  });
+
+  it("treats a failed final model review as revision-required even when rewriteRequired is false", async () => {
+    payloadQueue = [
+      {
+        title: "首稿标题",
+        summary: "首稿摘要",
+        body: "首稿正文包含判断标准和适用场景。",
+        imagePrompt: "配图提示",
+        riskLevel: "low",
+        tags: ["标签"],
+        notes: [],
+      },
+      {
+        title: "风格稿标题",
+        summary: "风格稿摘要",
+        body: "风格稿正文包含判断标准和适用场景。",
+        imagePrompt: "配图提示",
+        riskLevel: "low",
+        tags: ["标签"],
+        notes: [],
+      },
+      {
+        title: "降重稿标题",
+        summary: "降重稿摘要",
+        body: "降重稿正文包含判断标准和适用场景。",
+        imagePrompt: "配图提示",
+        riskLevel: "low",
+        tags: ["标签"],
+        notes: [],
+      },
+      {
+        title: "风险稿标题",
+        summary: "风险稿摘要",
+        body: "风险稿正文仍然超过平台限制或不符合风格。",
+        imagePrompt: "配图提示",
+        riskLevel: "low",
+        tags: ["标签"],
+        notes: [],
+      },
+      {
+        passed: false,
+        rewriteRequired: false,
+        issues: ["正文仍然超过平台限制"],
+        revisionInstruction: "",
+      },
+      {
+        title: "修订稿标题",
+        summary: "修订稿摘要",
+        body: "这是被强制修订后的正文，包含判断标准和适用场景。",
+        imagePrompt: "修订稿配图",
+        riskLevel: "low",
+        tags: ["修订标签"],
+        notes: [],
+      },
+    ];
+
+    const result = await generateArticleForContentPool({ ...createContext(), platform: "xiaohongshu" });
+
+    expect(result.item.title).toBe("修订稿标题");
+    expect(result.item.body).toContain("强制修订后的正文");
+    expect(result.item.rewriteAttemptCount).toBe(2);
+    expect(result.item.stageLog?.some((entry) => entry.message.includes("最终复检要求二次修订"))).toBe(true);
+    expect(vi.mocked(callConfiguredTextModel)).toHaveBeenCalledTimes(6);
   });
 
   it("keeps article publishable when only model self-reports high risk", async () => {

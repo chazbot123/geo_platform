@@ -32,4 +32,12 @@ describe("publish automation human rhythm helpers", () => {
     expect(source).toContain("await moveMouseAlongPath(node, clientX, clientY, options)");
     expect(source).toContain("await sleep(resolveTypingDelay(char, index, normalized, minDelay, maxDelay))");
   });
+
+  it("sanitizes xiaohongshu topic tags before typing them into the editor", async () => {
+    const source = await readFile(primaryScript, "utf8");
+
+    expect(source).toContain("function sanitizeTopicTag");
+    expect(source).toContain("sanitizeTopicTag(tag)");
+    expect(source).toContain("replace(/[^\\p{Script=Han}\\p{Letter}\\p{Number}]+/gu, \"\")");
+  });
 });

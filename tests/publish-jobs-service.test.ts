@@ -200,8 +200,8 @@ describe("publishing job content-pool reconciliation", () => {
             styleAdaptation: { status: "passed", platform: "weibo", notes: [] },
             dispersion: { status: "passed", changedDimensions: [], message: "通过" },
           },
-            status: "pending_publish",
-            displayStatus: "pending_publish",
+          status: "pending_publish",
+          displayStatus: "pending_publish",
         })),
         generatedArticleCount: 1,
         generatingArticleCount: 0,
@@ -222,18 +222,91 @@ describe("publishing job content-pool reconciliation", () => {
     await jobsService.reconcileContentPoolPublishingStatuses("task-1");
 
     const pool = await dataStore.getContentPool("task-1");
-    expect(pool?.items[0]?.status).toBe("pending_publish");
-    expect(pool?.items[0]?.displayStatus).toBe("pending_publish");
+    expect(pool?.items[0]?.status).toBe("pending_review");
+    expect(pool?.items[0]?.displayStatus).toBe("pending_review");
+  });
+
+  it("syncs submitted and pending-review publishing jobs without showing them as pending publish", async () => {
+    const { dataStore, jobsService } = await loadIsolatedServices();
+    const item = readyContentPoolItem({
+      publishPlatform: "xiaohongshu",
+      status: "pending_publish",
+      displayStatus: "pending_publish",
+      plannedPublishTime: "2026-06-12T09:00:00.000Z",
+    });
+    await dataStore.saveContentPool(
+      contentPool({
+        items: [item],
+        generatedArticleCount: 1,
+        generatingArticleCount: 0,
+        pendingPublishArticleCount: 1,
+      }),
+    );
+
+    await dataStore.savePublishingJob(
+      publishingJob({
+        id: "submitted-job",
+        status: "submitted",
+        platform: "xiaohongshu",
+        contentPoolItemId: item.id,
+        contentSequence: item.sequence,
+        accountId: item.accountId,
+        plannedPublishTime: item.plannedPublishTime,
+        updatedAt: "2026-06-12T10:10:00.000Z",
+      }),
+    );
+
+    await jobsService.reconcileContentPoolPublishingStatuses("task-1");
+
+    const submittedPool = await dataStore.getContentPool("task-1");
+    expect(submittedPool?.items[0]?.status).toBe("submitted");
+    expect(submittedPool?.items[0]?.displayStatus).toBe("submitted");
+    expect(submittedPool?.items[0]?.stageMessage).toBe("已提交，等待平台确认。");
+    expect(submittedPool?.pendingPublishArticleCount).toBe(0);
+
+    await dataStore.savePublishingJob(
+      publishingJob({
+        id: "pending-review-job",
+        status: "pending_review",
+        platform: "xiaohongshu",
+        contentPoolItemId: item.id,
+        contentSequence: item.sequence,
+        accountId: item.accountId,
+        plannedPublishTime: item.plannedPublishTime,
+        updatedAt: "2026-06-12T10:20:00.000Z",
+      }),
+    );
+
+    await jobsService.reconcileContentPoolPublishingStatuses("task-1");
+
+    const reviewPool = await dataStore.getContentPool("task-1");
+    expect(reviewPool?.items[0]?.status).toBe("pending_review");
+    expect(reviewPool?.items[0]?.displayStatus).toBe("pending_review");
+    expect(reviewPool?.items[0]?.stageMessage).toBe("平台审核中，等待结果确认。");
+    expect(reviewPool?.pendingPublishArticleCount).toBe(0);
   });
 });
 
 describe("content-pool publishing job draft limits", () => {
-  it("keeps xiaohongshu note body within the platform 1000 character limit including tags", async () => {
+  it("blocks content-pool publishing jobs when xiaohongshu body exceeds the hard limit", async () => {
     const { dataStore, jobsService } = await loadIsolatedServices();
     await dataStore.savePlatformAccount(platformAccount());
     const item = readyContentPoolItem({
-      body: "这是一段用于小红书发布的长正文，包含场景、判断标准和避坑提醒。".repeat(80),
-      keywordText: "智能网关选购避坑",
+      body: "这是一段用于发布前硬限制校验的正文，必须在创建任务前给出中文阻断原因。".repeat(80),
+      keywordText: "智能网关怎么选才不会踩坑",
+    });
+
+    await expect(jobsService.createContentPoolPublishingJob({ item })).rejects.toThrow(
+      "正文超过小红书发布限制，请重新生成或压缩后再发布",
+    );
+  });
+
+  it("creates a xiaohongshu job when the body and short tag pass preflight", async () => {
+    const { dataStore, jobsService } = await loadIsolatedServices();
+    await dataStore.savePlatformAccount(platformAccount());
+    const item = readyContentPoolItem({
+      body: "这是一段用于小红书发布的正文，包含场景、判断标准和避坑提醒。".repeat(8),
+      keywordText: "智能网关避坑",
     });
 
     const job = await jobsService.createContentPoolPublishingJob({ item });
@@ -242,7 +315,22 @@ describe("content-pool publishing job draft limits", () => {
       .filter(Boolean)
       .join("\n\n");
     expect(noteBody.length).toBeLessThanOrEqual(1000);
-    expect(noteBody.endsWith("#智能网关选购避坑")).toBe(true);
+    expect(noteBody.endsWith("#智能网关避坑")).toBe(true);
     expect(job.status).toBe("queued");
+  });
+
+  it("uses generated topic tags before falling back to the full customer question", async () => {
+    const { dataStore, jobsService } = await loadIsolatedServices();
+    await dataStore.savePlatformAccount(platformAccount());
+    const item = readyContentPoolItem({
+      body: "这是一段用于小红书发布的正文，包含场景、判断标准和避坑提醒。".repeat(8),
+      keywordText: "客户问：北京企业做GEO优化怎么判断服务商是否靠谱？需要看哪些案例和风险？",
+      topicTags: ["北京企业", "GEO优化", "服务商靠谱"],
+    });
+
+    const job = await jobsService.createContentPoolPublishingJob({ item });
+
+    expect(job.draftTags).toEqual(["北京企业", "GEO优化", "服务商靠谱"]);
+    expect(job.draftTags).not.toContain(item.keywordText);
   });
 });

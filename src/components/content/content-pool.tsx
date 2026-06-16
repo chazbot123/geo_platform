@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Clock3, ImageOff, RefreshCw } from "lucide-react";
-import type { ContentPoolItem, ContentPoolItemStatus, ContentPoolRecord, SearchProvider, SocialPlatform, TaskRecord } from "@/lib/types";
+import { Clock3, ImageOff, RefreshCw, Search, UserCircle2, X } from "lucide-react";
+import { formatAccountDisplayLabel } from "@/lib/publish/account-label";
+import type { ContentPoolItem, ContentPoolItemStatus, ContentPoolRecord, PlatformAccountRecord, SearchProvider, SocialPlatform, TaskRecord } from "@/lib/types";
 
 const platformLabels: Record<SocialPlatform, string> = {
   toutiao: "今日头条",
@@ -32,6 +33,8 @@ const statusLabels: Record<ContentPoolItemStatus, string> = {
   sample: "已完成",
   pending_publish: "待发布",
   publishing: "发布中",
+  submitted: "已提交待确认",
+  pending_review: "平台审核中",
   published: "已发布",
   failed: "失败",
   manual_pending: "待处理",
@@ -45,6 +48,7 @@ interface ContentGenerationStatusResponse {
 
 type StatusFilter = "all" | ContentPoolItemStatus;
 const articleTableGridClass = "lg:grid-cols-[56px_minmax(220px,1.4fr)_88px_88px_130px_minmax(150px,1fr)_118px_88px_110px]";
+const articleTableMinWidthClass = "lg:min-w-[1180px]";
 
 function formatDateTime(value?: string) {
   if (!value) return "未开始";
@@ -66,12 +70,25 @@ function statusClassName(status: ContentPoolItemStatus) {
   if (status === "published" || status === "pending_publish" || status === "ready" || status === "sample") {
     return "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
   }
+  if (status === "submitted" || status === "pending_review") {
+    return "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300";
+  }
   return "border-line bg-surface text-muted";
 }
 
 function progressPercent(record: ContentPoolRecord | null) {
   if (!record?.items.length) return 0;
-  const finished = countBy(record.items, (item) => item.status === "pending_publish" || item.status === "ready" || item.status === "sample" || item.status === "published" || item.status === "failed");
+  const finished = countBy(
+    record.items,
+    (item) =>
+      item.status === "pending_publish" ||
+      item.status === "ready" ||
+      item.status === "sample" ||
+      item.status === "submitted" ||
+      item.status === "pending_review" ||
+      item.status === "published" ||
+      item.status === "failed",
+  );
   return Math.round((finished / record.items.length) * 100);
 }
 
@@ -79,11 +96,67 @@ function failedImageCount(item: ContentPoolItem) {
   return item.imageList.filter((image) => image.status === "failed").length;
 }
 
-function ArticleRow({ item, taskId }: { item: ContentPoolItem; taskId: string }) {
+function matchesGenerationResultSearch(item: ContentPoolItem, account: PlatformAccountRecord | undefined, searchQuery: string) {
+  const keyword = searchQuery.trim().toLowerCase();
+  if (!keyword) return true;
+  const searchText = [
+    item.title,
+    item.summary,
+    item.body,
+    item.keywordText,
+    item.stageMessage,
+    item.accountName,
+    item.accountId,
+    platformLabels[item.publishPlatform],
+    providerLabels[item.aiPlatform],
+    statusLabels[item.status],
+    account ? formatAccountDisplayLabel(account, item.accountName || item.accountId) : "",
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return searchText.includes(keyword);
+}
+
+function canRenderInlineAvatar(url?: string) {
+  const normalized = String(url || "").trim();
+  if (!normalized) return false;
+  try {
+    const parsed = new URL(normalized, typeof window !== "undefined" ? window.location.origin : "http://127.0.0.1");
+    return !/(\.|^)sinaimg\.cn$/i.test(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function AccountIdentity({ account, fallback }: { account?: PlatformAccountRecord; fallback?: string }) {
+  const label = account ? formatAccountDisplayLabel(account, fallback) : fallback || "--";
+  return (
+    <span className="flex min-w-0 items-center gap-2 text-muted">
+      {account && canRenderInlineAvatar(account.avatarUrl) ? (
+        <img
+          src={account.avatarUrl}
+          alt={`${label} 头像`}
+          className="h-6 w-6 shrink-0 rounded-full border border-line bg-surface object-cover"
+          onError={(event) => {
+            event.currentTarget.style.display = "none";
+          }}
+        />
+      ) : (
+        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-line bg-surface text-muted">
+          <UserCircle2 className="h-3.5 w-3.5" />
+        </span>
+      )}
+      <span className="min-w-0 truncate">{label}</span>
+    </span>
+  );
+}
+
+function ArticleRow({ item, taskId, account }: { item: ContentPoolItem; taskId: string; account?: PlatformAccountRecord }) {
   const failedImages = failedImageCount(item);
   return (
     <Link
-      className={`grid gap-3 border-b border-line px-4 py-3 text-sm transition hover:bg-panelSoft lg:items-center ${articleTableGridClass}`}
+      className={`grid gap-3 border-b border-line px-4 py-3 text-sm transition hover:bg-panelSoft lg:items-center ${articleTableGridClass} ${articleTableMinWidthClass}`}
       href={`/content-pool/${encodeURIComponent(item.id)}?taskId=${encodeURIComponent(taskId)}`}
     >
       <span className="text-muted">#{item.sequence}</span>
@@ -103,7 +176,7 @@ function ArticleRow({ item, taskId }: { item: ContentPoolItem; taskId: string })
       </span>
       <span className="truncate whitespace-nowrap text-muted">{providerLabels[item.aiPlatform]}</span>
       <span className="truncate whitespace-nowrap text-muted">{platformLabels[item.publishPlatform]}</span>
-      <span className="truncate text-muted">{item.accountName || item.accountId}</span>
+      <AccountIdentity account={account} fallback={item.accountName || item.accountId} />
       <span className="truncate text-muted">{item.keywordText}</span>
       <span className="whitespace-nowrap text-muted">{formatDateTime(item.plannedPublishTime)}</span>
       <span className="whitespace-nowrap">
@@ -124,7 +197,9 @@ export function ContentPoolWorkbench() {
   const requestedTaskId = searchParams.get("taskId") || "";
   const [current, setCurrent] = useState<ContentPoolRecord | null>(null);
   const [task, setTask] = useState<TaskRecord | null>(null);
+  const [accounts, setAccounts] = useState<PlatformAccountRecord[]>([]);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [resultSearchQuery, setResultSearchQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -133,12 +208,27 @@ export function ContentPoolWorkbench() {
 
   const visibleRecord = current;
   const items = visibleRecord?.items ?? [];
+  const accountsById = useMemo(() => new Map(accounts.map((account) => [account.id, account])), [accounts]);
   const retryableFailedItems = items.filter((item) => item.status === "failed" || item.riskLevel === "high");
   const failedImageTotal = items.reduce((total, item) => total + failedImageCount(item), 0);
-  const filteredItems = statusFilter === "all" ? items : items.filter((item) => item.status === statusFilter);
+  const statusFilteredItems = statusFilter === "all" ? items : items.filter((item) => item.status === statusFilter);
+  const searchFilteredItems = statusFilteredItems.filter((item) => matchesGenerationResultSearch(item, accountsById.get(item.accountId), resultSearchQuery));
+  const filteredItems = searchFilteredItems;
+  const hasResultSearch = resultSearchQuery.trim().length > 0;
   const stats = {
     total: visibleRecord?.totalArticleCount ?? items.length,
-    generated: visibleRecord?.generatedArticleCount ?? countBy(items, (item) => item.status === "pending_publish" || item.status === "ready" || item.status === "sample" || item.status === "published"),
+    generated:
+      visibleRecord?.generatedArticleCount ??
+      countBy(
+        items,
+        (item) =>
+          item.status === "pending_publish" ||
+          item.status === "ready" ||
+          item.status === "sample" ||
+          item.status === "submitted" ||
+          item.status === "pending_review" ||
+          item.status === "published",
+      ),
     generating: visibleRecord?.generatingArticleCount ?? countBy(items, (item) => item.status === "generating"),
     failed: visibleRecord?.failedArticleCount ?? countBy(items, (item) => item.status === "failed"),
     pendingPublish: visibleRecord?.pendingPublishArticleCount ?? countBy(items, (item) => item.status === "pending_publish"),
@@ -151,11 +241,16 @@ export function ContentPoolWorkbench() {
     setError("");
     try {
       const query = requestedTaskId ? `?taskId=${encodeURIComponent(requestedTaskId)}` : "";
-      const response = await fetch(`/api/content/generation/status${query}`, { cache: "no-store" });
+      const [response, accountsResponse] = await Promise.all([
+        fetch(`/api/content/generation/status${query}`, { cache: "no-store" }),
+        fetch("/api/publish/accounts", { cache: "no-store" }),
+      ]);
       const data = (await response.json()) as ContentGenerationStatusResponse;
+      const accountsData = (await accountsResponse.json()) as { items?: PlatformAccountRecord[] };
       if (!response.ok) throw new Error(data.error || "读取生成结果失败。");
       setCurrent(data.current);
       setTask(data.task ?? null);
+      setAccounts(accountsResponse.ok ? accountsData.items ?? [] : []);
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "读取生成结果失败。");
     } finally {
@@ -270,7 +365,7 @@ export function ContentPoolWorkbench() {
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
             <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted">第 4 步</p>
-            <h2 className="page-section-title mt-2">生成结果中心</h2>
+            <h2 className="page-section-title mt-2">生成结果</h2>
             <p className="page-section-desc">查看当前任务的文章生成进度和最终结果；生成完成后系统会按计划时间自动发布。</p>
             {shouldAutoRefresh ? <p className="mt-2 text-xs text-blue-600">后台正在持续生成，列表会自动刷新。</p> : null}
           </div>
@@ -345,7 +440,7 @@ export function ContentPoolWorkbench() {
         </div>
 
         <div className="mt-5 flex flex-wrap gap-2">
-          {(["all", "pending_publish", "generating", "failed", "published"] as StatusFilter[]).map((status) => (
+          {(["all", "pending_publish", "submitted", "pending_review", "generating", "failed", "published"] as StatusFilter[]).map((status) => (
             <button
               key={status}
               type="button"
@@ -362,8 +457,30 @@ export function ContentPoolWorkbench() {
         {error && <p className="mt-4 text-sm text-red-500">{error}</p>}
       </section>
 
-      <section className="overflow-hidden rounded-md border border-line bg-panel">
-        <div className={`hidden border-b border-line bg-surface px-4 py-2 text-xs font-medium text-muted lg:grid lg:items-center ${articleTableGridClass}`}>
+      <section className="overflow-x-auto rounded-md border border-line bg-panel">
+        <div className="border-b border-line bg-panelSoft p-3">
+          <label className="relative block max-w-xl">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
+            <input
+              type="search"
+              value={resultSearchQuery}
+              onChange={(event) => setResultSearchQuery(event.target.value)}
+              placeholder="搜索标题、摘要、关键词、平台、账号"
+              className="h-10 w-full rounded-md border border-line bg-panel px-9 text-sm text-ink outline-none transition focus:border-accent"
+            />
+            {hasResultSearch ? (
+              <button
+                type="button"
+                className="absolute right-2 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-muted hover:bg-surface hover:text-ink"
+                aria-label="清空生成结果搜索"
+                onClick={() => setResultSearchQuery("")}
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            ) : null}
+          </label>
+        </div>
+        <div className={`hidden border-b border-line bg-surface px-4 py-2 text-xs font-medium text-muted lg:grid lg:items-center ${articleTableGridClass} ${articleTableMinWidthClass}`}>
           <span>序号</span>
           <span>标题</span>
           <span>AI 平台</span>
@@ -375,9 +492,13 @@ export function ContentPoolWorkbench() {
           <span>生成时间</span>
         </div>
         {filteredItems.length ? (
-          filteredItems.map((item) => <ArticleRow key={item.id} item={item} taskId={visibleRecord?.taskId ?? item.taskId} />)
+          filteredItems.map((item) => (
+            <ArticleRow key={item.id} item={item} taskId={visibleRecord?.taskId ?? item.taskId} account={accountsById.get(item.accountId)} />
+          ))
         ) : (
-          <div className="px-4 py-8 text-center text-sm text-muted">当前筛选下没有文章。</div>
+          <div className="px-4 py-8 text-center text-sm text-muted">
+            {hasResultSearch ? "没有匹配的生成结果，请调整搜索关键词或筛选条件。" : "当前筛选下没有文章。"}
+          </div>
         )}
       </section>
 

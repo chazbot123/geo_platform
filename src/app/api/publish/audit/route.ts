@@ -8,7 +8,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ items: await listPublishAuditLog(Number.isFinite(limit) ? limit : 200) });
   } catch (error) {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Failed to read publish audit log." },
+      { error: error instanceof Error ? error.message : "读取发布审计日志失败。" },
       { status: 500 },
     );
   }

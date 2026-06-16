@@ -2,9 +2,11 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
-import { History, LoaderCircle, RotateCw } from "lucide-react";
+import { useMemo, useState } from "react";
+import { ChevronLeft, ChevronRight, History, LoaderCircle, RotateCw, Search, X } from "lucide-react";
 import type { HistoricalTaskSummary } from "@/lib/tasks/history-service";
+
+const historyPageSize = 10;
 
 const providerLabels: Record<string, string> = {
   doubao: "豆包",
@@ -12,6 +14,17 @@ const providerLabels: Record<string, string> = {
   yuanbao: "元宝",
   tongyi: "通义",
 };
+
+const statusFilterOptions = [
+  { value: "all", label: "全部" },
+  { value: "current", label: "当前任务" },
+  { value: "archived", label: "历史任务" },
+  { value: "pending", label: "有待发布" },
+  { value: "manual", label: "有人工处理" },
+  { value: "published", label: "已发布" },
+] as const;
+
+type StatusFilter = (typeof statusFilterOptions)[number]["value"];
 
 function formatDateTime(value?: string | null) {
   if (!value) return "--";
@@ -31,9 +44,46 @@ function stepBadge(done: boolean, label: string) {
   );
 }
 
-function questionPreview(questions: string[]) {
-  if (!questions.length) return "暂无已保存问题";
-  return questions.slice(0, 3).join(" / ");
+function hasPendingPublishWork(task: HistoricalTaskSummary) {
+  return task.manualPendingCount > 0 || task.publishedArticleCount < task.generatedArticleCount;
+}
+
+function taskProviderKeys(task: HistoricalTaskSummary) {
+  const providers = task.searchProviders?.length ? task.searchProviders : task.searchProvider ? [task.searchProvider] : [];
+  return Array.from(new Set(providers.filter(Boolean)));
+}
+
+function formatProviderLabels(task: HistoricalTaskSummary) {
+  const labels = taskProviderKeys(task).map((provider) => providerLabels[provider] ?? provider);
+  return labels.length ? labels.join("、") : "--";
+}
+
+function matchesStatusFilter(task: HistoricalTaskSummary, statusFilter: StatusFilter) {
+  if (statusFilter === "current") return !task.archived;
+  if (statusFilter === "archived") return task.archived;
+  if (statusFilter === "pending") return hasPendingPublishWork(task);
+  if (statusFilter === "manual") return task.manualPendingCount > 0;
+  if (statusFilter === "published") return task.publishedArticleCount > 0;
+  return true;
+}
+
+function matchesSearchQuery(task: HistoricalTaskSummary, searchQuery: string) {
+  const keyword = searchQuery.trim().toLowerCase();
+  if (!keyword) return true;
+  const searchText = [
+    task.title,
+    task.enterpriseName,
+    task.productName,
+    task.searchProvider,
+    ...taskProviderKeys(task),
+    ...taskProviderKeys(task).map((provider) => providerLabels[provider]),
+    ...task.selectedQuestions,
+    ...task.enabledPlatforms,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return searchText.includes(keyword);
 }
 
 function HistoryTaskCard({
@@ -41,16 +91,23 @@ function HistoryTaskCard({
   active,
   activeLabel,
   reusing,
+  expanded,
+  onToggleQuestions,
   onReuse,
 }: {
   task: HistoricalTaskSummary;
   active: boolean;
   activeLabel: string;
   reusing: boolean;
+  expanded: boolean;
+  onToggleQuestions: (taskId: string) => void;
   onReuse: (task: HistoricalTaskSummary) => void;
 }) {
-  const hasPendingPublishWork = task.manualPendingCount > 0 || task.publishedArticleCount < task.generatedArticleCount;
-  const publishActionLabel = hasPendingPublishWork ? "继续发布" : "查看发布结果";
+  const hasPendingPublish = hasPendingPublishWork(task);
+  const publishActionLabel = hasPendingPublish ? "继续发布" : "查看发布结果";
+  const compactQuestionCount = 3;
+  const hasHiddenQuestions = task.selectedQuestions.length > compactQuestionCount;
+  const visibleQuestions = expanded ? task.selectedQuestions : task.selectedQuestions.slice(0, compactQuestionCount);
 
   return (
     <article className={`rounded-md border p-4 ${active ? "border-accent bg-accent/5" : "border-line bg-panel"}`}>
@@ -62,11 +119,51 @@ function HistoryTaskCard({
             <span className="rounded-full bg-surface px-2 py-0.5 text-[11px] font-medium text-muted">{task.archived ? "历史任务" : "当前任务"}</span>
           </div>
           <p className="mt-1 text-xs leading-5 text-muted">
-            {task.enterpriseName} · {providerLabels[task.searchProvider ?? ""] ?? task.searchProvider ?? "--"} · 更新 {formatDateTime(task.updatedAt)}
+            {task.enterpriseName} · {formatProviderLabels(task)} · 更新 {formatDateTime(task.updatedAt)}
           </p>
-          <p className="mt-2 text-xs leading-5 text-ink">
-            本次任务问题：{questionPreview(task.selectedQuestions)}
-          </p>
+          <div className="mt-3 text-sm leading-6 text-ink">
+            <div className="flex flex-wrap items-center gap-2">
+              {hasHiddenQuestions && expanded ? (
+                <button
+                  type="button"
+                  className="inline-flex w-fit rounded-md border border-line px-3 py-1.5 text-xs font-medium text-accent hover:border-accent"
+                  onClick={() => onToggleQuestions(task.taskId)}
+                >
+                  收起
+                </button>
+              ) : null}
+              <p className="font-medium">本次任务问题：</p>
+            </div>
+            {task.selectedQuestions.length ? (
+              <div className="mt-1 grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
+                {visibleQuestions.map((question, index) => (
+                  <div
+                    key={`${task.taskId}-question-${index}`}
+                    className="flex min-w-0 items-start gap-2 rounded-md bg-panelSoft px-3 py-2 text-sm leading-6 text-ink"
+                    title={question}
+                  >
+                    <span className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/10 text-xs font-medium text-accent">
+                      {index + 1}
+                    </span>
+                    <span className="min-w-0 break-words">{question}</span>
+                  </div>
+                ))}
+                {hasHiddenQuestions && !expanded ? (
+                  <button
+                    type="button"
+                    className="flex min-h-[40px] items-center justify-center rounded-md border border-dashed border-line px-3 py-2 text-sm font-medium leading-6 text-accent hover:border-accent"
+                    aria-label="展开查看全部关键词"
+                    title="展开查看全部关键词"
+                    onClick={() => onToggleQuestions(task.taskId)}
+                  >
+                    ...
+                  </button>
+                ) : null}
+              </div>
+            ) : (
+              <p className="mt-1 text-muted">暂无已保存问题</p>
+            )}
+          </div>
           <div className="mt-3 flex flex-wrap gap-2">
             {stepBadge(task.hasKeywords, `${task.selectedQuestionCount} 个问题`)}
             {stepBadge(task.hasPublishPlan, `${task.enabledPlatformCount} 个平台`)}
@@ -80,7 +177,7 @@ function HistoryTaskCard({
           </Link>
           <Link
             className={
-              hasPendingPublishWork
+              hasPendingPublish
                 ? "rounded-md bg-accent px-3 py-2 text-center text-xs font-medium text-white"
                 : "rounded-md border border-line px-3 py-2 text-center text-xs font-medium text-ink hover:border-accent"
             }
@@ -123,7 +220,41 @@ export function HistoryTasksPanel({
 }) {
   const router = useRouter();
   const [reusingTaskId, setReusingTaskId] = useState("");
-  const visibleTasks = typeof limit === "number" ? tasks.slice(0, limit) : tasks;
+  const [expandedQuestionTaskId, setExpandedQuestionTaskId] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [page, setPage] = useState(1);
+  const hasListControls = typeof limit !== "number";
+  const filteredTasks = useMemo(
+    () => tasks.filter((task) => matchesSearchQuery(task, searchQuery) && matchesStatusFilter(task, statusFilter)),
+    [searchQuery, statusFilter, tasks],
+  );
+  const pageCount = Math.max(1, Math.ceil(filteredTasks.length / historyPageSize));
+  const currentPage = Math.min(page, pageCount);
+  const pagedTasks = filteredTasks.slice((currentPage - 1) * historyPageSize, currentPage * historyPageSize);
+  const embeddedTasks = typeof limit === "number" ? tasks.slice(0, limit) : tasks;
+  const visibleTasks = hasListControls ? pagedTasks : embeddedTasks;
+  const hasActiveFilters = searchQuery.trim().length > 0 || statusFilter !== "all";
+
+  function updateSearchQuery(value: string) {
+    setSearchQuery(value);
+    setPage(1);
+  }
+
+  function updateStatusFilter(value: StatusFilter) {
+    setStatusFilter(value);
+    setPage(1);
+  }
+
+  function clearFilters() {
+    setSearchQuery("");
+    setStatusFilter("all");
+    setPage(1);
+  }
+
+  function toggleTaskQuestions(taskId: string) {
+    setExpandedQuestionTaskId((current) => (current === taskId ? "" : taskId));
+  }
 
   async function reuseHistoricalKeywords(task: HistoricalTaskSummary) {
     setReusingTaskId(task.taskId);
@@ -163,6 +294,57 @@ export function HistoryTasksPanel({
           </Link>
         ) : null}
       </div>
+      {hasListControls ? (
+        <div className="mt-5 rounded-md border border-line bg-panelSoft p-3">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <label className="relative block min-w-0 flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
+              <input
+                type="search"
+                value={searchQuery}
+                onChange={(event) => updateSearchQuery(event.target.value)}
+                placeholder="搜索任务名称、企业、产品、关键词"
+                className="h-10 w-full rounded-md border border-line bg-panel px-9 text-sm text-ink outline-none transition focus:border-accent"
+              />
+              {searchQuery ? (
+                <button
+                  type="button"
+                  className="absolute right-2 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-muted hover:bg-surface hover:text-ink"
+                  aria-label="清空搜索"
+                  onClick={() => updateSearchQuery("")}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              ) : null}
+            </label>
+            <div className="flex flex-wrap gap-2">
+              {statusFilterOptions.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={`rounded-md border px-3 py-2 text-xs font-medium transition ${
+                    statusFilter === option.value ? "border-accent bg-accent text-white" : "border-line bg-panel text-ink hover:border-accent"
+                  }`}
+                  onClick={() => updateStatusFilter(option.value)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="mt-3 flex flex-col gap-2 text-xs text-muted sm:flex-row sm:items-center sm:justify-between">
+            <span>
+              共 {filteredTasks.length} 条，当前显示 {visibleTasks.length} 条
+            </span>
+            {hasActiveFilters ? (
+              <button type="button" className="inline-flex w-fit items-center gap-1.5 rounded-md px-2 py-1 font-medium text-accent hover:bg-accent/10" onClick={clearFilters}>
+                <X className="h-3.5 w-3.5" />
+                清空筛选
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
       <div className="mt-5 grid gap-3">
         {visibleTasks.length ? (
           visibleTasks.map((task) => (
@@ -172,15 +354,44 @@ export function HistoryTasksPanel({
               active={Boolean(activeTaskId && task.taskId === activeTaskId)}
               activeLabel={activeLabel}
               reusing={reusingTaskId === task.taskId}
+              expanded={expandedQuestionTaskId === task.taskId}
+              onToggleQuestions={toggleTaskQuestions}
               onReuse={reuseHistoricalKeywords}
             />
           ))
         ) : (
           <div className="rounded-md border border-dashed border-line px-4 py-8 text-center text-sm text-muted">
-            暂无任务记录。保存客户问题、生成内容或执行发布后会自动保留在这里。
+            {hasActiveFilters ? "没有匹配的历史任务，请调整关键词或筛选条件。" : "暂无任务记录。保存客户问题、生成内容或执行发布后会自动保留在这里。"}
           </div>
         )}
       </div>
+      {hasListControls && filteredTasks.length > historyPageSize ? (
+        <div className="mt-4 flex flex-col gap-2 text-sm text-muted sm:flex-row sm:items-center sm:justify-between">
+          <span>
+            第 {currentPage} / {pageCount} 页
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className="inline-flex items-center gap-1.5 rounded-md border border-line px-3 py-2 text-xs font-medium text-ink hover:border-accent disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={currentPage <= 1}
+              onClick={() => setPage((value) => Math.max(1, value - 1))}
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+              上一页
+            </button>
+            <button
+              type="button"
+              className="inline-flex items-center gap-1.5 rounded-md border border-line px-3 py-2 text-xs font-medium text-ink hover:border-accent disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={currentPage >= pageCount}
+              onClick={() => setPage((value) => Math.min(pageCount, value + 1))}
+            >
+              下一页
+              <ChevronRight className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

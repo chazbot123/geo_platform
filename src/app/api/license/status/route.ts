@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { toUserFacingErrorMessage } from "@/lib/errors/user-facing";
 import { resolveLicenseEndpoint } from "@/lib/license/server-endpoints";
 
 export const runtime = "nodejs";
@@ -70,7 +71,7 @@ export async function GET(request: Request) {
 
     if (!response.ok) {
       return NextResponse.json(
-        { error: typeof result.error === "string" ? result.error : "授权状态服务暂时不可用" },
+        { error: toUserFacingErrorMessage(result.error, "授权状态服务暂时不可用，请稍后重试。") },
         { status: response.status },
       );
     }
@@ -83,7 +84,7 @@ export async function GET(request: Request) {
     });
     // #endregion
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "检查授权状态失败，请稍后重试" },
+      { error: toUserFacingErrorMessage(error, "检查授权状态失败，请稍后重试。") },
       { status: 502 },
     );
   }

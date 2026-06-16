@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import type { ContentPoolRecord, PublishingJobRecord, TaskBundle, TaskStatus } from "@/lib/types";
+import type { ContentPoolRecord, PublishingJobRecord, SearchProvider, TaskBundle, TaskStatus } from "@/lib/types";
 
 const taskStatusLabels: Record<TaskStatus, string> = {
   created: "待开始",
@@ -36,6 +36,15 @@ const platformLabels = {
   weibo: "微博",
   csdn: "CSDN",
 } as const;
+
+function formatProviderLabels(bundle: TaskBundle) {
+  const providers: SearchProvider[] = bundle.task.publishPlan?.searchProviders?.length
+    ? bundle.task.publishPlan.searchProviders
+    : bundle.task.searchProvider
+      ? [bundle.task.searchProvider]
+      : ["doubao"];
+  return Array.from(new Set(providers)).map((provider) => providerLabels[provider] ?? provider).join("、");
+}
 
 function formatDateTime(value?: string) {
   if (!value) return "--";
@@ -87,7 +96,7 @@ export function TaskDetailOverview({
               <span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${statusTone(bundle.task.status)}`}>
                 {taskStatusLabels[bundle.task.status]}
               </span>
-              <span className="status-pill">{providerLabels[bundle.task.searchProvider ?? "doubao"]}</span>
+              <span className="status-pill">{formatProviderLabels(bundle)}</span>
             </div>
             <h2 className="mt-4 text-2xl font-semibold tracking-tight text-ink">
               {bundle.product.productName || bundle.product.category || `任务 ${bundle.task.id.slice(0, 8)}`}

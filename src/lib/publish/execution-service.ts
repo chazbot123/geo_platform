@@ -138,6 +138,8 @@ function summarizeContentPool(record: ContentPoolRecord): ContentPoolRecord {
     "sample",
     "pending_publish",
     "publishing",
+    "submitted",
+    "pending_review",
     "manual_pending",
     "published",
   ]);
@@ -324,4 +326,24 @@ export async function markArticleManualPublished(jobId: string, publishUrl?: str
   return getPublishExecutionState(job.taskId);
 }
 
+export async function markArticleManualNotPublished(jobId: string) {
+  const job = await updatePublishingJobRecord(jobId, {
+    status: "queued",
+    publishUrl: undefined,
+    publishedAt: undefined,
+    verifiedAt: undefined,
+    finishedAt: undefined,
+    queueBlockedReason: undefined,
+    nextRunAt: undefined,
+    externalStatus: undefined,
+    platformItemId: undefined,
+    failureStage: undefined,
+    errorMessage: undefined,
+    executionStage: "queued",
+    verificationEvidence: "manual_not_published",
+    notes: "人工核查确认平台未发布，已重新进入发布队列。",
+  });
+  await markContentStatus(job, "pending_publish");
+  return getPublishExecutionState(job.taskId);
+}
 

@@ -93,6 +93,28 @@ function productRecord(patch: Partial<ProductProfile> = {}): ProductProfile {
   };
 }
 
+function multiProviderPublishPlan(updatedAt = "2026-06-12T10:00:00.000Z"): TaskRecord["publishPlan"] {
+  return {
+    taskId: "task-1",
+    enterpriseTaskId: "task-1",
+    keywordTaskId: "task-1",
+    searchProvider: "doubao",
+    searchProviders: ["doubao", "deepseek"],
+    enabledPlatforms: [
+      { platform: "douyin", searchProvider: "doubao", enabled: true, accountCount: 1, accountIds: ["douyin-account"], articleCount: 1 },
+      { platform: "csdn", searchProvider: "deepseek", enabled: true, accountCount: 1, accountIds: ["csdn-account"], articleCount: 1 },
+    ],
+    days: 1,
+    articlesPerAccountPerDay: 1,
+    timeWindow: { start: "09:00", end: "18:00" },
+    minSameAccountIntervalHours: 3,
+    totalAccountCount: 2,
+    totalArticleCount: 2,
+    createdAt: updatedAt,
+    updatedAt,
+  };
+}
+
 function themeRecord(patch: Partial<ThemeSet> = {}): ThemeSet {
   return {
     taskId: "task-1",
@@ -368,6 +390,25 @@ describe("historical task summaries", () => {
     expect(summaries[0]?.publishedArticleCount).toBe(1);
     expect(summaries[0]?.manualPendingCount).toBe(0);
   });
+
+  it("exposes every selected GEO AI provider for multi-provider historical tasks", async () => {
+    const { dataStore, historyService } = await loadIsolatedServices();
+
+    await dataStore.saveProduct(productRecord());
+    await dataStore.saveTheme(themeRecord({ searchProvider: "doubao" }));
+    await dataStore.saveTask(
+      taskRecord({
+        searchProvider: "doubao",
+        publishPlan: multiProviderPublishPlan(),
+      }),
+    );
+
+    const summaries = await historyService.listHistoricalTaskSummaries();
+
+    expect(summaries[0]?.searchProvider).toBe("doubao");
+    expect(summaries[0]?.searchProviders).toEqual(["doubao", "deepseek"]);
+    expect(summaries[0]?.enabledPlatforms).toEqual(["douyin", "csdn"]);
+  });
 });
 
 describe("historical task keyword reuse", () => {
@@ -440,6 +481,29 @@ describe("historical task keyword reuse", () => {
     expect(await dataStore.getContentPool("task-1")).not.toBeNull();
     expect(await dataStore.getPublishingJobsByTask("task-1")).toHaveLength(1);
     expect(result.links.taskPlan).toBe(`/tasks/create?taskId=${encodeURIComponent(result.task.id)}`);
+  });
+
+  it("keeps multi-provider publish plan providers when reusing historical keywords", async () => {
+    const { dataStore, historyService } = await loadIsolatedServices();
+
+    await dataStore.saveProduct(productRecord());
+    await dataStore.saveTheme(themeRecord({ searchProvider: "doubao" }));
+    await dataStore.saveTask(
+      taskRecord({
+        searchProvider: "doubao",
+        publishPlan: multiProviderPublishPlan(),
+      }),
+    );
+
+    const result = await historyService.createTaskFromHistoricalKeywords("task-1");
+
+    expect(result.task.searchProvider).toBe("doubao");
+    expect(result.task.publishPlan?.searchProvider).toBe("doubao");
+    expect(result.task.publishPlan?.searchProviders).toEqual(["doubao", "deepseek"]);
+    expect(result.task.publishPlan?.enabledPlatforms.filter((item) => item.enabled).map((item) => [item.platform, item.searchProvider])).toEqual([
+      ["douyin", "doubao"],
+      ["csdn", "deepseek"],
+    ]);
   });
 
   it("rejects historical task reuse when no selected keywords exist", async () => {

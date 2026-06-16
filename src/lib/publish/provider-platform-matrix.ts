@@ -49,6 +49,29 @@ export function getPlatformsBySearchProvider(searchProvider: SearchProvider | un
   return getProviderPublishBundle(searchProvider)?.platforms ?? fallbackPlatformOrder;
 }
 
+export function normalizeSearchProviders(searchProviders: Array<SearchProvider | undefined> | SearchProvider | undefined): SearchProvider[] {
+  const rawProviders = Array.isArray(searchProviders) ? searchProviders : searchProviders ? [searchProviders] : [];
+  const validProviders = rawProviders.filter((provider): provider is SearchProvider => Boolean(provider && provider in providerPublishMatrix));
+  return Array.from(new Set(validProviders));
+}
+
+export function getPlatformsBySearchProviders(searchProviders: Array<SearchProvider | undefined> | SearchProvider | undefined): SocialPlatform[] {
+  const selectedProviders = normalizeSearchProviders(searchProviders);
+  if (!selectedProviders.length) {
+    return [];
+  }
+  const allowed = new Set(selectedProviders.flatMap((provider) => getPlatformsBySearchProvider(provider)));
+  return fallbackPlatformOrder.filter((platform) => allowed.has(platform));
+}
+
+export function getSearchProviderForPlatform(
+  platform: SocialPlatform,
+  searchProviders: Array<SearchProvider | undefined> | SearchProvider | undefined,
+): SearchProvider | undefined {
+  const selectedProviders = normalizeSearchProviders(searchProviders);
+  return selectedProviders.find((provider) => getPlatformsBySearchProvider(provider).includes(platform));
+}
+
 export function getAllPublishPlatforms(): SocialPlatform[] {
   return fallbackPlatformOrder.slice();
 }

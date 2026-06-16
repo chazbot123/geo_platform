@@ -15,6 +15,10 @@ const PLATFORM_TITLE_LIMITS: Record<SocialPlatform, number> = {
 };
 
 export const XIAOHONGSHU_NOTE_BODY_MAX_LENGTH = 1000;
+const DOUYIN_BODY_MAX_LENGTH = 500;
+const PUBLISH_TAG_MAX_LENGTH = 12;
+const XIAOHONGSHU_TAG_MAX_COUNT = 10;
+const DOUYIN_TAG_MAX_COUNT = 5;
 
 const INTERNAL_PUBLIC_MARKERS = [
   "sha256:",
@@ -230,15 +234,28 @@ export function normalizeXiaohongshuTags(tags: string[] | undefined): string[] {
     new Set(
       (tags ?? [])
         .map((tag) => compactText(tag).replace(/^#+/, ""))
-        .filter(Boolean),
+        .map((tag) => tag.replace(/[^\p{Script=Han}\p{Letter}\p{Number}]+/gu, ""))
+        .filter((tag) => Boolean(tag) && tag.length <= PUBLISH_TAG_MAX_LENGTH),
     ),
-  ).slice(0, 10);
+  ).slice(0, XIAOHONGSHU_TAG_MAX_COUNT);
 }
 
 export function buildXiaohongshuTagLine(tags: string[] | undefined): string {
   return normalizeXiaohongshuTags(tags)
     .map((tag) => `#${tag}`)
     .join(" ");
+}
+
+function extractInlineXiaohongshuTags(body: string): string[] {
+  return Array.from(body.matchAll(/#([^\s#]+)/g)).map((match) => match[1] ?? "");
+}
+
+function stripInlineXiaohongshuTags(body: string): string {
+  return body
+    .replace(/#([^\s#]+)/g, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 export function limitXiaohongshuBodyForTags(body: string, tags: string[] | undefined): string {
@@ -250,9 +267,22 @@ export function limitXiaohongshuBodyForTags(body: string, tags: string[] | undef
 }
 
 export function buildXiaohongshuNoteBody(body: string, tags: string[] | undefined): string {
-  const tagLine = buildXiaohongshuTagLine(tags);
-  const limitedBody = limitXiaohongshuBodyForTags(body, tags);
+  const normalizedBody = normalizePublishingText(body);
+  const mergedTags = normalizeXiaohongshuTags([...extractInlineXiaohongshuTags(normalizedBody), ...(tags ?? [])]);
+  const tagLine = buildXiaohongshuTagLine(mergedTags);
+  const limitedBody = limitXiaohongshuBodyForTags(stripInlineXiaohongshuTags(normalizedBody), mergedTags);
   return [limitedBody, tagLine].filter(Boolean).join("\n\n").slice(0, XIAOHONGSHU_NOTE_BODY_MAX_LENGTH);
+}
+
+export function normalizeDouyinTags(tags: string[] | undefined): string[] {
+  return Array.from(
+    new Set(
+      (tags ?? [])
+        .map((tag) => compactText(tag).replace(/^#+/, ""))
+        .map((tag) => tag.replace(/[^\p{Script=Han}\p{Letter}\p{Number}]+/gu, ""))
+        .filter((tag) => Boolean(tag) && tag.length <= PUBLISH_TAG_MAX_LENGTH),
+    ),
+  ).slice(0, DOUYIN_TAG_MAX_COUNT);
 }
 
 function splitSellingPoints(value: string | undefined) {
@@ -418,12 +448,13 @@ function hasForbiddenPublicMarker(body: string) {
 }
 
 export function validateDraftForPlatform(
-  draft: Pick<PublishingDraft, "title" | "body" | "imageUrls" | "localImagePaths" | "publishMode" | "coverImageUrl">,
+  draft: Pick<PublishingDraft, "title" | "body" | "tags" | "imageUrls" | "localImagePaths" | "publishMode" | "coverImageUrl">,
   platform: SocialPlatform,
 ): DraftValidationError[] {
   const errors: DraftValidationError[] = [];
   const title = draft.title?.trim() ?? "";
   const body = draft.body?.trim() ?? "";
+  const rawTags = draft.tags ?? [];
   const hasMedia = (draft.imageUrls?.length ?? 0) > 0 || (draft.localImagePaths?.length ?? 0) > 0;
 
   if (!title) {
@@ -437,6 +468,25 @@ export function validateDraftForPlatform(
   }
   if (hasForbiddenPublicMarker(body)) {
     errors.push({ field: "body", message: "正文不能包含内部追踪标记、完整 hash、PGP 签名或 PHP 注释" });
+  }
+
+  if (platform === "douyin") {
+    if (body.length > DOUYIN_BODY_MAX_LENGTH) {
+      errors.push({ field: "body", message: "正文超过抖音发布限制，请重新生成或压缩后再发布" });
+    }
+    if (normalizeDouyinTags(rawTags).length !== rawTags.filter((tag) => tag?.trim()).length) {
+      errors.push({ field: "tags", message: "话题标签不符合抖音发布规则，请使用不含标点的短词标签" });
+    }
+  }
+
+  if (platform === "xiaohongshu") {
+    const normalizedTags = normalizeXiaohongshuTags(rawTags);
+    if ([body, buildXiaohongshuTagLine(normalizedTags)].filter(Boolean).join("\n\n").length > XIAOHONGSHU_NOTE_BODY_MAX_LENGTH) {
+      errors.push({ field: "body", message: "正文超过小红书发布限制，请重新生成或压缩后再发布" });
+    }
+    if (normalizedTags.length !== rawTags.filter((tag) => tag?.trim()).length) {
+      errors.push({ field: "tags", message: "话题标签不符合小红书发布规则，请使用不含标点的短词标签" });
+    }
   }
 
   if (platform === "douyin" && !hasMedia) {

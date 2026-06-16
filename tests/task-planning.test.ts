@@ -28,10 +28,10 @@ describe("publish task planning", () => {
   });
 
   it("keeps the default provider to publish platform matrix constrained", () => {
-    expect(providerPublishMatrix.doubao.platforms).toEqual(["toutiao", "baijiahao", "douyin"]);
+    expect(providerPublishMatrix.doubao.platforms).toEqual(["douyin", "baijiahao", "toutiao"]);
     expect(providerPublishMatrix.deepseek.platforms).toEqual(["csdn", "zhihu"]);
     expect(providerPublishMatrix.yuanbao.platforms).toEqual(["wechat", "videohao"]);
-    expect(providerPublishMatrix.tongyi.platforms).toEqual(["zhihu", "weibo", "xiaohongshu"]);
+    expect(providerPublishMatrix.tongyi.platforms).toEqual(["weibo", "xiaohongshu"]);
     expect(getPlatformsBySearchProvider("doubao")).not.toContain("xiaohongshu");
   });
 
@@ -89,7 +89,61 @@ describe("publish task planning", () => {
     expect(normalized.enabledPlatforms).toHaveLength(9);
   });
 
-  it("preserves global account totals when normalizing saved plans", () => {
+  it("normalizes multi-provider publish plans without dropping selected provider platforms", () => {
+    const normalized = normalizePublishTaskPlan({
+      taskId: "task-multi",
+      enterpriseTaskId: "enterprise-multi",
+      keywordTaskId: "keyword-multi",
+      searchProvider: "doubao",
+      searchProviders: ["doubao", "deepseek"],
+      enabledPlatforms: [
+        {
+          platform: "douyin",
+          searchProvider: "doubao",
+          enabled: true,
+          accountCount: 1,
+          accountIds: ["douyin-1"],
+          articleCount: 1,
+        },
+        {
+          platform: "csdn",
+          searchProvider: "deepseek",
+          enabled: true,
+          accountCount: 2,
+          accountIds: ["csdn-1", "csdn-2"],
+          articleCount: 2,
+        },
+        {
+          platform: "xiaohongshu",
+          enabled: true,
+          accountCount: 1,
+          accountIds: ["xhs-1"],
+          articleCount: 1,
+        },
+      ],
+      days: 1,
+      articlesPerAccountPerDay: 1,
+      timeWindow: { start: "09:00", end: "18:00" },
+      minSameAccountIntervalHours: 3,
+      totalAccountCount: 99,
+      totalArticleCount: 99,
+      createdAt: "2026-06-12T00:00:00.000Z",
+      updatedAt: "2026-06-12T00:00:00.000Z",
+    });
+
+    const douyinPlan = normalized.enabledPlatforms.find((item) => item.platform === "douyin");
+    const csdnPlan = normalized.enabledPlatforms.find((item) => item.platform === "csdn");
+    const xhsPlan = normalized.enabledPlatforms.find((item) => item.platform === "xiaohongshu");
+
+    expect(normalized.searchProviders).toEqual(["doubao", "deepseek"]);
+    expect(douyinPlan).toMatchObject({ enabled: true, searchProvider: "doubao", accountCount: 1, articleCount: 1 });
+    expect(csdnPlan).toMatchObject({ enabled: true, searchProvider: "deepseek", accountCount: 2, articleCount: 2 });
+    expect(xhsPlan).toMatchObject({ enabled: false, accountCount: 0, accountIds: [], articleCount: 0 });
+    expect(normalized.totalAccountCount).toBe(3);
+    expect(normalized.totalArticleCount).toBe(3);
+  });
+
+  it("uses task-scoped account totals when normalizing saved plans", () => {
     const normalized = normalizePublishTaskPlan({
       taskId: "task-2",
       enterpriseTaskId: "enterprise-2",
@@ -115,7 +169,7 @@ describe("publish task planning", () => {
       updatedAt: "2026-06-12T00:00:00.000Z",
     });
 
-    expect(normalized.totalAccountCount).toBe(4);
-    expect(normalized.totalArticleCount).toBe(12);
+    expect(normalized.totalAccountCount).toBe(2);
+    expect(normalized.totalArticleCount).toBe(6);
   });
 });

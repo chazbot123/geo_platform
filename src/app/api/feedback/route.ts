@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { toUserFacingErrorMessage } from "@/lib/errors/user-facing";
 import type { FeedbackPayload } from "@/lib/feedback/client";
 import { isFeedbackPayload } from "@/lib/feedback/validation";
 
@@ -36,7 +37,7 @@ export async function POST(request: Request) {
 
     if (!response.ok) {
       return NextResponse.json(
-        { error: typeof result.error === "string" ? result.error : "服务端暂时不可用，请稍后重试" },
+        { error: toUserFacingErrorMessage(result.error, "服务端暂时不可用，请稍后重试。") },
         { status: response.status },
       );
     }
@@ -44,7 +45,7 @@ export async function POST(request: Request) {
     return NextResponse.json(result);
   } catch (error) {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "反馈提交失败，请稍后重试" },
+      { error: toUserFacingErrorMessage(error, "反馈提交失败，请稍后重试。") },
       { status: 502 },
     );
   }

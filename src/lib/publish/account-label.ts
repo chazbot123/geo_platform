@@ -20,6 +20,7 @@ const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}
 const suspiciousNamePattern =
   /发布文章|发布作品|发布内容|创作中心|内容管理|作品管理|发文规范|创作服务平台|工作台|去发布|退出登录|登录|注册|首页|消息|私信|评论|点赞|关注|粉丝|热搜|推荐|搜索|客户端|来自|秒前|分钟前|小时前|天前|周前|个月前|年前/i;
 const timePollutionPattern = /\d+\s*(?:秒|分钟|分|小时|天|周|个月|月|年)前/i;
+const baijiahaoFeedNoisePattern = /热点榜|快来看看|^\s*切换(?:\s+.*\(\d+s\))?\s*$/i;
 
 function normalizeLabel(value?: string) {
   const text = String(value || "")
@@ -38,6 +39,7 @@ export function isSuspiciousAccountLabel(value?: string, platform?: PlatformAcco
   const text = normalizeLabel(value);
   if (!text) return true;
   if (platform && isGenericPlatformLabel(text, platform)) return true;
+  if (platform === "baijiahao" && baijiahaoFeedNoisePattern.test(text)) return true;
   return suspiciousNamePattern.test(text) || timePollutionPattern.test(text);
 }
 

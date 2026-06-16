@@ -23,13 +23,13 @@ function toAssetIssue(error: unknown, code: string): ReviewIssue {
   if (error instanceof StrategyAssetValidationError) {
     return {
       code,
-      message: `Content strategy asset validation failed: ${error.issues.join("; ")}`,
+      message: `内容策略资源校验失败：${error.issues.join("；")}`,
       evidence: error.assetPath,
     };
   }
   return {
     code,
-    message: error instanceof Error ? error.message : "Content strategy asset validation failed",
+    message: error instanceof Error ? error.message : "内容策略资源校验失败。",
   };
 }
 
@@ -75,7 +75,7 @@ export async function reviewContent(
       if (fullText.includes(word)) {
         blockingIssues.push({
           code: "RISK_WORD_BLOCKING",
-          message: `Blocking risk word found: ${word}`,
+          message: `发现阻断风险词：${word}`,
           evidence: word,
         });
       }
@@ -85,7 +85,7 @@ export async function reviewContent(
       if (fullText.includes(word)) {
         warnings.push({
           code: "RISK_WORD_WARNING",
-          message: `Warning risk word found: ${word}`,
+          message: `发现需注意的风险词：${word}`,
           evidence: word,
         });
       }
@@ -121,7 +121,7 @@ export async function reviewContent(
     if (draft.title.length > strategy.title.maxLength) {
       blockingIssues.push({
         code: "TITLE_TOO_LONG",
-        message: `Title exceeds ${strategy.title.maxLength} characters (current ${draft.title.length})`,
+        message: `标题超过 ${strategy.title.maxLength} 个字符，当前为 ${draft.title.length} 个字符。`,
       });
       platformFit -= 30;
     }
@@ -130,7 +130,7 @@ export async function reviewContent(
       if (fullText.includes(word)) {
         blockingIssues.push({
           code: "PLATFORM_RISK_WORD",
-          message: `Platform strategy risk word found: ${word}`,
+          message: `平台策略发现风险词：${word}`,
           evidence: word,
         });
       }
@@ -140,7 +140,7 @@ export async function reviewContent(
       if (!fullText.includes(required)) {
         warnings.push({
           code: "PLATFORM_MUST_HAVE_MISSING",
-          message: `Platform strategy expects this content signal: ${required}`,
+          message: `平台策略建议补充内容信号：${required}`,
           evidence: required,
         });
         platformFit -= 10;
@@ -151,7 +151,7 @@ export async function reviewContent(
       if (fullText.includes(forbidden)) {
         blockingIssues.push({
           code: "PLATFORM_MUST_NOT_HAVE",
-          message: `Platform strategy forbids this content signal: ${forbidden}`,
+          message: `平台策略禁止包含该内容信号：${forbidden}`,
           evidence: forbidden,
         });
       }
@@ -170,12 +170,12 @@ export async function reviewContent(
     if (questionCoverage < 60) {
       blockingIssues.push({
         code: "LOW_QUESTION_COVERAGE",
-        message: `Selected question coverage is ${questionCoverage}% (${covered.length}/${selectedQuestions.length})`,
+        message: `所选问题覆盖率为 ${questionCoverage}%（${covered.length}/${selectedQuestions.length}），低于要求。`,
       });
     } else if (questionCoverage < 80) {
       warnings.push({
         code: "QUESTION_COVERAGE_WARNING",
-        message: `Selected question coverage is ${questionCoverage}% (${covered.length}/${selectedQuestions.length})`,
+        message: `所选问题覆盖率为 ${questionCoverage}%（${covered.length}/${selectedQuestions.length}），建议补充覆盖。`,
       });
     }
   }
@@ -185,7 +185,7 @@ export async function reviewContent(
     if (fullText.includes(pattern)) {
       blockingIssues.push({
         code: "INTERNAL_MARKER_LEAK",
-        message: `Draft contains an internal marker that must not be published: ${pattern}`,
+        message: `草稿包含不可发布的内部标记：${pattern}`,
       });
     }
   }
@@ -194,7 +194,7 @@ export async function reviewContent(
   if (fullHashMatch) {
     blockingIssues.push({
       code: "INTERNAL_FULL_HASH_LEAK",
-      message: "Draft contains a full hash that must remain internal.",
+      message: "草稿包含完整哈希值，请移除后再发布。",
       evidence: fullHashMatch[0],
     });
   }

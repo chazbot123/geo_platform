@@ -1448,9 +1448,16 @@
     );
   }
 
+  function sanitizeTopicTag(tag) {
+    return String(tag || "")
+      .replace(/^#+/, "")
+      .trim()
+      .replace(/[^\p{Script=Han}\p{Letter}\p{Number}]+/gu, "");
+  }
+
   function buildTagText(tags) {
     return (tags || [])
-      .map((tag) => String(tag || "").replace(/^#+/, "").trim())
+      .map((tag) => sanitizeTopicTag(tag))
       .filter(Boolean)
       .map((tag) => `#${tag}`)
       .join(" ");

@@ -1,3 +1,5 @@
+import { toUserFacingErrorMessage } from "@/lib/errors/user-facing";
+
 export const FEEDBACK_ISSUE_TYPES = [
   "模型连接问题",
   "内容生成问题",
@@ -77,7 +79,7 @@ export async function submitFeedback(payload: FeedbackPayload) {
   const result = (await response.json().catch(() => ({}))) as { error?: string };
 
   if (!response.ok) {
-    throw new Error(result.error ?? "反馈提交失败，请稍后重试。");
+    throw new Error(toUserFacingErrorMessage(result.error, "反馈提交失败，请稍后重试。"));
   }
 
   return result;

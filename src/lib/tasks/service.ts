@@ -11,7 +11,13 @@ import {
 import { getEnterpriseProfile } from "@/lib/enterprise/service";
 import { dataRoot } from "@/lib/paths";
 import { detectPublishablePlatformAccounts } from "@/lib/publish/accounts-service";
-import { getAllPublishPlatforms, getPlatformsBySearchProvider } from "@/lib/publish/provider-platform-matrix";
+import {
+  getAllPublishPlatforms,
+  getPlatformsBySearchProvider,
+  getPlatformsBySearchProviders,
+  getSearchProviderForPlatform,
+  normalizeSearchProviders,
+} from "@/lib/publish/provider-platform-matrix";
 import {
   createRecordId,
   ensureStorageReady,
@@ -392,6 +398,7 @@ function normalizePersistedTimeWindow(input?: { start?: string; end?: string }) 
 
 function buildPlatformPlan(input: {
   platform: SocialPlatform;
+  searchProvider?: SearchProvider;
   enabled: boolean;
   detection?: PlatformAccountDetectionItem;
   days: number;
@@ -402,6 +409,7 @@ function buildPlatformPlan(input: {
   const enabled = input.enabled && accountCount > 0;
   return {
     platform: input.platform,
+    searchProvider: input.searchProvider,
     enabled,
     accountCount: enabled ? accountCount : 0,
     accountIds: enabled ? accountIds : [],
@@ -421,40 +429,29 @@ function summarizePublishPlanTotals(input: {
   enabledPlatforms: PublishTaskPlan["enabledPlatforms"];
   days: number;
   articlesPerAccountPerDay: number;
-  globalAccountCount?: number;
-  globalArticleCount?: number;
 }) {
   const scopedTotals = summarizePublishPlanPlatforms(input.enabledPlatforms);
-  const normalizedGlobalAccountCount = normalizeAccountCount(input.globalAccountCount);
-  const normalizedGlobalArticleCount = normalizeAccountCount(input.globalArticleCount);
-  const expectedGlobalArticleCount = normalizedGlobalAccountCount * input.days * input.articlesPerAccountPerDay;
-  const shouldPreserveGlobalTotals =
-    normalizedGlobalAccountCount > 0 &&
-    normalizedGlobalArticleCount > 0 &&
-    normalizedGlobalArticleCount === expectedGlobalArticleCount;
-  const totalAccountCount = shouldPreserveGlobalTotals ? normalizedGlobalAccountCount : scopedTotals.totalAccountCount;
   return {
     taskScopedAccountCount: scopedTotals.totalAccountCount,
-    totalAccountCount,
-    totalArticleCount: totalAccountCount * input.days * input.articlesPerAccountPerDay,
+    totalAccountCount: scopedTotals.totalAccountCount,
+    totalArticleCount: scopedTotals.totalArticleCount,
   };
-}
-
-function constrainPlatformsToSearchProvider(searchProvider: SearchProvider, enabledPlatforms: SocialPlatform[]) {
-  const allowedPlatforms = new Set(getPlatformsBySearchProvider(searchProvider));
-  return Array.from(new Set(enabledPlatforms.filter((platform) => allowedPlatforms.has(platform))));
 }
 
 export function normalizePublishTaskPlan(plan: PublishTaskPlan): PublishTaskPlan {
   const days = normalizeDays(plan.days);
   const articlesPerAccountPerDay = normalizeArticlesPerAccountPerDay(plan.articlesPerAccountPerDay);
-  const allowedPlatforms = new Set(getPlatformsBySearchProvider(plan.searchProvider));
+  const searchProviders = normalizeSearchProviders(plan.searchProviders?.length ? plan.searchProviders : plan.searchProvider);
+  const primarySearchProvider = searchProviders[0] ?? plan.searchProvider;
+  const allowedPlatforms = new Set(getPlatformsBySearchProviders(searchProviders));
   const existingPlans = new Map(plan.enabledPlatforms.map((item) => [item.platform, item]));
   const enabledPlatforms = getAllPublishPlatforms().map((platform) => {
+    const platformSearchProvider = getSearchProviderForPlatform(platform, searchProviders);
     const existingPlan = existingPlans.get(platform);
     if (!existingPlan) {
       return buildPlatformPlan({
         platform,
+        searchProvider: platformSearchProvider,
         enabled: false,
         days,
         articlesPerAccountPerDay,
@@ -469,6 +466,7 @@ export function normalizePublishTaskPlan(plan: PublishTaskPlan): PublishTaskPlan
     return {
       ...existingPlan,
       platform,
+      searchProvider: platformSearchProvider ?? existingPlan.searchProvider,
       enabled,
       accountIds: enabled ? accountIds : [],
       accountCount,
@@ -479,12 +477,12 @@ export function normalizePublishTaskPlan(plan: PublishTaskPlan): PublishTaskPlan
     enabledPlatforms,
     days,
     articlesPerAccountPerDay,
-    globalAccountCount: plan.totalAccountCount,
-    globalArticleCount: plan.totalArticleCount,
   });
 
   return {
     ...plan,
+    searchProvider: primarySearchProvider,
+    searchProviders: searchProviders.length ? searchProviders : [primarySearchProvider],
     enabledPlatforms,
     days,
     articlesPerAccountPerDay,
@@ -511,6 +509,7 @@ export function calculatePublishTaskTotal(
 export async function savePublishTaskPlan(input: {
   taskId: string;
   searchProvider: SearchProvider;
+  searchProviders?: SearchProvider[];
   enabledPlatforms: SocialPlatform[];
   days: number;
   articlesPerAccountPerDay: number;
@@ -536,7 +535,11 @@ export async function savePublishTaskPlan(input: {
   }
 
   const allPlatforms = getAllPublishPlatforms();
-  const mappedPlatformSet = new Set(getPlatformsBySearchProvider(input.searchProvider));
+  const searchProviders = normalizeSearchProviders(input.searchProviders?.length ? input.searchProviders : input.searchProvider);
+  if (!searchProviders.length) {
+    throw new Error("请至少选择一个 GEO AI 平台。");
+  }
+  const mappedPlatformSet = new Set(getPlatformsBySearchProviders(searchProviders));
   const days = normalizeDays(input.days);
   const articlesPerAccountPerDay = normalizeArticlesPerAccountPerDay(input.articlesPerAccountPerDay);
   const expectedImageCount = normalizeExpectedImageCount(input.expectedImageCount);
@@ -546,18 +549,17 @@ export async function savePublishTaskPlan(input: {
   const enabledPlatforms = allPlatforms.map((platform) =>
     buildPlatformPlan({
       platform,
+      searchProvider: getSearchProviderForPlatform(platform, searchProviders),
       enabled: mappedPlatformSet.has(platform) && (detectionByPlatform.get(platform)?.accountCount ?? 0) > 0,
       detection: detectionByPlatform.get(platform),
       days,
       articlesPerAccountPerDay,
     }),
   );
-  const globalAccountCount = detection.items.reduce((total, item) => total + item.accountCount, 0);
   const { taskScopedAccountCount, totalAccountCount, totalArticleCount } = summarizePublishPlanTotals({
     enabledPlatforms,
     days,
     articlesPerAccountPerDay,
-    globalAccountCount,
   });
   if (taskScopedAccountCount <= 0) {
     throw new Error("当前 AI 平台下暂无可自动加入任务的可发布账号。");
@@ -567,7 +569,8 @@ export async function savePublishTaskPlan(input: {
     taskId: input.taskId,
     enterpriseTaskId: prerequisite.enterpriseTaskId ?? input.taskId,
     keywordTaskId: prerequisite.keywordTaskId ?? input.taskId,
-    searchProvider: input.searchProvider,
+    searchProvider: searchProviders[0],
+    searchProviders,
     enabledPlatforms,
     days,
     articlesPerAccountPerDay,
@@ -581,7 +584,7 @@ export async function savePublishTaskPlan(input: {
 
   const nextTask: TaskRecord = {
     ...task,
-    searchProvider: input.searchProvider,
+    searchProvider: searchProviders[0],
     expectedImageCount,
     publishPlan,
     status: "task_planned",

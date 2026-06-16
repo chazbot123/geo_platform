@@ -361,7 +361,7 @@ function resolveOpenAIResponsesEndpoint(baseUrl: string) {
     .replace(/\/responses$/i, "");
 
   if (!trimmed) {
-    throw new Error("Image model API base URL is not configured.");
+    throw new Error("未配置图片模型 API 地址。");
   }
   if (/^https?:\/\/[^/]+$/i.test(trimmed)) {
     return `${trimmed}/v1/responses`;
@@ -1074,7 +1074,7 @@ async function fetchOpenAIResponsesImageGeneration(
 
   const result = extractResponsesImageResult(payload ?? {});
   if (!result.url) {
-    throw new Error("Responses image tool did not return a usable image.");
+    throw new Error("图片模型未返回可用图片，请稍后重试。");
   }
 
   return {

@@ -336,7 +336,7 @@ export async function resumePlatformAccount(accountId: string) {
 export async function runDuePublishingJob(jobId: string) {
   const job = await getPublishingJob(jobId);
   if (!job) {
-    throw new Error("publishing job not found");
+    throw new Error("发布任务不存在。");
   }
 
   const readiness = await evaluatePublishingJobReadiness(job);
@@ -421,6 +421,7 @@ export async function runDuePublishingJob(jobId: string) {
 export async function runDuePublishingJobs(at = new Date()) {
   const jobs = (await listPublishingJobs()).filter((job) => job.status === "queued");
   const results: Array<{ jobId: string; status: PublishingJobRecord["status"] }> = [];
+  const blocked: Array<{ jobId: string; reason: string; nextRunAt?: string }> = [];
   let runnable = 0;
   let skipped = 0;
 
@@ -428,6 +429,15 @@ export async function runDuePublishingJobs(at = new Date()) {
     const readiness = await evaluatePublishingJobReadiness(job, at);
     if (!readiness.runnable) {
       skipped += 1;
+      const plannedTimeReached = !job.plannedPublishTime || new Date(job.plannedPublishTime).getTime() <= at.getTime();
+      if (plannedTimeReached && readiness.reason && readiness.reason !== "job_scheduled_for_later") {
+        const updated = await blockJob(job, readiness.reason, readiness.nextRunAt);
+        blocked.push({
+          jobId: updated.id,
+          reason: readiness.reason,
+          nextRunAt: readiness.nextRunAt,
+        });
+      }
       continue;
     }
     runnable += 1;
@@ -440,6 +450,7 @@ export async function runDuePublishingJobs(at = new Date()) {
     runnable,
     executed: results.length,
     skipped,
+    blocked,
     results,
   };
 }

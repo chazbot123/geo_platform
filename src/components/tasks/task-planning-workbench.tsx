@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { CalendarDays, CheckCircle2, LoaderCircle, LogIn, PlayCircle, RefreshCw, Save, Settings2, ShieldCheck, Trash2 } from "lucide-react";
+import { AlertTriangle, CalendarDays, CheckCircle2, LoaderCircle, LogIn, PlayCircle, RefreshCw, Save, Settings2, ShieldCheck, Trash2, X } from "lucide-react";
 import { dispatchWorkflowStatusRefresh } from "@/components/layout/app-shell";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { requireLicensedAction } from "@/lib/license/guard";
@@ -99,6 +99,10 @@ interface AccountsResponse {
   items: PlatformAccountRecord[];
   error?: string;
 }
+
+type SavedPublishTaskPlan = PublishTaskPlan & {
+  searchProviders?: SearchProvider[];
+};
 
 function formatTimeWindow(start: string, end: string) {
   return `${start}-${end}`;
@@ -273,10 +277,11 @@ export function TaskPlanningWorkbench() {
   const [detecting, setDetecting] = useState(false);
   const [loginKey, setLoginKey] = useState("");
   const [removingKey, setRemovingKey] = useState("");
+  const [pendingRemovalAccount, setPendingRemovalAccount] = useState<PlatformAccountRecord | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [prerequisites, setPrerequisites] = useState<PlanningPrerequisites | null>(null);
-  const [searchProvider, setSearchProvider] = useState<SearchProvider>("doubao");
+  const [selectedSearchProviders, setSelectedSearchProviders] = useState<SearchProvider[]>(["doubao"]);
   const [enabledPlatforms, setEnabledPlatforms] = useState<SocialPlatform[]>([]);
   const [selectedPlatform, setSelectedPlatform] = useState<SocialPlatform>("toutiao");
   const [daysInput, setDaysInput] = useState("5");
@@ -291,7 +296,11 @@ export function TaskPlanningWorkbench() {
   const initialSessionAuditDoneRef = useRef(false);
   const detectRunIdRef = useRef(0);
 
-  const mappedPlatforms = useMemo(() => getPlatformsBySearchProvider(searchProvider), [searchProvider]);
+  const searchProvider = selectedSearchProviders[0];
+  const mappedPlatforms = useMemo(
+    () => Array.from(new Set(selectedSearchProviders.flatMap((provider) => getPlatformsBySearchProvider(provider)))),
+    [selectedSearchProviders],
+  );
   const detectionByPlatform = useMemo(() => new Map(detectionItems.map((item) => [item.platform, item])), [detectionItems]);
   const enabledSet = useMemo(() => new Set(enabledPlatforms), [enabledPlatforms]);
   const publishableAccounts = useMemo(
@@ -328,7 +337,6 @@ export function TaskPlanningWorkbench() {
     0,
   );
   const totalAccounts = publishableAccounts.length;
-  const totalArticles = totalAccounts * normalizedDays * normalizedArticlesPerAccountPerDay;
   const taskScopedArticles = taskScopedAccountCount * normalizedDays * normalizedArticlesPerAccountPerDay;
   const canSave = Boolean(
     prerequisites?.enterpriseReady &&
@@ -343,8 +351,9 @@ export function TaskPlanningWorkbench() {
       return false;
     }
     const savedEnabledPlatforms = savedPlan.enabledPlatforms.filter((item) => item.enabled).map((item) => item.platform);
+    const savedSearchProviders = normalizeSavedSearchProviders(savedPlan as SavedPublishTaskPlan);
     return !(
-      savedPlan.searchProvider === searchProvider &&
+      areSameProviderSelections(savedSearchProviders, selectedSearchProviders) &&
       savedPlan.days === normalizedDays &&
       savedPlan.articlesPerAccountPerDay === normalizedArticlesPerAccountPerDay &&
       normalizeExpectedImageCount(prerequisites?.expectedImageCount) === normalizedExpectedImageCount &&
@@ -362,7 +371,7 @@ export function TaskPlanningWorkbench() {
     prerequisites?.savedPlan,
     publishEndTime,
     publishStartTime,
-    searchProvider,
+    selectedSearchProviders,
   ]);
   const savedPlanReady = Boolean(prerequisites?.savedPlan && !hasPlanChanges && (prerequisites.savedPlan.totalArticleCount ?? 0) > 0);
   const hasSavedPlan = Boolean(prerequisites?.savedPlan);
@@ -400,7 +409,11 @@ export function TaskPlanningWorkbench() {
       if (!response.ok) throw new Error(data.error || "读取任务规划失败。");
       setPrerequisites(data);
       if (data.savedPlan) {
-        setSearchProvider(data.savedPlan.searchProvider);
+        const savedSearchProviders = normalizeSavedSearchProviders(data.savedPlan as SavedPublishTaskPlan);
+        const savedMappedPlatforms = Array.from(
+          new Set(savedSearchProviders.flatMap((provider) => getPlatformsBySearchProvider(provider))),
+        );
+        setSelectedSearchProviders(savedSearchProviders);
         setDaysInput(String(data.savedPlan.days));
         setArticlesPerAccountPerDayInput(String(data.savedPlan.articlesPerAccountPerDay));
         setExpectedImageCountInput(String(normalizeExpectedImageCount(data.expectedImageCount)));
@@ -408,7 +421,7 @@ export function TaskPlanningWorkbench() {
         setPublishEndTime(data.savedPlan.timeWindow?.end ?? "18:00");
         const savedPlatforms = data.savedPlan.enabledPlatforms.filter((item) => item.enabled).map((item) => item.platform);
         setEnabledPlatforms(savedPlatforms);
-        setSelectedPlatform(savedPlatforms[0] ?? getPlatformsBySearchProvider(data.savedPlan.searchProvider)[0]);
+        setSelectedPlatform(savedPlatforms[0] ?? savedMappedPlatforms[0]);
       } else {
         setExpectedImageCountInput(String(normalizeExpectedImageCount(data.expectedImageCount)));
       }
@@ -429,7 +442,7 @@ export function TaskPlanningWorkbench() {
       const response = await fetch("/api/publish/accounts/detect", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ searchProvider, platforms: mappedPlatforms, forceRefresh }),
+        body: JSON.stringify({ searchProvider, searchProviders: selectedSearchProviders, platforms: mappedPlatforms, forceRefresh }),
       });
       const data = (await response.json()) as DetectionResponse & { error?: string };
       if (!response.ok) throw new Error(data.error || "账号检测失败。");
@@ -676,10 +689,6 @@ export function TaskPlanningWorkbench() {
   }
 
   async function removeAccount(account: PlatformAccountRecord) {
-    const accountLabel = formatAccountDisplayLabel(account, account.id) || account.id;
-    const confirmed = window.confirm(`确定移除 ${platformLabels[account.platform]} 账号「${accountLabel}」吗？移除后会从已保存任务和内容绑定中摘除，不再加入当前任务。`);
-    if (!confirmed) return;
-
     setRemovingKey(account.id);
     setError("");
     setNotice("");
@@ -698,6 +707,7 @@ export function TaskPlanningWorkbench() {
       await loadAccounts();
       await detectAccounts(true);
       window.dispatchEvent(new Event("geo-workflow-status-refresh"));
+      setPendingRemovalAccount(null);
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "移除账号失败。");
     } finally {
@@ -716,7 +726,8 @@ export function TaskPlanningWorkbench() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           taskId: prerequisites.taskId,
-          searchProvider,
+          searchProvider: selectedSearchProviders[0],
+          searchProviders: selectedSearchProviders,
           enabledPlatforms,
           days: normalizedDays,
           articlesPerAccountPerDay: normalizedArticlesPerAccountPerDay,
@@ -767,13 +778,22 @@ export function TaskPlanningWorkbench() {
       const data = (await response.json()) as { error?: string };
       if (!response.ok) throw new Error(data.error || "启动生成失败。");
       dispatchWorkflowStatusRefresh();
-      setNotice("已开始生成，系统会按计划时间自动发布，正在进入生成结果中心。");
+      setNotice("已开始生成，系统会按计划时间自动发布，正在进入生成结果。");
       router.push(`/content-pool?taskId=${encodeURIComponent(taskId)}`);
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "启动生成失败。");
     } finally {
       setStartingGeneration(false);
     }
+  }
+
+  function toggleSearchProvider(provider: SearchProvider) {
+    setSelectedSearchProviders((current) => {
+      if (current.includes(provider)) {
+        return current.length > 1 ? current.filter((item) => item !== provider) : current;
+      }
+      return normalizeProviderSelection([...current, provider]);
+    });
   }
 
   useEffect(() => {
@@ -790,7 +810,7 @@ export function TaskPlanningWorkbench() {
 
   useEffect(() => {
     void detectAccounts(false);
-  }, [searchProvider]);
+  }, [selectedSearchProviders]);
 
   useEffect(() => {
     accountsRef.current = accounts;
@@ -830,7 +850,7 @@ export function TaskPlanningWorkbench() {
     return () => {
       window.removeEventListener("geo-platform-accounts-refresh", refreshAccountsView);
     };
-  }, [searchProvider]);
+  }, [selectedSearchProviders]);
 
   if (loading) {
     return <div className="section-card text-sm text-muted">正在读取企业信息和客户问题。</div>;
@@ -844,7 +864,7 @@ export function TaskPlanningWorkbench() {
             <Settings2 className="h-4 w-4 text-accent" />
             <div>
               <h3 className="page-section-title">平台与账号</h3>
-              <p className="page-section-desc">这里会展示当前 GEO AI 平台对应的发布平台，以及每个平台已登录的可用账号。</p>
+              <p className="page-section-desc">这里会展示已勾选 GEO AI 平台对应的发布平台合集，以及每个平台已登录的可用账号。</p>
             </div>
           </div>
           <button
@@ -862,7 +882,7 @@ export function TaskPlanningWorkbench() {
           <nav className="grid content-start gap-2" aria-label="GEO AI 平台">
             {providerOrder.map((provider) => {
               const bundle = providerPublishMatrix[provider];
-              const selected = provider === searchProvider;
+              const selected = selectedSearchProviders.includes(provider);
               return (
                 <button
                   key={provider}
@@ -870,14 +890,22 @@ export function TaskPlanningWorkbench() {
                   className={`flex min-h-[68px] items-center gap-3 rounded-md border px-3 py-3 text-left transition ${
                     selected ? "border-accent bg-accent/10" : "border-line bg-surface hover:border-accent/50"
                   }`}
-                  onClick={() => setSearchProvider(provider)}
+                  aria-pressed={selected}
+                  onClick={() => toggleSearchProvider(provider)}
                 >
                   <img className="h-8 w-8 shrink-0 object-contain" src={getSearchProviderIcon(provider)} alt="" />
                   <span className="min-w-0 flex-1">
                     <span className="block text-sm font-semibold text-ink">{providerLabels[provider]}</span>
                     <span className="mt-1 block truncate text-xs text-muted">{bundle.platforms.map((platform) => platformLabels[platform]).join(" / ")}</span>
                   </span>
-                  {selected && <CheckCircle2 className="h-4 w-4 shrink-0 text-accent" />}
+                  <span
+                    className={`flex h-5 w-5 shrink-0 items-center justify-center rounded border ${
+                      selected ? "border-accent bg-accent text-white" : "border-line bg-panel text-transparent"
+                    }`}
+                    aria-hidden
+                  >
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                  </span>
                 </button>
               );
             })}
@@ -994,7 +1022,7 @@ export function TaskPlanningWorkbench() {
                           type="button"
                           className="inline-flex items-center justify-center gap-2 rounded-md border border-red-200 px-3 py-2 text-xs font-medium text-red-600 transition hover:border-red-300 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-red-500/40 dark:text-red-300 dark:hover:border-red-400 dark:hover:bg-red-500/10"
                           disabled={Boolean(loginKey) || Boolean(removingKey)}
-                          onClick={() => void removeAccount(account)}
+                          onClick={() => setPendingRemovalAccount(account)}
                         >
                           {removingKey === account.id ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
                           移除
@@ -1097,22 +1125,22 @@ export function TaskPlanningWorkbench() {
             <h4 className="text-sm font-semibold text-ink">文章总量</h4>
             <div className="mt-4 grid grid-cols-3 gap-2 text-center">
               <div>
-                <p className="text-2xl font-semibold text-ink">{totalAccounts}</p>
-                <p className="mt-1 text-xs text-muted">可用账号</p>
+                <p className="text-2xl font-semibold text-ink">{taskScopedAccountCount}</p>
+                <p className="mt-1 text-xs text-muted">任务账号</p>
               </div>
               <div>
                 <p className="text-2xl font-semibold text-ink">{normalizedDays}</p>
                 <p className="mt-1 text-xs text-muted">天</p>
               </div>
               <div>
-                <p className="text-2xl font-semibold text-accent">{totalArticles}</p>
+                <p className="text-2xl font-semibold text-accent">{taskScopedArticles}</p>
                 <p className="mt-1 text-xs text-muted">篇</p>
               </div>
             </div>
-            <p className="mt-4 text-xs leading-5 text-muted">预计总篇数 = 全部已登录可发布账号数 x 发布天数 x 每个账号每天篇数。</p>
+            <p className="mt-4 text-xs leading-5 text-muted">预计总篇数 = 已勾选 AI 平台对应账号数 x 发布天数 x 每个账号每天篇数。</p>
             <p className="mt-2 text-xs leading-5 text-muted">当前计划已锁定每篇 {normalizedExpectedImageCount} 张图片。</p>
             <p className="mt-2 text-xs leading-5 text-muted">
-              当前全局已登录可发布账号 {totalAccounts} 个；其中当前 AI 平台可自动加入任务的账号 {taskScopedAccountCount} 个，当前 AI 平台预计 {taskScopedArticles} 篇。
+              当前全局已登录可发布账号 {totalAccounts} 个；本次按已勾选 AI 平台对应平台自动加入 {taskScopedAccountCount} 个账号，预计生成 {taskScopedArticles} 篇。
             </p>
             <p className="mt-2 text-xs leading-5 text-muted">
               {savedPlanReady
@@ -1155,6 +1183,81 @@ export function TaskPlanningWorkbench() {
           </aside>
         </div>
       </section>
+      {pendingRemovalAccount ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6">
+          <div className="w-full max-w-md rounded-md border border-line bg-panel p-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex min-w-0 items-start gap-3">
+                <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-300">
+                  <AlertTriangle className="h-4 w-4" />
+                </span>
+                <div className="min-w-0">
+                  <h3 className="text-base font-semibold text-ink">确认移除账号</h3>
+                  <p className="mt-2 text-sm leading-6 text-muted">
+                    移除后会从已保存任务和内容绑定中摘除，不再加入当前任务。这个操作不会删除平台后台账号。
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted hover:bg-surface hover:text-ink"
+                aria-label="关闭"
+                disabled={Boolean(removingKey)}
+                onClick={() => setPendingRemovalAccount(null)}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="mt-4 rounded-md border border-line bg-surface px-3 py-3">
+              <p className="text-sm font-medium text-ink">{formatAccountDisplayLabel(pendingRemovalAccount, pendingRemovalAccount.id) || pendingRemovalAccount.id}</p>
+              <p className="mt-1 text-xs text-muted">
+                {platformLabels[pendingRemovalAccount.platform]} · {resolveAccountIdentifier(pendingRemovalAccount, pendingRemovalAccount.id)}
+              </p>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                className="rounded-md border border-line px-3 py-2 text-sm font-medium text-ink hover:border-accent disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={Boolean(removingKey)}
+                onClick={() => setPendingRemovalAccount(null)}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="inline-flex items-center justify-center gap-2 rounded-md bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={Boolean(removingKey)}
+                onClick={() => void removeAccount(pendingRemovalAccount)}
+              >
+                {removingKey === pendingRemovalAccount.id ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                确认移除
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
+}
+
+function normalizeProviderSelection(providers: SearchProvider[]): SearchProvider[] {
+  const selected = providerOrder.filter((provider) => providers.includes(provider));
+  return selected.length ? selected : ["doubao"];
+}
+
+function normalizeSavedSearchProviders(savedPlan: SavedPublishTaskPlan) {
+  return normalizeProviderSelection(
+    Array.isArray(savedPlan.searchProviders) && savedPlan.searchProviders.length
+      ? savedPlan.searchProviders
+      : [savedPlan.searchProvider],
+  );
+}
+
+function areSameProviderSelections(left: SearchProvider[], right: SearchProvider[]) {
+  const normalizedLeft = normalizeProviderSelection(left);
+  const normalizedRight = normalizeProviderSelection(right);
+  if (normalizedLeft.length !== normalizedRight.length) {
+    return false;
+  }
+  return normalizedLeft.every((provider, index) => provider === normalizedRight[index]);
 }

@@ -49,7 +49,7 @@ function buildPublishPlan(updatedAt: string, patch: Partial<PublishTaskPlan> = {
   };
 }
 
-async function seedPlannedTask(options: { timestamp?: string; publishPlan?: Partial<PublishTaskPlan> } = {}) {
+async function seedPlannedTask(options: { timestamp?: string; publishPlan?: Partial<PublishTaskPlan>; accountPlatform?: PlatformAccountRecord["platform"] } = {}) {
   await resetDataDir();
   const dataStore = await import("@/lib/storage/data-store");
   await dataStore.ensureStorageReady();
@@ -100,7 +100,7 @@ async function seedPlannedTask(options: { timestamp?: string; publishPlan?: Part
   };
   const account: PlatformAccountRecord = {
     id: "account-1",
-    platform: "toutiao",
+    platform: options.accountPlatform ?? "toutiao",
     provider: "electron",
     authType: "session",
     accountName: "geo-operator",
@@ -159,6 +159,152 @@ describe("content pool blackbox generation", () => {
     expect(jobs[0]?.status).toBe("queued");
     expect(jobs[0]?.contentPoolItemId).toBe("task-1-0001");
     expect(jobs[0]?.plannedPublishTime).toBe(record?.items[0]?.plannedPublishTime);
+  });
+
+  it("generates the same number of articles as the task-scoped publish plan total", async () => {
+    const dataStore = await seedPlannedTask({
+      publishPlan: {
+        enabledPlatforms: [
+          {
+            platform: "douyin",
+            enabled: true,
+            accountCount: 1,
+            accountIds: ["account-1"],
+            articleCount: 1,
+          },
+          {
+            platform: "baijiahao",
+            enabled: true,
+            accountCount: 2,
+            accountIds: ["account-2", "account-3"],
+            articleCount: 2,
+          },
+          {
+            platform: "toutiao",
+            enabled: true,
+            accountCount: 1,
+            accountIds: ["account-4"],
+            articleCount: 1,
+          },
+        ],
+        totalAccountCount: 4,
+        totalArticleCount: 4,
+      },
+    });
+    const { startContentGenerationBatch } = await import("@/lib/content/service");
+
+    await startContentGenerationBatch("task-1");
+
+    const task = await dataStore.getTask("task-1");
+    const record = await dataStore.getContentPool("task-1");
+    expect(task?.publishPlan?.totalAccountCount).toBe(4);
+    expect(task?.publishPlan?.totalArticleCount).toBe(4);
+    expect(record?.items).toHaveLength(4);
+    expect(record?.totalArticleCount).toBe(4);
+  }, 15_000);
+
+  it("uses each platform plan provider when generating a multi-provider content pool", async () => {
+    const dataStore = await seedPlannedTask({
+      publishPlan: {
+        searchProvider: "doubao",
+        searchProviders: ["doubao", "deepseek"],
+        enabledPlatforms: [
+          {
+            platform: "douyin",
+            searchProvider: "doubao",
+            enabled: true,
+            accountCount: 1,
+            accountIds: ["douyin-account"],
+            articleCount: 1,
+          },
+          {
+            platform: "csdn",
+            searchProvider: "deepseek",
+            enabled: true,
+            accountCount: 1,
+            accountIds: ["csdn-account"],
+            articleCount: 1,
+          },
+        ],
+        totalAccountCount: 2,
+        totalArticleCount: 2,
+      },
+    });
+    const { startContentGenerationBatch } = await import("@/lib/content/service");
+
+    await startContentGenerationBatch("task-1");
+
+    const record = await dataStore.getContentPool("task-1");
+    expect(record?.items).toHaveLength(2);
+    expect(record?.items.map((item) => [item.publishPlatform, item.aiPlatform])).toEqual([
+      ["douyin", "doubao"],
+      ["csdn", "deepseek"],
+    ]);
+    expect(record?.items.map((item) => item.generationInputSnapshot?.searchProvider)).toEqual(["doubao", "deepseek"]);
+  }, 15_000);
+
+  it("keeps the generated batch completed when one auto publishing job is blocked by platform preflight", async () => {
+    const dataStore = await seedPlannedTask({
+      accountPlatform: "douyin",
+      publishPlan: {
+        enabledPlatforms: [
+          {
+            platform: "douyin",
+            enabled: true,
+            accountCount: 1,
+            accountIds: ["account-1"],
+            articleCount: 1,
+          },
+        ],
+      },
+    });
+    const { startContentGenerationBatch } = await import("@/lib/content/service");
+
+    await startContentGenerationBatch("task-1");
+
+    const task = await dataStore.getTask("task-1");
+    const record = await dataStore.getContentPool("task-1");
+    const jobs = await dataStore.getPublishingJobsByTask("task-1");
+    expect(task?.status).toBe("generation_completed");
+    expect(jobs).toHaveLength(0);
+    expect(record?.items[0]?.status).toBe("manual_pending");
+    expect(record?.items[0]?.failedReason).toContain("抖音发布建议携带视频或图片素材");
+    expect(record?.items[0]?.stageLog?.some((entry) => entry.stage === "publish_queue_failed")).toBe(true);
+  });
+
+  it("stores generation input snapshots and separates customer questions from platform topic tags", async () => {
+    const dataStore = await seedPlannedTask({
+      timestamp: "2026-06-15T01:20:00.000Z",
+    });
+    const { startContentGenerationBatch } = await import("@/lib/content/service");
+
+    await startContentGenerationBatch("task-1");
+
+    const record = await dataStore.getContentPool("task-1");
+    const item = record?.items[0];
+    expect(record?.items).toHaveLength(1);
+    expect(record?.generationInputSnapshot).toMatchObject({
+      taskId: "task-1",
+      publishPlanUpdatedAt: "2026-06-15T01:20:00.000Z",
+      product: {
+        productName: "GEO 发布助手",
+        category: "企业内容运营工具",
+        region: "上海",
+      },
+      keywordSet: {
+        selectedQuestions: expect.arrayContaining(["企业内容发布怎么提高效率？"]),
+      },
+    });
+    expect(item?.generationInputSnapshot).toMatchObject({
+      productName: "GEO 发布助手",
+      keywordText: "企业内容发布怎么提高效率？",
+      publishPlatform: "toutiao",
+      plannedPublishTime: item?.plannedPublishTime,
+    });
+    expect(item?.generationInputSnapshot?.productUpdatedAt).toBeUndefined();
+    expect(item?.keywordText).toBe("企业内容发布怎么提高效率？");
+    expect(item?.topicTags?.length).toBeGreaterThan(0);
+    expect(item?.topicTags).not.toContain(item?.keywordText);
   });
 
   it("does not schedule pending publish articles before generation time", async () => {

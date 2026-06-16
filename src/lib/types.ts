@@ -652,6 +652,7 @@ export interface PlatformAccountDetectionResult {
 
 export interface PublishTaskPlatformPlan {
   platform: SocialPlatform;
+  searchProvider?: SearchProvider;
   enabled: boolean;
   accountCount: number;
   accountIds: string[];
@@ -664,6 +665,7 @@ export interface PublishTaskPlan {
   enterpriseTaskId: string;
   keywordTaskId: string;
   searchProvider: SearchProvider;
+  searchProviders?: SearchProvider[];
   enabledPlatforms: PublishTaskPlatformPlan[];
   days: number;
   articlesPerAccountPerDay: number;
@@ -686,6 +688,8 @@ export type ContentPoolItemStatus =
   | "sample"
   | "pending_publish"
   | "publishing"
+  | "submitted"
+  | "pending_review"
   | "published"
   | "failed"
   | "manual_pending";
@@ -745,6 +749,7 @@ export interface ContentPoolItem {
   keywordId: string;
   keywordSequence: number;
   keywordText: string;
+  topicTags?: string[];
   accountKeywordOffset: number;
   plannedPublishTime: string;
   plannedPublishTimeManualOverrideAt?: string;
@@ -758,7 +763,7 @@ export interface ContentPoolItem {
   status: ContentPoolItemStatus;
   pipeline: ContentPoolPipelineState;
   publishable: boolean;
-  displayStatus?: "pending" | "generating" | "ready" | "pending_publish" | "publishing" | "published" | "failed";
+  displayStatus?: "pending" | "generating" | "ready" | "pending_publish" | "publishing" | "submitted" | "pending_review" | "published" | "failed";
   internalStage?:
     | "brief_ready"
     | "draft_generating"
@@ -783,6 +788,19 @@ export interface ContentPoolItem {
   similarityScore?: number;
   riskCodes?: string[];
   failedReason?: string;
+  generationInputSnapshot?: {
+    productName: string;
+    category?: string;
+    region?: string;
+    keywordText: string;
+    publishPlatform: SocialPlatform;
+    searchProvider: SearchProvider;
+    accountId: string;
+    plannedPublishTime: string;
+    publishPlanUpdatedAt?: string;
+    productUpdatedAt?: string;
+    themeUpdatedAt?: string;
+  };
   createdAt: string;
   updatedAt: string;
 }
@@ -797,6 +815,31 @@ export interface ContentPoolRecord {
   generatingArticleCount?: number;
   failedArticleCount?: number;
   pendingPublishArticleCount?: number;
+  generationInputSnapshot?: {
+    taskId: string;
+    publishPlanUpdatedAt: string;
+    product: {
+      productName: string;
+      category?: string;
+      region?: string;
+      sellingPoints?: string;
+      targetAudience?: string;
+      scenarios?: string;
+    };
+    keywordSet: {
+      selectedQuestions: string[];
+      selectedKeywordTheme?: string;
+      updatedAt?: string;
+    };
+    publishPlan: {
+      enabledPlatforms: PublishTaskPlatformPlan[];
+      searchProviders?: SearchProvider[];
+      days: number;
+      articlesPerAccountPerDay: number;
+      timeWindow: PublishTaskPlan["timeWindow"];
+      totalArticleCount: number;
+    };
+  };
   retryQueueStatus?: "idle" | "queued" | "running";
   retryRequestedAt?: string;
   retryFinishedAt?: string;

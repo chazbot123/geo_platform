@@ -51,10 +51,10 @@ export async function POST(request: Request) {
     const descriptor = getSocialPlatformDescriptor(platform);
     const authPayload = String(payload.authPayload || "").trim();
     if (!descriptor) {
-      return NextResponse.json({ message: "Unsupported platform." }, { status: 400 });
+      return NextResponse.json({ message: "暂不支持该平台账号同步。" }, { status: 400 });
     }
     if (!authPayload || authPayload.length < 20) {
-      return NextResponse.json({ message: "Missing extension cookie payload." }, { status: 400 });
+      return NextResponse.json({ message: "缺少浏览器扩展同步的登录凭证，请重新同步。" }, { status: 400 });
     }
 
     const platformAccountId = pickPlatformAccountId(payload);
@@ -117,7 +117,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ account });
   } catch (error) {
     return NextResponse.json(
-      { message: error instanceof Error ? error.message : "Extension login sync failed." },
+      { message: error instanceof Error ? error.message : "浏览器扩展登录同步失败，请稍后重试。" },
       { status: 500 },
     );
   }

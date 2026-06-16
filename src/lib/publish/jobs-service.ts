@@ -14,7 +14,8 @@ import {
 import { updatePlatformAccountRecord } from "@/lib/publish/accounts-service";
 import { buildManualDeliveryNotes } from "@/lib/publish/manual-delivery-service";
 import { getPlatformDescriptor } from "@/lib/publish/platforms";
-import { limitXiaohongshuBodyForTags, normalizeXiaohongshuTags, validateDraftForPlatform } from "@/lib/publish/draft-builders";
+import { normalizeDouyinTags, normalizeXiaohongshuTags, validateDraftForPlatform } from "@/lib/publish/draft-builders";
+import { normalizePlatformTopicTags } from "@/lib/content/platform-content-rules";
 import { resolvePublishImagePaths } from "@/lib/publish/publish-image-resolver";
 import type { ContentPoolItemStatus, ContentPoolRecord, PublishPlatform, PublishingDraft, PublishingExecutionMode, PublishingJobRecord, PublishingJobStatus } from "@/lib/types";
 import type { ContentPoolItem } from "@/lib/types";
@@ -90,6 +91,8 @@ function summarizeContentPool(record: ContentPoolRecord): ContentPoolRecord {
     "sample",
     "pending_publish",
     "publishing",
+    "submitted",
+    "pending_review",
     "manual_pending",
     "published",
   ]);
@@ -108,7 +111,7 @@ function statusFromPublishingJob(job: PublishingJobRecord): ContentPoolItemStatu
     return "published";
   }
   if (job.status === "submitted" || job.status === "pending_review") {
-    return "pending_publish";
+    return job.status;
   }
   if (job.status === "running" || job.status === "verifying") {
     return "publishing";
@@ -160,6 +163,8 @@ function getPublishingJobStatusLabel(status: PublishingJobStatus): string {
 function getPublishStageMessage(status: ContentPoolItemStatus, fallback?: string): string | undefined {
   if (status === "published") return "发布已完成。";
   if (status === "publishing") return "正在发布中。";
+  if (status === "submitted") return "已提交，等待平台确认。";
+  if (status === "pending_review") return "平台审核中，等待结果确认。";
   if (status === "manual_pending") return "需要人工处理。";
   return fallback;
 }
@@ -189,6 +194,19 @@ function canSyncPublishingJobToContentItem(job: PublishingJobRecord, item: Conte
   if (!isPublishingJobForContentItem(job, item)) return false;
   if (!hasGeneratedContent(item)) return false;
   return true;
+}
+
+function buildContentPoolDraftTags(item: ContentPoolItem) {
+  const sourceTags = item.topicTags?.length
+    ? item.topicTags
+    : normalizePlatformTopicTags([item.keywordText], item.publishPlatform);
+  if (item.publishPlatform === "xiaohongshu") {
+    return normalizeXiaohongshuTags(sourceTags);
+  }
+  if (item.publishPlatform === "douyin") {
+    return normalizeDouyinTags(sourceTags);
+  }
+  return sourceTags.filter(Boolean);
 }
 
 async function syncContentPoolPublishSnapshot(job: PublishingJobRecord) {
@@ -559,14 +577,23 @@ export async function createContentPoolPublishingJob(input: {
   });
 
   const status = descriptor?.automationStatus === "ready" ? "queued" : "manual_pending";
-  const draftTags =
-    input.item.publishPlatform === "xiaohongshu"
-      ? normalizeXiaohongshuTags([input.item.keywordText])
-      : [input.item.keywordText].filter(Boolean);
-  const draftBody =
-    input.item.publishPlatform === "xiaohongshu"
-      ? limitXiaohongshuBodyForTags(input.item.body, draftTags)
-      : input.item.body;
+  const draftTags = buildContentPoolDraftTags(input.item);
+  const draftBody = input.item.body;
+  const validationErrors = validateDraftForPlatform(
+    {
+      title: input.item.title,
+      body: draftBody,
+      tags: draftTags,
+      imageUrls,
+      localImagePaths: resolvedImagePaths,
+      publishMode: resolvedImagePaths.length ? "with_images" : "text_only",
+      coverImageUrl: imageUrls[0],
+    },
+    input.item.publishPlatform,
+  );
+  if (validationErrors.length > 0) {
+    throw new Error(validationErrors.map((error) => error.message).join("；"));
+  }
   const job: PublishingJobRecord = {
     id: createRecordId(),
     taskId: input.item.taskId,

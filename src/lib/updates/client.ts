@@ -1,3 +1,5 @@
+import { toUserFacingErrorMessage } from "@/lib/errors/user-facing";
+
 export interface ReleaseAsset {
   url: string;
   sha256: string;
@@ -90,11 +92,11 @@ export async function checkLatestUpdate(input: UpdateCheckInput = {}) {
   const result = (await response.json().catch(() => ({}))) as Partial<LatestReleaseManifest> & { error?: string };
 
   if (!response.ok) {
-    throw new Error(result.error ?? "检查更新失败，请稍后重试。");
+    throw new Error(toUserFacingErrorMessage(result.error, "检查更新失败，请稍后重试。"));
   }
 
   if (!result.version || !result.asset?.url || !result.asset.sha256) {
-    throw new Error("更新清单不完整。");
+    throw new Error("更新清单不完整，请联系管理员检查发布配置。");
   }
 
   return result as LatestReleaseManifest;

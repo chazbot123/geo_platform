@@ -17,6 +17,7 @@ export async function POST(request: Request) {
     const body = (await request.json()) as {
       taskId: string;
       searchProvider: SearchProvider;
+      searchProviders?: SearchProvider[];
       enabledPlatforms: SocialPlatform[];
       days: number;
       articlesPerAccountPerDay: number;
@@ -27,7 +28,7 @@ export async function POST(request: Request) {
       };
       forceRefreshAccounts?: boolean;
     };
-    if (!body.taskId || !body.searchProvider) {
+    if (!body.taskId || (!body.searchProvider && !body.searchProviders?.length)) {
       return NextResponse.json({ error: "缺少任务或 GEO AI 平台。" }, { status: 400 });
     }
     const publishPlan = await savePublishTaskPlan(body);

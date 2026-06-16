@@ -213,4 +213,42 @@ describe("publish queue policy", () => {
     expect(result.skipped).toBe(1);
     expect(result.results.map((item) => item.jobId)).toEqual(["due-job"]);
   });
+
+  it("writes back a block reason when a due job is skipped by daily cap", async () => {
+    const { dataStore, queueService } = await loadIsolatedQueue();
+    await dataStore.savePlatformAccount(account({ dailyPublishCap: 1 }));
+    await dataStore.savePublishingJob(
+      job({
+        id: "submitted-today",
+        status: "submitted",
+        submittedAt: "2026-06-09T01:00:00.000Z",
+        updatedAt: "2026-06-09T01:00:00.000Z",
+      }),
+    );
+    await dataStore.savePublishingJob(
+      job({
+        id: "due-capped-job",
+        plannedPublishTime: "2026-06-09T10:00:00.000Z",
+        updatedAt: "2026-06-09T09:50:00.000Z",
+      }),
+    );
+
+    const result = await queueService.runDuePublishingJobs(new Date("2026-06-09T10:05:00.000Z"));
+    const blockedJob = await dataStore.getPublishingJob("due-capped-job");
+
+    expect(result.checked).toBe(1);
+    expect(result.runnable).toBe(0);
+    expect(result.executed).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.blocked).toEqual([
+      {
+        jobId: "due-capped-job",
+        reason: "account_daily_cap_reached",
+        nextRunAt: "2026-06-09T16:00:00.000Z",
+      },
+    ]);
+    expect(blockedJob?.queueBlockedReason).toBe("account_daily_cap_reached");
+    expect(blockedJob?.nextRunAt).toBe("2026-06-09T16:00:00.000Z");
+    expect(blockedJob?.executionStage).toBe("account_daily_cap_reached");
+  });
 });

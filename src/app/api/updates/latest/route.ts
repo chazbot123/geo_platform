@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import packageJson from "../../../../../package.json";
+import { toUserFacingErrorMessage } from "@/lib/errors/user-facing";
 import { compareVersions } from "@/lib/updates/client";
 
 export const runtime = "nodejs";
@@ -38,7 +39,7 @@ export async function GET(request: Request) {
 
     if (!response.ok) {
       return NextResponse.json(
-        { error: result.error ?? "更新服务暂时不可用，请稍后重试。" },
+        { error: toUserFacingErrorMessage(result.error, "更新服务暂时不可用，请稍后重试。") },
         { status: response.status },
       );
     }
@@ -50,7 +51,7 @@ export async function GET(request: Request) {
     });
   } catch (error) {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "检查更新失败，请稍后重试。" },
+      { error: toUserFacingErrorMessage(error, "检查更新失败，请稍后重试。") },
       { status: 502 },
     );
   }

@@ -77,13 +77,15 @@ function shouldRefreshAccountDraft(draft: AccountPublishingDraft, nextDraft: Acc
 
 export async function ensureAccountPublishingDrafts(bundle: TaskBundle) {
   const searchProvider = bundle.task.searchProvider ?? bundle.theme?.searchProvider;
-  const targetPlatforms = getPlatformsBySearchProvider(searchProvider);
+  const platformPlans = bundle.task.publishPlan?.enabledPlatforms.filter((item) => item.enabled) ?? [];
+  const targetPlatforms = platformPlans.length ? platformPlans.map((item) => item.platform) : getPlatformsBySearchProvider(searchProvider);
+  const providerByPlatform = new Map(platformPlans.map((item) => [item.platform, item.searchProvider ?? searchProvider ?? "doubao"]));
   const accounts = (await listAuthenticatedPlatformAccounts()).filter((account) => targetPlatforms.includes(account.platform));
   const existingDrafts = await getAccountPublishingDraftsByTask(bundle.task.id);
   const nextDrafts: AccountPublishingDraft[] = [];
 
   for (const account of accounts) {
-    const draftSearchProvider = searchProvider ?? "doubao";
+    const draftSearchProvider = providerByPlatform.get(account.platform) ?? searchProvider ?? "doubao";
     const candidate = buildAccountPublishingDraft(bundle, account, draftSearchProvider);
     const existing = existingDrafts.find((draft) => draft.accountId === account.id && draft.platform === account.platform);
     if (!existing) {

@@ -12,9 +12,11 @@ import {
   Play,
   RefreshCw,
   RotateCcw,
+  Search,
+  UserCircle2,
+  X,
 } from "lucide-react";
 import { dispatchWorkflowStatusRefresh } from "@/components/layout/app-shell";
-import { HistoryTasksPanel } from "@/components/tasks/history-tasks-panel";
 import { requireLicensedAction } from "@/lib/license/guard";
 import { formatAccountDisplayLabel } from "@/lib/publish/account-label";
 import {
@@ -24,7 +26,6 @@ import {
 } from "@/lib/publish/electron-login-client";
 import { waitForExternalLoginSync } from "@/lib/publish/external-login-sync";
 import { publishQueueReasonLabel, publishStageLabel } from "@/lib/publish/status-labels";
-import type { HistoricalTaskSummary } from "@/lib/tasks/history-service";
 import type {
   ContentPoolItem,
   ContentPoolRecord,
@@ -104,6 +105,7 @@ const queueReasonLabels: Record<string, string> = {
 
 const executionTableGridClass =
   "lg:grid-cols-[52px_minmax(320px,1.7fr)_88px_96px_minmax(130px,0.8fr)_112px_112px_112px]";
+const executionTableMinWidthClass = "lg:min-w-[1120px]";
 
 interface ExecutionArticle {
   item: ContentPoolItem;
@@ -160,7 +162,24 @@ function riskLabel(value?: string) {
 
 function queueLabel(value?: string) {
   if (!value) return "--";
-  return queueReasonLabels[value] ?? publishQueueReasonLabel(value);
+  return publishQueueReasonLabel(value) ?? queueReasonLabels[value] ?? value;
+}
+
+const queueStageLabels: Record<string, string> = {
+  account_daily_cap_reached: "今日上限",
+  platform_cooldown_active: "冷却中",
+  account_cooling_down: "账号冷却",
+  account_needs_login: "需登录",
+  account_verification_blocked: "需验证",
+  account_disabled: "已停用",
+  retry_backoff_active: "重试等待",
+  missing_account: "账号异常",
+  account_not_found: "账号异常",
+};
+
+function queueStageLabel(value?: string) {
+  if (!value) return "--";
+  return queueStageLabels[value] ?? publishStageLabel(value);
 }
 
 function translateMessage(value?: string) {
@@ -203,12 +222,84 @@ function statusText(article: ExecutionArticle) {
   if (needsManualConfirmation(article.job)) return "待人工确认";
   if (article.manualPending) return "手动待处理";
   if (!article.item.publishable) return "未通过检查";
+  if (article.job?.queueBlockedReason) return queueStageLabel(article.job.queueBlockedReason);
   return stageLabel(article.stage);
 }
 
 function accountDisplayName(account: PlatformAccountRecord | undefined, fallback?: string) {
   if (!account) return fallback || "--";
   return formatAccountDisplayLabel(account, fallback);
+}
+
+function matchesPublishResultSearch(article: ExecutionArticle, account: PlatformAccountRecord | undefined, searchQuery: string) {
+  const keyword = searchQuery.trim().toLowerCase();
+  if (!keyword) return true;
+  const item = article.item;
+  const job = article.job;
+  const searchText = [
+    item.title,
+    item.body,
+    item.summary,
+    item.keywordText,
+    item.stageMessage,
+    item.accountName,
+    item.accountId,
+    job?.accountName,
+    job?.accountId,
+    platformLabels[item.publishPlatform],
+    providerLabels[item.aiPlatform],
+    statusText(article),
+    articleStageText(article, job),
+    queueLabel(job?.queueBlockedReason),
+    accountDisplayName(account, job?.accountName || item.accountName || item.accountId),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return searchText.includes(keyword);
+}
+
+function canRenderInlineAvatar(url?: string) {
+  const normalized = String(url || "").trim();
+  if (!normalized) return false;
+  try {
+    const parsed = new URL(normalized, typeof window !== "undefined" ? window.location.origin : "http://127.0.0.1");
+    return !/(\.|^)sinaimg\.cn$/i.test(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function AccountIdentity({ account, fallback }: { account?: PlatformAccountRecord; fallback?: string }) {
+  const label = accountDisplayName(account, fallback);
+  return (
+    <span className="flex min-w-0 items-center gap-2 text-muted">
+      {account && canRenderInlineAvatar(account.avatarUrl) ? (
+        <img
+          src={account.avatarUrl}
+          alt={`${label} 头像`}
+          className="h-6 w-6 shrink-0 rounded-full border border-line bg-surface object-cover"
+          onError={(event) => {
+            event.currentTarget.style.display = "none";
+          }}
+        />
+      ) : (
+        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-line bg-surface text-muted">
+          <UserCircle2 className="h-3.5 w-3.5" />
+        </span>
+      )}
+      <span className="min-w-0 truncate">{label}</span>
+    </span>
+  );
+}
+
+function findBlockingReason(state?: ExecutionState | null) {
+  const blockedArticle =
+    state?.currentArticle?.job?.queueBlockedReason
+      ? state.currentArticle
+      : state?.articles.find((article) => article.job?.queueBlockedReason);
+  const reason = blockedArticle?.job?.queueBlockedReason;
+  return reason ? queueLabel(reason) : "";
 }
 
 function isMaterialIssue(job?: PublishingJobRecord) {
@@ -267,6 +358,7 @@ function ArticleRow({
   publishUrl,
   onPublishUrlChange,
   onManualDone,
+  onManualNotPublished,
   onLogin,
   progress,
 }: {
@@ -277,6 +369,7 @@ function ArticleRow({
   publishUrl: string;
   onPublishUrlChange: (value: string) => void;
   onManualDone: (jobId: string) => void;
+  onManualNotPublished: (jobId: string) => void;
   onLogin: (article: ExecutionArticle) => void;
   progress?: PublishProgressSnapshot;
 }) {
@@ -288,8 +381,8 @@ function ArticleRow({
   const canManualConfirm = Boolean(job && !article.published && !needsLogin && !materialIssue);
 
   return (
-    <article className="border-b border-line last:border-b-0">
-      <div className={`grid gap-3 px-4 py-4 text-sm lg:items-start ${executionTableGridClass}`}>
+    <article className={`border-b border-line last:border-b-0 ${executionTableMinWidthClass}`}>
+      <div className={`grid gap-3 px-4 py-4 text-sm lg:items-center ${executionTableGridClass}`}>
         <span className="text-muted">#{item.sequence}</span>
         <span className="min-w-0 pr-4">
           <span className="block truncate font-semibold leading-6 text-ink">{item.title || item.stageMessage || "等待发布内容"}</span>
@@ -297,7 +390,7 @@ function ArticleRow({
         </span>
         <span className="truncate whitespace-nowrap text-muted">{providerLabels[item.aiPlatform]}</span>
         <span className="truncate whitespace-nowrap text-muted">{platformLabels[item.publishPlatform]}</span>
-        <span className="min-w-0 truncate text-muted">{accountDisplayName(account, job?.accountName || item.accountName || item.accountId)}</span>
+        <AccountIdentity account={account} fallback={job?.accountName || item.accountName || item.accountId} />
         <span className="whitespace-nowrap text-muted">{formatPlannedTime(job?.plannedPublishTime ?? item.plannedPublishTime)}</span>
         <span className="whitespace-nowrap">
           <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-medium ${statusTone(article)}`}>
@@ -315,6 +408,7 @@ function ArticleRow({
             重试：{job.retryCount ?? 0}/{job.maxRetries ?? 3}
           </span>
           {job.queueBlockedReason ? <span>队列：{queueLabel(job.queueBlockedReason)}</span> : null}
+          {job.queueBlockedReason && job.nextRunAt ? <span>下次执行：{formatDateTime(job.nextRunAt)}</span> : null}
           <span>账号风险：{riskLabel(account?.riskState ?? account?.status ?? job.accountRiskState)}</span>
           {job.publishUrl ? (
             <a className="inline-flex items-center gap-1 text-accent hover:underline" href={job.publishUrl} target="_blank" rel="noreferrer">
@@ -368,22 +462,33 @@ function ArticleRow({
             </div>
           </div>
           {canManualConfirm ? (
-            <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+            <div className="mt-3 flex flex-col gap-2 lg:flex-row">
               <input
                 className="min-w-0 flex-1 rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent"
                 value={publishUrl}
                 onChange={(event) => onPublishUrlChange(event.target.value)}
                 placeholder="选填：粘贴平台已发布文章链接，便于后续追踪"
               />
-              <button
-                type="button"
-                className="inline-flex items-center justify-center gap-2 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white disabled:opacity-60"
-                disabled={busy}
-                onClick={() => onManualDone(job.id)}
-              >
-                <CheckCircle2 className="h-4 w-4" />
-                人工确认已发布
-              </button>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className="inline-flex items-center justify-center gap-2 rounded-md border border-line px-3 py-2 text-sm font-medium text-ink hover:border-accent disabled:opacity-60"
+                  disabled={busy}
+                  onClick={() => onManualNotPublished(job.id)}
+                >
+                  <RotateCcw className="h-4 w-4" />
+                  确认未发布，重新发布
+                </button>
+                <button
+                  type="button"
+                  className="inline-flex items-center justify-center gap-2 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white disabled:opacity-60"
+                  disabled={busy}
+                  onClick={() => onManualDone(job.id)}
+                >
+                  <CheckCircle2 className="h-4 w-4" />
+                  人工确认已发布
+                </button>
+              </div>
             </div>
           ) : null}
           {job.notes ? <p className="mt-3 whitespace-pre-line text-xs leading-5 text-muted">{translateMessage(job.notes)}</p> : null}
@@ -422,18 +527,26 @@ export function PublishExecutionWorkbench() {
   const requestedTaskId = searchParams.get("taskId") || "";
   const [state, setState] = useState<ExecutionState | null>(null);
   const [accounts, setAccounts] = useState<PlatformAccountRecord[]>([]);
-  const [historyTasks, setHistoryTasks] = useState<HistoricalTaskSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [loginBusyAccountId, setLoginBusyAccountId] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [manualUrls, setManualUrls] = useState<Record<string, string>>({});
+  const [pendingNotPublishedJobId, setPendingNotPublishedJobId] = useState("");
   const [liveProgress, setLiveProgress] = useState<Record<string, PublishProgressSnapshot>>({});
+  const [resultSearchQuery, setResultSearchQuery] = useState("");
 
   const articles = state?.articles ?? [];
   const accountsById = useMemo(() => new Map(accounts.map((account) => [account.id, account])), [accounts]);
+  const filteredArticles = articles.filter((article) =>
+    matchesPublishResultSearch(article, article.job?.accountId ? accountsById.get(article.job.accountId) : accountsById.get(article.item.accountId), resultSearchQuery),
+  );
+  const hasResultSearch = resultSearchQuery.trim().length > 0;
   const currentArticle = state?.currentArticle ?? null;
+  const pendingNotPublishedArticle = pendingNotPublishedJobId
+    ? articles.find((article) => article.job?.id === pendingNotPublishedJobId)
+    : null;
   const loginRequiredArticle =
     articles.find((article) => accountNeedsLogin(article, article.job?.accountId ? accountsById.get(article.job.accountId) : undefined)) ??
     null;
@@ -465,17 +578,6 @@ export function PublishExecutionWorkbench() {
       setError(currentError instanceof Error ? currentError.message : "读取发布进度失败。");
     } finally {
       if (!options?.silent) setLoading(false);
-    }
-  }
-
-  async function loadHistoryTasks() {
-    try {
-      const response = await fetch("/api/tasks/history", { cache: "no-store" });
-      const payload = (await response.json()) as { items?: HistoricalTaskSummary[]; error?: string };
-      if (!response.ok) throw new Error(payload.error || "读取任务记录失败。");
-      setHistoryTasks(payload.items ?? []);
-    } catch {
-      setHistoryTasks([]);
     }
   }
 
@@ -604,10 +706,10 @@ export function PublishExecutionWorkbench() {
       const data = (await response.json()) as ExecutionState;
       if (!response.ok) throw new Error(data.error || "执行发布失败。");
       setState(data);
-      setNotice("已记录当前文章执行结果。");
+      const blockingReason = findBlockingReason(data);
+      setNotice(blockingReason ? `本次未执行：${blockingReason}` : "已记录当前文章执行结果。");
       dispatchWorkflowStatusRefresh();
       await loadState({ silent: true });
-      await loadHistoryTasks();
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "执行发布失败。");
     } finally {
@@ -643,7 +745,6 @@ export function PublishExecutionWorkbench() {
       setNotice("已人工确认发布结果，可以继续执行剩余文章。");
       dispatchWorkflowStatusRefresh();
       await loadState({ silent: true });
-      await loadHistoryTasks();
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "回填发布结果失败。");
     } finally {
@@ -651,9 +752,43 @@ export function PublishExecutionWorkbench() {
     }
   }
 
+  async function markManualNotPublished(jobId: string) {
+    const licenseGuard = await requireLicensedAction("execute_publish");
+    if (!licenseGuard.allowed) {
+      setError(licenseGuard.message ?? "当前设备未授权，请先激活授权码。");
+      return;
+    }
+
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const response = await fetch("/api/publish/execution", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "mark_manual_not_published",
+          taskId: state?.current?.taskId || requestedTaskId || undefined,
+          jobId,
+        }),
+      });
+      const data = (await response.json()) as ExecutionState;
+      if (!response.ok) throw new Error(data.error || "重新加入发布队列失败。");
+      setState(data);
+      setManualUrls((current) => ({ ...current, [jobId]: "" }));
+      setNotice("已确认平台未发布，文章已重新进入发布队列。");
+      dispatchWorkflowStatusRefresh();
+      await loadState({ silent: true });
+    } catch (currentError) {
+      setError(currentError instanceof Error ? currentError.message : "重新加入发布队列失败。");
+    } finally {
+      setBusy(false);
+      setPendingNotPublishedJobId("");
+    }
+  }
+
   useEffect(() => {
     void loadState();
-    void loadHistoryTasks();
   }, [requestedTaskId]);
 
   useEffect(() => {
@@ -723,7 +858,6 @@ export function PublishExecutionWorkbench() {
           </div>
           {error && <p className="mt-4 text-sm text-red-500">{error}</p>}
         </section>
-        <HistoryTasksPanel tasks={historyTasks} activeTaskId={requestedTaskId} limit={8} activeLabel="当前查看" />
       </div>
     );
   }
@@ -806,11 +940,15 @@ export function PublishExecutionWorkbench() {
           </div>
           <div className="mt-4 grid gap-3 text-sm text-muted md:grid-cols-4">
             <span>平台：{currentArticle ? platformLabels[currentArticle.item.publishPlatform] : "--"}</span>
-            <span className="truncate">
-              账号：
-              {currentArticle?.job?.accountId
-                ? accountDisplayName(accountsById.get(currentArticle.job.accountId), currentArticle.item.accountName)
-                : "--"}
+            <span className="min-w-0">
+              <span className="inline-flex min-w-0 items-center gap-1">
+                <span className="shrink-0">账号：</span>
+                {currentArticle?.job?.accountId ? (
+                  <AccountIdentity account={accountsById.get(currentArticle.job.accountId)} fallback={currentArticle.item.accountName} />
+                ) : (
+                  "--"
+                )}
+              </span>
             </span>
             <span>文章：{currentArticle ? `#${currentArticle.item.sequence}` : "--"}</span>
             <span>最近处理：{formatDateTime(state.latestExecutionTime)}</span>
@@ -833,8 +971,33 @@ export function PublishExecutionWorkbench() {
         {notice && <p className="mt-4 text-sm text-accent">{notice}</p>}
       </section>
 
-      <section className="overflow-hidden rounded-md border border-line bg-panel">
-        <div className={`hidden border-b border-line bg-surface px-4 py-2 text-xs font-medium text-muted lg:grid lg:items-center ${executionTableGridClass}`}>
+      <section className="overflow-x-auto rounded-md border border-line bg-panel">
+        <div className="flex flex-col gap-2 border-b border-line bg-panelSoft p-3 lg:flex-row lg:items-center lg:justify-between">
+          <label className="relative block max-w-xl">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
+            <input
+              type="search"
+              value={resultSearchQuery}
+              onChange={(event) => setResultSearchQuery(event.target.value)}
+              placeholder="搜索标题、正文、平台、账号、状态"
+              className="h-10 w-full rounded-md border border-line bg-panel px-9 text-sm text-ink outline-none transition focus:border-accent"
+            />
+            {hasResultSearch ? (
+              <button
+                type="button"
+                className="absolute right-2 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-muted hover:bg-surface hover:text-ink"
+                aria-label="清空发布结果搜索"
+                onClick={() => setResultSearchQuery("")}
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            ) : null}
+          </label>
+          <span className="text-xs text-muted">
+            {hasResultSearch ? `已筛选 ${filteredArticles.length}/${articles.length} 篇` : `共 ${articles.length} 篇发布结果`}
+          </span>
+        </div>
+        <div className={`hidden border-b border-line bg-surface px-4 py-2 text-xs font-medium text-muted lg:grid lg:items-center ${executionTableGridClass} ${executionTableMinWidthClass}`}>
           <span>序号</span>
           <span>标题</span>
           <span>AI 平台</span>
@@ -844,7 +1007,7 @@ export function PublishExecutionWorkbench() {
           <span>状态</span>
           <span>最近处理</span>
         </div>
-        {articles.map((article) => (
+        {filteredArticles.map((article) => (
           <ArticleRow
             key={article.item.id}
             article={article}
@@ -857,12 +1020,58 @@ export function PublishExecutionWorkbench() {
               setManualUrls((current) => ({ ...current, [article.job!.id]: value }));
             }}
             onManualDone={(jobId) => void markManualDone(jobId)}
+            onManualNotPublished={(jobId) => setPendingNotPublishedJobId(jobId)}
             onLogin={(target) => void startAccountLogin(target)}
             progress={article.job ? liveProgress[article.job.id] : undefined}
           />
         ))}
+        {filteredArticles.length === 0 ? (
+          <div className={`${executionTableMinWidthClass} px-4 py-8 text-center text-sm text-muted`}>
+            没有匹配的发布结果，请调整搜索关键词。
+          </div>
+        ) : null}
       </section>
-      <HistoryTasksPanel tasks={historyTasks} activeTaskId={state.current.taskId} limit={8} activeLabel="当前执行" />
+      {pendingNotPublishedJobId ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6">
+          <div className="w-full max-w-md rounded-md border border-line bg-panel p-5 shadow-2xl">
+            <div className="flex items-start gap-3">
+              <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-amber-500/30 bg-amber-500/10 text-amber-600">
+                <RotateCcw className="h-4 w-4" />
+              </span>
+              <div className="min-w-0">
+                <h3 className="text-base font-semibold text-ink">确认未发布并重新发布</h3>
+                <p className="mt-2 text-sm leading-6 text-muted">
+                  请先确认该平台账号后台没有这篇文章。确认后系统会清理本次不确定发布记录，并把文章重新放回发布队列。
+                </p>
+                {pendingNotPublishedArticle ? (
+                  <p className="mt-3 truncate rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink">
+                    {pendingNotPublishedArticle.item.title || `文章 #${pendingNotPublishedArticle.item.sequence}`}
+                  </p>
+                ) : null}
+              </div>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                className="rounded-md border border-line px-3 py-2 text-sm font-medium text-ink hover:border-accent disabled:opacity-60"
+                disabled={busy}
+                onClick={() => setPendingNotPublishedJobId("")}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="inline-flex items-center justify-center gap-2 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white disabled:opacity-60"
+                disabled={busy}
+                onClick={() => void markManualNotPublished(pendingNotPublishedJobId)}
+              >
+                {busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
+                确认重新发布
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

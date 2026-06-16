@@ -281,6 +281,44 @@ describe("publish execution state", () => {
     expect(job?.verificationEvidence).toBe("manual_publish_url");
   });
 
+  it("requeues a manually checked article when the operator confirms it was not published", async () => {
+    const { dataStore, executionService } = await loadIsolatedServices();
+    await saveManualPendingFixture(dataStore);
+    await dataStore.savePublishingJob(
+      publishingJob({
+        id: "manual-job",
+        platform: "xiaohongshu",
+        accountId: "new-account",
+        plannedPublishTime: "2026-06-12T09:00:00.000Z",
+        status: "verification_failed",
+        publishUrl: "https://example.test/stale",
+        publishedAt: "2026-06-12T10:05:00.000Z",
+        verifiedAt: "2026-06-12T10:05:00.000Z",
+        finishedAt: "2026-06-12T10:05:00.000Z",
+        queueBlockedReason: "account_daily_cap_reached",
+        nextRunAt: "2026-06-13T09:00:00.000Z",
+        verificationEvidence: "success_then_blocking",
+      }),
+    );
+
+    const state = await executionService.markArticleManualNotPublished("manual-job");
+    const job = (await dataStore.getPublishingJobsByTask("task-1")).find((item) => item.id === "manual-job");
+    const pool = await dataStore.getContentPool("task-1");
+
+    expect(job?.status).toBe("queued");
+    expect(job?.publishUrl).toBeUndefined();
+    expect(job?.publishedAt).toBeUndefined();
+    expect(job?.verifiedAt).toBeUndefined();
+    expect(job?.finishedAt).toBeUndefined();
+    expect(job?.queueBlockedReason).toBeUndefined();
+    expect(job?.nextRunAt).toBeUndefined();
+    expect(job?.verificationEvidence).toBe("manual_not_published");
+    expect(job?.notes).toContain("人工核查确认平台未发布");
+    expect(pool?.items[0]?.status).toBe("pending_publish");
+    expect(state.currentArticle?.job?.status).toBe("queued");
+    expect(state.stats.published).toBe(0);
+  });
+
   it("allows manual publish confirmation for queued scheduled jobs", async () => {
     const { dataStore, executionService } = await loadIsolatedServices();
     await saveManualPendingFixture(dataStore);

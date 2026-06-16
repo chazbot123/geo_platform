@@ -1205,7 +1205,6 @@ function buildPlatformAccountProfileProbe(platform) {
           "[class*='user-name']",
           "[class*='account-name']",
           ".user-name",
-          ".name",
         ],
         avatarSelectors: [
           "[class*='avatar'] img",
@@ -1404,7 +1403,7 @@ async function extractPlatformAccountProfile(windowInstance, input = {}) {
       const platform = ${JSON.stringify(String(input.platform || "").trim())};
       const blockedNames = new Set(["主页", "创作", "文章", "视频", "微头条", "管理", "数据", "收益", "任务", "创作中心", "发布", "发布作品", "内容管理", "作品管理", "首页", "消息", "登录", "退出登录", "去发布", "发作品", "发布内容", "高清发布", "立即发布", "定时发布", "发布设置", "活动管理"]);
       const genericPlatformNames = new Set(["今日头条", "今日头条账号", "百家号", "百家号账号", "抖音", "抖音账号", "小红书", "小红书账号", "微信公众号", "微信公众号账号", "视频号", "视频号账号", "知乎", "知乎账号", "微博", "微博账号", "CSDN", "CSDN账号"]);
-      const blockedNamePattern = /发文规范|创作中心|内容管理|作品管理|发布作品|发布内容|创作服务平台|工作台|去发布|发作品|退出登录|活动管理|互动管理/i;
+      const blockedNamePattern = /发文规范|创作中心|内容管理|作品管理|发布作品|发布内容|创作服务平台|工作台|去发布|发作品|退出登录|活动管理|互动管理|\\u70ed\\u70b9\\u699c|\\u5feb\\u6765\\u770b\\u770b|^\\s*\\u5207\\u6362\\s+.*\\(\\d+s\\)\\s*$/i;
       const invalidProfileValues = new Set(["true", "false", "null", "undefined", "nan", "[object object]"]);
       const userTrailPattern = /user|account|profile|creator|author|member|owner|avatar|nick|display|uid|sec_uid|secuid|login/i;
       const displayNameTrailPattern =
@@ -1721,7 +1720,7 @@ async function extractPlatformAccountProfile(windowInstance, input = {}) {
           }
         }
       }
-      const allowFallbackName = !["douyin", "weibo"].includes(platform);
+      const allowFallbackName = !["douyin", "weibo", "baijiahao"].includes(platform);
       const displayName = pickTextBySelectors(probe.displayNameSelectors, isMeaningfulName)
         || pickStorageValue(
           displayNameValuePattern,
@@ -1864,6 +1863,11 @@ function getPlatformAccountProfileProbeUrls(input = {}) {
         "https://me.weibo.com/",
         "https://dss.sc.weibo.com/pc/index",
       ];
+    case "baijiahao":
+      return [
+        "https://baijiahao.baidu.com/builder/rc/settings/accountSet",
+        "https://baijiahao.baidu.com/builder/rc/home",
+      ];
     case "csdn": {
       const profileId = resolveCsdnProfileId();
       if (!profileId) {
@@ -1906,7 +1910,7 @@ async function resolvePlatformAccountProfile(windowInstance, input = {}) {
   const initialProfile = await resolvePlatformAccountProfileFromWindow(windowInstance, input, 12000);
   const probeUrls = getPlatformAccountProfileProbeUrls({ ...input, currentProfile: initialProfile });
   const hasMeaningfulDisplayName = isMeaningfulAccountProfileText(initialProfile.displayName);
-  const forceProbeProfile = ["weibo", "csdn", "zhihu"].includes(platform);
+  const forceProbeProfile = ["weibo", "csdn", "zhihu", "baijiahao"].includes(platform);
   if (!forceProbeProfile && (!probeUrls.length || hasMeaningfulDisplayName) && hasMeaningfulAccountProfile(initialProfile) && (initialProfile.avatarUrl || initialProfile.platformAccountId)) {
     return initialProfile;
   }

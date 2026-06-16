@@ -9,6 +9,7 @@ import {
   saveTask,
   saveTheme,
 } from "@/lib/storage/data-store";
+import { normalizeSearchProviders } from "@/lib/publish/provider-platform-matrix";
 import { contentPoolReadyStatuses } from "@/lib/tasks/constants";
 import { getTaskBundle, listTaskBundles, normalizePublishTaskPlan } from "@/lib/tasks/service";
 import type { ContentPoolItem, ProductProfile, PublishTaskPlan, PublishingJobRecord, TaskBundle, TaskRecord, ThemeSet } from "@/lib/types";
@@ -20,6 +21,7 @@ export interface HistoricalTaskSummary {
   enterpriseName: string;
   productName: string;
   searchProvider?: string;
+  searchProviders?: string[];
   status: TaskBundle["task"]["status"];
   updatedAt: string;
   createdAt: string;
@@ -70,6 +72,22 @@ function hasEnterpriseInfo(bundle: TaskBundle) {
 
 function countPublishedJobs(jobs: PublishingJobRecord[]) {
   return jobs.filter((job) => job.status === "published").length;
+}
+
+function selectedSearchProviders(bundle: TaskBundle) {
+  const publishPlan = bundle.task.publishPlan;
+  const platformProviders =
+    publishPlan?.enabledPlatforms
+      .filter((item) => item.enabled)
+      .map((item) => item.searchProvider)
+      .filter(Boolean) ?? [];
+  return normalizeSearchProviders(
+    publishPlan?.searchProviders?.length
+      ? publishPlan.searchProviders
+      : platformProviders.length
+        ? platformProviders
+        : bundle.task.searchProvider ?? bundle.theme?.searchProvider,
+  );
 }
 
 function countManualPendingJobs(jobs: PublishingJobRecord[]) {
@@ -211,6 +229,7 @@ export async function listHistoricalTaskSummaries(): Promise<HistoricalTaskSumma
       ]);
       const questions = selectedQuestions(bundle);
       const platforms = enabledPlatforms(bundle);
+      const searchProviders = selectedSearchProviders(bundle);
       const items = contentPool?.items ?? [];
       const currentJobs = jobsForContentItems(jobs, items);
       const generatedArticleCount =
@@ -223,7 +242,8 @@ export async function listHistoricalTaskSummaries(): Promise<HistoricalTaskSumma
         title: buildTitle(bundle),
         enterpriseName: bundle.product.category || bundle.product.productName || "--",
         productName: bundle.product.productName || "--",
-        searchProvider: bundle.task.searchProvider ?? bundle.theme?.searchProvider,
+        searchProvider: searchProviders[0] ?? bundle.task.searchProvider ?? bundle.theme?.searchProvider,
+        searchProviders,
         status: bundle.task.status,
         updatedAt: contentPool?.updatedAt || bundle.task.updatedAt,
         createdAt: bundle.task.createdAt,

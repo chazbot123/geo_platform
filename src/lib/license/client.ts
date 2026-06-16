@@ -1,3 +1,4 @@
+import { toUserFacingErrorMessage } from "@/lib/errors/user-facing";
 import { DEFAULT_APP_VERSION } from "@/lib/updates/client";
 
 const DEVICE_FINGERPRINT_STORAGE_KEY = "geo-device-fingerprint";
@@ -90,7 +91,7 @@ export async function activateLicense(licenseCode: string) {
   const result = (await response.json().catch(() => ({}))) as LicenseStatusResponse;
 
   if (!response.ok) {
-    throw new Error(result.error ?? "授权激活失败，请稍后重试。");
+    throw new Error(toUserFacingErrorMessage(result.error, "授权激活失败，请稍后重试。"));
   }
 
   return result;
@@ -108,7 +109,7 @@ export async function checkLicenseStatus() {
   const result = (await response.json().catch(() => ({}))) as LicenseStatusResponse;
 
   if (!response.ok) {
-    throw new Error(result.error ?? "授权状态检查失败，请稍后重试。");
+    throw new Error(toUserFacingErrorMessage(result.error, "授权状态检查失败，请稍后重试。"));
   }
 
   return result;

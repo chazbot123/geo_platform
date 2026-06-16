@@ -14,6 +14,8 @@ const statusLabels: Record<ContentPoolItemStatus, string> = {
   sample: "已完成",
   pending_publish: "待发布",
   publishing: "发布中",
+  submitted: "已提交待确认",
+  pending_review: "平台审核中",
   published: "已发布",
   failed: "失败",
   manual_pending: "待处理",
@@ -130,7 +132,7 @@ export function ContentItemDetail({ itemId }: { itemId: string }) {
         <h2 className="page-section-title">文章不存在</h2>
         <p className="page-section-desc">{error || "没有找到对应的内容项。"}</p>
         <Link className="mt-5 inline-flex rounded-md bg-accent px-4 py-2 text-sm font-medium text-white" href="/content-pool">
-          返回生成结果中心
+          返回生成结果
         </Link>
       </section>
     );
@@ -142,7 +144,7 @@ export function ContentItemDetail({ itemId }: { itemId: string }) {
     <div className="space-y-5">
       <Link className="inline-flex items-center gap-2 text-sm font-medium text-muted transition hover:text-ink" href={`/content-pool${taskId ? `?taskId=${encodeURIComponent(taskId)}` : ""}`}>
         <ArrowLeft className="h-4 w-4" />
-        返回生成结果中心
+        返回生成结果
       </Link>
 
       <section className="section-card">
@@ -194,7 +196,7 @@ export function ContentItemDetail({ itemId }: { itemId: string }) {
                     <div key={image.id} className="overflow-hidden rounded-md border border-emerald-500/20 bg-surface">
                       {image.url ? (
                         <a href={image.url} target="_blank" rel="noreferrer">
-                          <img className="h-24 w-full object-cover" src={image.url} alt={image.prompt} />
+                          <img className="aspect-square w-full object-contain bg-panel" src={image.url} alt={image.prompt} />
                         </a>
                       ) : null}
                       <div className="px-2 py-2 text-xs text-muted">

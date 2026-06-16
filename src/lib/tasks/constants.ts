@@ -12,6 +12,8 @@ export const contentPoolReadyStatuses = new Set<ContentPoolItemStatus>([
   "ready",
   "pending_publish",
   "publishing",
+  "submitted",
+  "pending_review",
   "manual_pending",
   "published",
 ]);

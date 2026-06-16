@@ -83,4 +83,47 @@ describe("account label helpers", () => {
       platformAccountId: "6298e5be-b0f8-8ea3-ee43-f9a46ccf4c0f",
     });
   });
+
+  it("rejects Baijiahao feed text captured as an account name", () => {
+    const feedText = "\u5207\u6362 \u70ed\u70b9\u699c\u66f4\u65b0\u5566\uff0c\u5feb\u6765\u770b\u770b\u5427\uff014(5s)";
+
+    expect(
+      sanitizeAccountProfileForSave(
+        "baijiahao",
+        {
+          accountName: feedText,
+          displayName: feedText,
+          platformAccountId: "bjh-user-12345",
+        },
+        {
+          platform: "baijiahao",
+          accountName: "\u767e\u5bb6\u53f7\u8d26\u53f7",
+        },
+      ),
+    ).toEqual({
+      accountName: "bjh-user-12345",
+      displayName: undefined,
+      platformAccountId: "bjh-user-12345",
+    });
+  });
+
+  it("rejects Baijiahao account switch button text captured as a name", () => {
+    expect(
+      sanitizeAccountProfileForSave(
+        "baijiahao",
+        {
+          accountName: "\u5207\u6362",
+          displayName: "\u5207\u6362",
+        },
+        {
+          platform: "baijiahao",
+          accountName: "\u767e\u5bb6\u53f7\u8d26\u53f7",
+        },
+      ),
+    ).toEqual({
+      accountName: "\u767e\u5bb6\u53f7\u8d26\u53f7",
+      displayName: undefined,
+      platformAccountId: undefined,
+    });
+  });
 });

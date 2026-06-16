@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { toUserFacingErrorMessage } from "@/lib/errors/user-facing";
 import type { LicenseActivationPayload } from "@/lib/license/client";
 import { resolveLicenseEndpoint } from "@/lib/license/server-endpoints";
 
@@ -84,7 +85,7 @@ export async function POST(request: Request) {
 
     if (!response.ok) {
       return NextResponse.json(
-        { error: typeof result.error === "string" ? result.error : "授权服务暂时不可用" },
+        { error: toUserFacingErrorMessage(result.error, "授权服务暂时不可用，请稍后重试。") },
         { status: response.status },
       );
     }
@@ -97,7 +98,7 @@ export async function POST(request: Request) {
     });
     // #endregion
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "授权激活失败，请稍后重试" },
+      { error: toUserFacingErrorMessage(error, "授权激活失败，请稍后重试。") },
       { status: 502 },
     );
   }
