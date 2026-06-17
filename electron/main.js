@@ -101,7 +101,7 @@ function formatStageLabel(stage) {
 
 function loadDesktopIcon() {
   const candidatePaths = [
-    path.join(app.getAppPath(), "src", "img", "搜索.png"),
+    path.join(app.getAppPath(), "src", "img", "ai搜索.png"),
     path.join(__dirname, "assets", "ai-search.png"),
     path.join(__dirname, "assets", "tray-icon.png"),
     path.join(__dirname, "assets", "ai-search.ico"),
