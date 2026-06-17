@@ -1,6 +1,8 @@
-﻿import { getContentGenerationStatus, getCurrentContentPool } from "@/lib/content/service";
+import { getContentGenerationStatus, getCurrentContentPool } from "@/lib/content/service";
 import {
+  getPlatformAccount,
   getContentPool,
+  getPublishingJob,
   getPublishingJobsByTask,
   saveContentPool,
 } from "@/lib/storage/data-store";
@@ -335,6 +337,8 @@ export async function markArticleManualNotPublished(jobId: string) {
     finishedAt: undefined,
     queueBlockedReason: undefined,
     nextRunAt: undefined,
+    backoffUntil: undefined,
+    retryCount: 0,
     externalStatus: undefined,
     platformItemId: undefined,
     failureStage: undefined,
@@ -344,6 +348,56 @@ export async function markArticleManualNotPublished(jobId: string) {
     notes: "人工核查确认平台未发布，已重新进入发布队列。",
   });
   await markContentStatus(job, "pending_publish");
+  return getPublishExecutionState(job.taskId);
+}
+
+export async function repairPublishingJobAccountBinding(jobId: string, accountId: string) {
+  const [job, account] = await Promise.all([getPublishingJob(jobId), getPlatformAccount(accountId)]);
+  if (!job) {
+    throw new Error("发布任务不存在。");
+  }
+  if (!account) {
+    throw new Error("选择的发布账号不存在，请重新选择。");
+  }
+  if (account.platform !== job.platform) {
+    throw new Error("只能绑定同平台账号。");
+  }
+
+  const accountName = account.displayName ?? account.accountName;
+  const timestamp = now();
+  const record = job.contentPoolItemId ? await getContentPool(job.taskId) : null;
+  if (record) {
+    const nextRecord = summarizeContentPool({
+      ...record,
+      items: record.items.map((item) =>
+        item.id === job.contentPoolItemId
+          ? {
+              ...item,
+              accountId: account.id,
+              accountName,
+              status: item.status === "publishing" ? "pending_publish" : item.status,
+              updatedAt: timestamp,
+            }
+          : item,
+      ),
+      updatedAt: timestamp,
+    });
+    await saveContentPool(nextRecord);
+  }
+
+  await updatePublishingJobRecord(job.id, {
+    accountId: account.id,
+    accountName,
+    status: "queued",
+    queueBlockedReason: undefined,
+    nextRunAt: undefined,
+    accountRiskState: account.riskState,
+    failureStage: undefined,
+    errorMessage: undefined,
+    executionStage: "queued",
+    notes: "已重新绑定当前平台账号，任务已回到发布队列。",
+  });
+
   return getPublishExecutionState(job.taskId);
 }
 

@@ -4,6 +4,7 @@ import {
   disperseContentPoolItem,
   retryAllFailedContentPoolImages,
   retryContentPoolItemImage,
+  startRetryAllFailedContentPoolImages,
   updateContentPoolItemImageCount,
   rewriteContentPoolItem,
 } from "@/lib/content/service";
@@ -36,16 +37,18 @@ export async function POST(request: Request) {
     const body = (await request.json()) as {
       taskId?: string;
       itemId?: string;
-      action?: "rewrite" | "confirm_medium" | "disperse" | "update_image_count" | "retry_image" | "retry_all_failed_images";
+      action?: "rewrite" | "confirm_medium" | "disperse" | "update_image_count" | "retry_image" | "retry_all_failed_images" | "retry_all_failed_images_async";
       expectedImageCount?: number;
       imageId?: string;
     };
-    if (!body.taskId || !body.action || (body.action !== "retry_all_failed_images" && !body.itemId)) {
+    if (!body.taskId || !body.action || (body.action !== "retry_all_failed_images" && body.action !== "retry_all_failed_images_async" && !body.itemId)) {
       return NextResponse.json({ error: "缺少内容项或操作类型。" }, { status: 400 });
     }
 
     const record =
-      body.action === "retry_all_failed_images"
+      body.action === "retry_all_failed_images_async"
+        ? await startRetryAllFailedContentPoolImages(body.taskId)
+        : body.action === "retry_all_failed_images"
         ? await retryAllFailedContentPoolImages(body.taskId)
         : body.action === "retry_image"
         ? await retryContentPoolItemImage(body.taskId, body.itemId!, body.imageId || "")
@@ -57,7 +60,7 @@ export async function POST(request: Request) {
           ? await confirmMediumRiskContentPoolItem(body.taskId, body.itemId!)
           : await disperseContentPoolItem(body.taskId, body.itemId!);
 
-    return body.action === "retry_all_failed_images" ? NextResponse.json(record) : NextResponse.json({ current: record });
+    return body.action === "retry_all_failed_images" || body.action === "retry_all_failed_images_async" ? NextResponse.json(record) : NextResponse.json({ current: record });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "内容项处理失败。" }, { status: 500 });
   }

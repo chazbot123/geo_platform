@@ -145,19 +145,13 @@ async (input) => {
     if (currentToken) {
       return `https://mp.weixin.qq.com/cgi-bin/appmsg?t=media/appmsg_edit&action=edit&type=10&token=${currentToken}&lang=zh_CN`;
     }
-    setStage("resolve_publish_token", "进入微信公众号首页解析 token");
-    window.location.href = "https://mp.weixin.qq.com/cgi-bin/home?t=home/index";
-    await sleep(5000);
+    setStage("resolve_publish_token", "检查微信公众号发布 token");
     if (hasLoginText()) {
-      throw new Error("微信公众号登录态已失效：首页要求重新登录，无法解析发布 token");
+      throw new Error("微信公众号登录态已失效：页面要求重新登录，无法解析发布 token");
     }
-    const token = extractMpToken();
-    if (!token) {
-      log(`resolve_publish_token_failed_url: ${window.location.href}`);
-      log(`resolve_publish_token_failed_text: ${pageText().slice(0, 800) || "empty"}`);
-      throw new Error("微信公众号已登录但未能解析发布 token，无法进入图文编辑器");
-    }
-    return `https://mp.weixin.qq.com/cgi-bin/appmsg?t=media/appmsg_edit&action=edit&type=10&token=${token}&lang=zh_CN`;
+    log(`resolve_publish_token_failed_url: ${window.location.href}`);
+    log(`resolve_publish_token_failed_text: ${pageText().slice(0, 800) || "empty"}`);
+    throw new Error("微信公众号发布入口缺少 token，无法进入图文编辑器。请点击“打开创作页”确认公众号后台是否已登录，或重新登录公众号账号后再发布。");
   }
 
   async function ensurePublishPage() {

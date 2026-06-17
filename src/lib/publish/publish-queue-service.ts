@@ -1,6 +1,6 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
-import { createRecordId, getPlatformAccount, getPublishingJob, listPublishingJobs } from "@/lib/storage/data-store";
+import { createRecordId, getPlatformAccount, getPublishingJob, getTask, listPublishingJobs } from "@/lib/storage/data-store";
 import { dataDirectories } from "@/lib/paths";
 import { resolveAccountIdentifier } from "@/lib/publish/account-label";
 import { updatePlatformAccountRecord } from "@/lib/publish/accounts-service";
@@ -15,7 +15,6 @@ import type {
 } from "@/lib/types";
 
 const AUDIT_LOG_FILE = path.join(dataDirectories.config, "publish-audit-log.jsonl");
-const DEFAULT_DAILY_CAP = 2;
 const DEFAULT_MAX_RETRIES = 3;
 const BASE_BACKOFF_MINUTES = 15;
 
@@ -31,12 +30,48 @@ const PLATFORM_COOLDOWN_MINUTES: Record<PublishPlatform, number> = {
   csdn: 60,
 };
 
+const DAILY_CAP_CONSUMING_STATUSES = new Set<PublishingJobRecord["status"]>([
+  "running",
+  "submitted",
+  "verifying",
+  "pending_review",
+  "published",
+]);
+
 function now() {
   return new Date().toISOString();
 }
 
 function addMinutes(date: Date, minutes: number) {
   return new Date(date.getTime() + minutes * 60 * 1000).toISOString();
+}
+
+function localDateKey(value: string | Date) {
+  const date = typeof value === "string" ? new Date(value) : value;
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+function parseTimeValue(value?: string) {
+  const match = value?.match(/^(\d{2}):(\d{2})$/);
+  if (!match) return null;
+  const hours = Number.parseInt(match[1]!, 10);
+  const minutes = Number.parseInt(match[2]!, 10);
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
+  return { hours, minutes };
+}
+
+function nextLocalDayAt(date: Date, timeValue?: string) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + 1);
+  const parsed = parseTimeValue(timeValue);
+  if (parsed) {
+    next.setHours(parsed.hours, parsed.minutes, 0, 0);
+  } else {
+    next.setSeconds(0, 0);
+  }
+  return next.toISOString();
 }
 
 function hasActiveScheduledNextRun(job: PublishingJobRecord, at: Date) {
@@ -51,16 +86,6 @@ function normalizeRiskState(account: PlatformAccountRecord): PlatformAccountRisk
   if (account.status === "disabled") return "disabled";
   if (account.status === "invalid" || account.loginStatus !== "authenticated") return "needs_login";
   return "active";
-}
-
-function isSameLocalDay(left?: string, right = new Date()) {
-  if (!left) return false;
-  const date = new Date(left);
-  return (
-    date.getFullYear() === right.getFullYear() &&
-    date.getMonth() === right.getMonth() &&
-    date.getDate() === right.getDate()
-  );
 }
 
 export function riskReasonFromJob(job: PublishingJobRecord) {
@@ -142,16 +167,6 @@ export async function listPublishAuditLog(limit = 200): Promise<PublishAuditLogE
   }
 }
 
-async function countAccountPublishesToday(accountId: string, at: Date) {
-  const jobs = await listPublishingJobs();
-  return jobs.filter(
-    (job) =>
-      job.accountId === accountId &&
-      (job.status === "published" || job.status === "submitted" || job.status === "pending_review") &&
-      isSameLocalDay(job.publishedAt ?? job.submittedAt ?? job.updatedAt, at),
-  ).length;
-}
-
 async function latestPlatformRun(job: PublishingJobRecord) {
   const jobs = await listPublishingJobs();
   return jobs
@@ -167,6 +182,49 @@ async function latestPlatformRun(job: PublishingJobRecord) {
         new Date(right.publishedAt ?? right.submittedAt ?? right.updatedAt).getTime() -
         new Date(left.publishedAt ?? left.submittedAt ?? left.updatedAt).getTime(),
     )[0];
+}
+
+function publishingSlotTime(job: PublishingJobRecord) {
+  return job.publishedAt ?? job.submittedAt ?? job.startedAt ?? job.updatedAt;
+}
+
+async function getPerAccountDailyLimit(job: PublishingJobRecord, account: PlatformAccountRecord, at: Date) {
+  const task = await getTask(job.taskId);
+  const planLimit = task?.publishPlan?.articlesPerAccountPerDay;
+  if (typeof planLimit === "number" && Number.isFinite(planLimit)) {
+    return {
+      limit: Math.max(1, Math.floor(planLimit)),
+      nextRunAt: nextLocalDayAt(at, task?.publishPlan?.timeWindow?.start),
+    };
+  }
+  if (typeof account.dailyPublishCap === "number" && Number.isFinite(account.dailyPublishCap) && account.dailyPublishCap > 0) {
+    return {
+      limit: Math.max(1, Math.floor(account.dailyPublishCap)),
+      nextRunAt: nextLocalDayAt(at),
+    };
+  }
+  return null;
+}
+
+async function evaluatePerAccountDailyCap(job: PublishingJobRecord, account: PlatformAccountRecord, at: Date) {
+  if (!job.accountId) return null;
+  const policy = await getPerAccountDailyLimit(job, account, at);
+  if (!policy) return null;
+
+  const targetDay = localDateKey(at);
+  const jobs = await listPublishingJobs();
+  const consumed = jobs.filter((item) => {
+    if (item.id === job.id) return false;
+    if (item.platform !== job.platform || item.accountId !== job.accountId) return false;
+    if (!DAILY_CAP_CONSUMING_STATUSES.has(item.status)) return false;
+    const slotTime = publishingSlotTime(item);
+    return Boolean(slotTime && localDateKey(slotTime) === targetDay);
+  }).length;
+
+  if (consumed >= policy.limit) {
+    return { reason: "account_daily_cap_reached", nextRunAt: policy.nextRunAt };
+  }
+  return null;
 }
 
 export async function evaluatePublishingJobReadiness(job: PublishingJobRecord, at = new Date()) {
@@ -199,18 +257,9 @@ export async function evaluatePublishingJobReadiness(job: PublishingJobRecord, a
     return { runnable: false, reason: "account_cooling_down", nextRunAt: account.cooldownUntil, account, riskState };
   }
 
-  const dailyCap = account.dailyPublishCap ?? DEFAULT_DAILY_CAP;
-  const publishedToday = await countAccountPublishesToday(account.id, at);
-  if (publishedToday >= dailyCap) {
-    const tomorrow = new Date(at);
-    tomorrow.setHours(24, 0, 0, 0);
-    return {
-      runnable: false,
-      reason: "account_daily_cap_reached",
-      nextRunAt: tomorrow.toISOString(),
-      account,
-      riskState,
-    };
+  const dailyCap = await evaluatePerAccountDailyCap(job, account, at);
+  if (dailyCap) {
+    return { runnable: false, reason: dailyCap.reason, nextRunAt: dailyCap.nextRunAt, account, riskState };
   }
 
   const latestRun = await latestPlatformRun(job);
@@ -418,8 +467,9 @@ export async function runDuePublishingJob(jobId: string) {
   return result;
 }
 
-export async function runDuePublishingJobs(at = new Date()) {
-  const jobs = (await listPublishingJobs()).filter((job) => job.status === "queued");
+export async function runDuePublishingJobs(at = new Date(), options: { taskId?: string } = {}) {
+  const taskId = String(options.taskId || "").trim();
+  const jobs = (await listPublishingJobs()).filter((job) => job.status === "queued" && (!taskId || job.taskId === taskId));
   const results: Array<{ jobId: string; status: PublishingJobRecord["status"] }> = [];
   const blocked: Array<{ jobId: string; reason: string; nextRunAt?: string }> = [];
   let runnable = 0;

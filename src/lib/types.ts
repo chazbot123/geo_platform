@@ -701,7 +701,7 @@ export interface ContentPoolImageItem {
   url?: string;
   localPath?: string;
   errorMessage?: string;
-  status: "pending" | "generated" | "failed";
+  status: "pending" | "generated" | "failed" | "regenerating";
 }
 
 export interface ContentPoolPipelineState {

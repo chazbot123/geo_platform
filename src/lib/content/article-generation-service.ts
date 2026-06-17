@@ -523,7 +523,7 @@ function createFailedImagePlaceholders(input: {
   }));
 }
 
-function formatImageGenerationError(error: unknown) {
+export function formatImageGenerationError(error: unknown) {
   if (!(error instanceof Error)) return "图片生成失败。";
   const message = error.message.trim();
   const normalized = message.toLowerCase();
@@ -535,6 +535,12 @@ function formatImageGenerationError(error: unknown) {
   }
   if (normalized.startsWith("image_api_429") || normalized.startsWith("image_rate_limit_429")) {
     return "图片模型接口限流（HTTP 429），系统已自动重试但仍未成功，请稍后再试或更换模型供应商。";
+  }
+  if (normalized.startsWith("image_api_524") || normalized.startsWith("image_responses_api_524")) {
+    return "图片服务网关超时（HTTP 524）：上游图片模型或中转服务长时间没有返回结果。系统已自动重试但仍未成功，请稍后再试；如果连续失败，请检查图片模型接口地址、API Key、模型名称和中转服务稳定性，或更换图片模型供应商。";
+  }
+  if (/^image_(api|responses_api)_5\d\d/.test(normalized)) {
+    return "图片模型上游服务暂时不可用，系统已自动重试但仍未成功。请稍后再试，或检查图片模型供应商/中转服务是否正常。";
   }
   if (/^image_output_empty@/.test(normalized)) {
     return "图片模型返回空内容（响应正常但未生成图片），可能是 API Key 没有图片配额、模型名不正确，或上游中转网关静默失败。请在模型设置中确认图片模型名（建议尝试 dall-e-3 或 gpt-image-1）和 API Key 配额。";

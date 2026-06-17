@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { PlatformAccountRecord, PublishingJobRecord } from "@/lib/types";
+import type { PlatformAccountRecord, PublishingJobRecord, TaskRecord } from "@/lib/types";
 
 let tempDataDir: string | undefined;
 
@@ -64,10 +64,39 @@ function job(patch: Partial<PublishingJobRecord> = {}): PublishingJobRecord {
   };
 }
 
+function task(patch: Partial<TaskRecord> = {}): TaskRecord {
+  return {
+    id: "task-1",
+    productId: "product-1",
+    status: "generation_completed",
+    publishPlan: {
+      taskId: "task-1",
+      enterpriseTaskId: "task-1",
+      keywordTaskId: "task-1",
+      searchProvider: "doubao",
+      enabledPlatforms: [
+        { platform: "toutiao", enabled: true, accountCount: 1, accountIds: ["account-1"], articleCount: 1 },
+      ],
+      days: 1,
+      articlesPerAccountPerDay: 1,
+      timeWindow: { start: "09:00", end: "18:00" },
+      minSameAccountIntervalHours: 3,
+      totalAccountCount: 1,
+      totalArticleCount: 1,
+      createdAt: "2026-06-09T00:00:00.000Z",
+      updatedAt: "2026-06-09T00:00:00.000Z",
+    },
+    createdAt: "2026-06-09T00:00:00.000Z",
+    updatedAt: "2026-06-09T00:00:00.000Z",
+    ...patch,
+  };
+}
+
 describe("publish queue policy", () => {
-  it("blocks queued jobs when the account daily cap is reached", async () => {
+  it("blocks queued jobs when the task per-account daily cap has been reached", async () => {
     const { dataStore, queueService } = await loadIsolatedQueue();
-    await dataStore.savePlatformAccount(account({ dailyPublishCap: 1 }));
+    await dataStore.saveTask(task());
+    await dataStore.savePlatformAccount(account());
     await dataStore.savePublishingJob(
       job({
         id: "published-today",
@@ -77,12 +106,13 @@ describe("publish queue policy", () => {
     );
 
     const result = await queueService.evaluatePublishingJobReadiness(
-      job({ id: "queued-now" }),
-      new Date("2026-06-09T02:00:00.000Z"),
+      job({ id: "queued-now", plannedPublishTime: "2026-06-09T10:00:00.000Z" }),
+      new Date("2026-06-09T10:05:00.000Z"),
     );
 
     expect(result.runnable).toBe(false);
     expect(result.reason).toBe("account_daily_cap_reached");
+    expect(result.nextRunAt).toBe("2026-06-10T01:00:00.000Z");
   });
 
   it("blocks jobs during per-platform account cooldown", async () => {
@@ -214,9 +244,40 @@ describe("publish queue policy", () => {
     expect(result.results.map((item) => item.jobId)).toEqual(["due-job"]);
   });
 
-  it("writes back a block reason when a due job is skipped by daily cap", async () => {
+  it("can limit due job scans to one task batch", async () => {
     const { dataStore, queueService } = await loadIsolatedQueue();
-    await dataStore.savePlatformAccount(account({ dailyPublishCap: 1 }));
+    await dataStore.savePlatformAccount(account());
+    await dataStore.savePublishingJob(
+      job({
+        id: "target-task-job",
+        taskId: "target-task",
+        executionMode: "manual_delivery",
+        plannedPublishTime: "2026-06-09T10:00:00.000Z",
+      }),
+    );
+    await dataStore.savePublishingJob(
+      job({
+        id: "other-task-job",
+        taskId: "other-task",
+        executionMode: "manual_delivery",
+        plannedPublishTime: "2026-06-09T10:00:00.000Z",
+      }),
+    );
+
+    const result = await queueService.runDuePublishingJobs(new Date("2026-06-09T10:05:00.000Z"), {
+      taskId: "target-task",
+    });
+
+    expect(result.checked).toBe(1);
+    expect(result.runnable).toBe(1);
+    expect(result.executed).toBe(1);
+    expect(result.results.map((item) => item.jobId)).toEqual(["target-task-job"]);
+  });
+
+  it("blocks due jobs and records the next run time when the account daily cap is reached", async () => {
+    const { dataStore, queueService } = await loadIsolatedQueue();
+    await dataStore.saveTask(task());
+    await dataStore.savePlatformAccount(account());
     await dataStore.savePublishingJob(
       job({
         id: "submitted-today",
@@ -228,6 +289,7 @@ describe("publish queue policy", () => {
     await dataStore.savePublishingJob(
       job({
         id: "due-capped-job",
+        executionMode: "manual_delivery",
         plannedPublishTime: "2026-06-09T10:00:00.000Z",
         updatedAt: "2026-06-09T09:50:00.000Z",
       }),
@@ -244,11 +306,75 @@ describe("publish queue policy", () => {
       {
         jobId: "due-capped-job",
         reason: "account_daily_cap_reached",
-        nextRunAt: "2026-06-09T16:00:00.000Z",
+        nextRunAt: "2026-06-10T01:00:00.000Z",
       },
     ]);
     expect(blockedJob?.queueBlockedReason).toBe("account_daily_cap_reached");
-    expect(blockedJob?.nextRunAt).toBe("2026-06-09T16:00:00.000Z");
+    expect(blockedJob?.nextRunAt).toBe("2026-06-10T01:00:00.000Z");
     expect(blockedJob?.executionStage).toBe("account_daily_cap_reached");
+  });
+
+  it("does not count another account's same-day publishing toward the current account cap", async () => {
+    const { dataStore, queueService } = await loadIsolatedQueue();
+    await dataStore.saveTask(task());
+    await dataStore.savePlatformAccount(account());
+    await dataStore.savePublishingJob(
+      job({
+        id: "other-account-published-today",
+        accountId: "account-2",
+        status: "published",
+        publishedAt: "2026-06-09T01:00:00.000Z",
+        updatedAt: "2026-06-09T01:00:00.000Z",
+      }),
+    );
+
+    const result = await queueService.evaluatePublishingJobReadiness(
+      job({ id: "queued-now", plannedPublishTime: "2026-06-09T10:00:00.000Z" }),
+      new Date("2026-06-09T10:05:00.000Z"),
+    );
+
+    expect(result.runnable).toBe(true);
+  });
+
+  it("does not count previous-day publishing toward today's account cap", async () => {
+    const { dataStore, queueService } = await loadIsolatedQueue();
+    await dataStore.saveTask(task());
+    await dataStore.savePlatformAccount(account());
+    await dataStore.savePublishingJob(
+      job({
+        id: "published-yesterday",
+        status: "published",
+        publishedAt: "2026-06-08T14:00:00.000Z",
+        updatedAt: "2026-06-08T14:00:00.000Z",
+      }),
+    );
+
+    const result = await queueService.evaluatePublishingJobReadiness(
+      job({ id: "queued-now", plannedPublishTime: "2026-06-09T10:00:00.000Z" }),
+      new Date("2026-06-09T10:05:00.000Z"),
+    );
+
+    expect(result.runnable).toBe(true);
+  });
+
+  it("falls back to the account daily cap when no task publish plan exists", async () => {
+    const { dataStore, queueService } = await loadIsolatedQueue();
+    await dataStore.savePlatformAccount(account({ dailyPublishCap: 1 }));
+    await dataStore.savePublishingJob(
+      job({
+        id: "published-today",
+        status: "published",
+        publishedAt: "2026-06-09T01:00:00.000Z",
+        updatedAt: "2026-06-09T01:00:00.000Z",
+      }),
+    );
+
+    const result = await queueService.evaluatePublishingJobReadiness(
+      job({ id: "queued-now", plannedPublishTime: "2026-06-09T10:00:00.000Z" }),
+      new Date("2026-06-09T10:05:00.000Z"),
+    );
+
+    expect(result.runnable).toBe(false);
+    expect(result.reason).toBe("account_daily_cap_reached");
   });
 });

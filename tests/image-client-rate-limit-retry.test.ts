@@ -99,6 +99,30 @@ describe("image client 429 rate-limit retry via withImageRetry", () => {
     expect(callCount).toBe(2);
   });
 
+  it("retries generic image request after 524 gateway timeout and succeeds on second attempt", async () => {
+    patchSleepImmediate();
+
+    let callCount = 0;
+    setGenericImageRequestExecutorForTest(async (_url, _init) => {
+      callCount += 1;
+      if (callCount === 1) {
+        return new Response(JSON.stringify({ error: "openai_error" }), {
+          status: 524,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify(buildImageAssetResponse("task-1")), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+
+    const asset = await runImageModel(product, theme, content, genericConfig, 1);
+
+    expect(asset).toBeDefined();
+    expect(callCount).toBe(2);
+  });
+
   it("propagates RATE_LIMIT error message when all retries exhausted", async () => {
     patchSleepImmediate();
 

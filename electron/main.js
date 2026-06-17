@@ -44,8 +44,14 @@ let appServerUrl = "";
 const STAGE_LABELS = {
   init: "准备启动",
   validate_session: "会话校验",
+  wechat_token_resolve: "解析公众号 token",
+  wechat_token_resolved: "公众号 token 已解析",
+  wechat_token_resolve_failed_url: "公众号 token 解析失败地址",
+  wechat_token_resolve_failed_text: "公众号 token 解析失败页面",
+  wechat_token_resolve_failed_login_required: "公众号需要重新登录",
   prepare_images: "图片准备",
   open_publish_page: "打开发布页",
+  resolve_publish_token: "解析发布 token",
   inject_automation: "注入自动化",
   load_publish_page: "页面加载",
   manage_page_ready: "管理页已就绪",
@@ -472,12 +478,59 @@ function createScopedWindow(input = {}) {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      disableDialogs: true,
       preload: preloadPath,
       partition: typeof input.sessionPartition === "string" && input.sessionPartition.trim() ? input.sessionPartition.trim() : undefined,
     },
   });
   hideWindowMenu(scopedWindow);
   return scopedWindow;
+}
+
+function installPageDialogSuppressor(windowInstance, options = {}) {
+  const platform = String(options.platform || "");
+  const log = typeof options.log === "function" ? options.log : () => {};
+  const script = `
+    (() => {
+      const notify = (type, message) => {
+        try {
+          console.info("[geo-dialog-suppressed]", JSON.stringify({ type, message: String(message || "").slice(0, 500) }));
+        } catch (_) {}
+      };
+      window.alert = (message) => {
+        notify("alert", message);
+      };
+      window.confirm = (message) => {
+        notify("confirm", message);
+        return false;
+      };
+      window.prompt = (message) => {
+        notify("prompt", message);
+        return null;
+      };
+    })();
+  `;
+
+  windowInstance.webContents.on("console-message", (_event, _level, message) => {
+    const text = String(message || "");
+    if (!text.includes("[geo-dialog-suppressed]")) return;
+    const payloadText = text.replace(/^.*?\[geo-dialog-suppressed\]\s*/, "").trim();
+    let payload = { type: "dialog", message: payloadText };
+    try {
+      payload = JSON.parse(payloadText);
+    } catch (_) {}
+    log(`page_dialog_suppressed: ${platform || "unknown"} ${payload.type || "dialog"} ${String(payload.message || "").slice(0, 160)}`);
+  });
+
+  windowInstance.webContents.on("dom-ready", () => {
+    windowInstance.webContents.executeJavaScript(script, true).catch(() => {});
+  });
+  windowInstance.webContents.on("did-navigate", () => {
+    windowInstance.webContents.executeJavaScript(script, true).catch(() => {});
+  });
+  windowInstance.webContents.on("did-navigate-in-page", () => {
+    windowInstance.webContents.executeJavaScript(script, true).catch(() => {});
+  });
 }
 
 function emitVideohaoExtensionDebug(hypothesisId, location, msg, data = {}) {
@@ -934,6 +987,14 @@ function getPlatformSessionSpec(platform, publishUrl) {
         publishUrl: publishUrl || "https://creator.douyin.com/creator-micro/content/upload",
         loginUrlHints: ["/login", "passport", "signin", "sso"],
         loginTextHints: ["扫码登录", "请先登录", "验证码登录"],
+        authenticatedPageUrlHints: ["creator.douyin.com/creator-micro"],
+        authenticatedPageSelectors: [
+          "[class*='semi-navigation']",
+          "[class*='semi-avatar']",
+          "[class*='creator']",
+          "img[src*='douyinpic.com']",
+          "img[src*='byteimg.com']",
+        ],
       };
     case "xiaohongshu":
       return {
@@ -1242,6 +1303,10 @@ function buildPlatformAccountProfileProbe(platform) {
     case "douyin":
       return {
         displayNameSelectors: [
+          "[class*='semi-navigation'] [class*='name']",
+          "[class*='semi-navigation'] [class*='nickname']",
+          "[class*='semi-navigation'] [title]",
+          "[class*='semi-avatar'] + *",
           ".name-_lSSDc",
           ".semi-navigation-header .user-name",
           ".creator-header-user-name",
@@ -1506,10 +1571,11 @@ async function extractPlatformAccountProfile(windowInstance, input = {}) {
         }
         return text;
       };
+      const isDouyinPlaceholder = (value) => /^douyin[-_]?account[-_]?\d{6,}$/i.test(normalizeText(value));
       const isMeaningfulName = (value) => {
         const text = sanitizeDisplayNameByPlatform(value);
         const lower = text.toLowerCase();
-        return Boolean(text) && !blockedNames.has(text) && !genericPlatformNames.has(text) && !invalidProfileValues.has(lower) && !blockedNamePattern.test(text) && text.length >= 2 && text.length <= 40;
+        return Boolean(text) && !isDouyinPlaceholder(text) && !blockedNames.has(text) && !genericPlatformNames.has(text) && !invalidProfileValues.has(lower) && !blockedNamePattern.test(text) && text.length >= 2 && text.length <= 40;
       };
       const stripPlatformIdPrefix = (value) =>
         normalizeText(value).replace(/^(账号ID|ID|抖音号|头条号|百家号ID|百家号|知乎号|微博号|微信号|公众号|视频号|小红书号|小红书ID|CSDNID|UID)[:：\\s]*/i, "");
@@ -1837,7 +1903,10 @@ function isMeaningfulAccountProfileText(value) {
   if (["true", "false", "null", "undefined", "nan", "[object object]"].includes(lower)) {
     return false;
   }
-  if (["高清发布", "立即发布", "定时发布", "发布设置", "活动管理"].includes(text)) {
+  if (["高清发布", "立即发布", "定时发布", "发布设置", "活动管理", "抖音账号"].includes(text)) {
+    return false;
+  }
+  if (/^douyin[-_]?account[-_]?\d{6,}$/i.test(text)) {
     return false;
   }
   return !/^(douyin|toutiao|baijiahao|wechat|videohao|weibo|zhihu|csdn)[-_]?(account|user)-\d{6,}$/i.test(text);
@@ -1920,6 +1989,7 @@ function getPlatformAccountProfileProbeUrls(input = {}) {
       ];
     case "douyin":
       return [
+        "https://creator.douyin.com/creator-micro/account/setting",
         "https://creator.douyin.com/creator-micro/home",
         "https://creator.douyin.com/creator-micro/content/manage",
       ];
@@ -1986,10 +2056,13 @@ async function resolvePlatformAccountProfileFromWindow(windowInstance, input = {
 
 async function resolvePlatformAccountProfile(windowInstance, input = {}) {
   const platform = String(input.platform || "").trim();
-  const initialProfile = await resolvePlatformAccountProfileFromWindow(windowInstance, input, 12000);
+  const initialProfileTimeoutMs = platform === "douyin" ? 5000 : 12000;
+  const probeLoadTimeoutMs = platform === "douyin" ? 8000 : 20000;
+  const probeExtractTimeoutMs = platform === "douyin" ? 3500 : 5000;
+  const initialProfile = await resolvePlatformAccountProfileFromWindow(windowInstance, input, initialProfileTimeoutMs);
   const probeUrls = getPlatformAccountProfileProbeUrls({ ...input, currentProfile: initialProfile });
   const hasMeaningfulDisplayName = isMeaningfulAccountProfileText(initialProfile.displayName);
-  const forceProbeProfile = ["weibo", "csdn", "zhihu", "baijiahao"].includes(platform);
+  const forceProbeProfile = ["weibo", "csdn", "zhihu", "baijiahao", "douyin"].includes(platform);
   if (!forceProbeProfile && (!probeUrls.length || hasMeaningfulDisplayName) && hasMeaningfulAccountProfile(initialProfile) && (initialProfile.avatarUrl || initialProfile.platformAccountId)) {
     return initialProfile;
   }
@@ -2012,16 +2085,21 @@ async function resolvePlatformAccountProfile(windowInstance, input = {}) {
       const isWeiboProfilePage = platform === "weibo" && /^https:\/\/me\.weibo\.com\/?/i.test(probeUrl);
       const isCsdnProfilePage = platform === "csdn" && /^https:\/\/blog\.csdn\.net\/[^/?#]+/i.test(probeUrl);
       const isZhihuProfileProbe = platform === "zhihu";
-      await loadWindowUrlWithTimeout(probeWindow, probeUrl, 20000);
+      const isDouyinProfileProbe = platform === "douyin";
+      await loadWindowUrlWithTimeout(probeWindow, probeUrl, probeLoadTimeoutMs);
       await waitForWindowStable(probeWindow);
       const profile = await resolvePlatformAccountProfileFromWindow(
         probeWindow,
         { ...input, loginUrl: probeUrl },
-        5000,
-        (isWeiboProfilePage || isCsdnProfilePage)
+        probeExtractTimeoutMs,
+        (isWeiboProfilePage || isCsdnProfilePage || isDouyinProfileProbe)
           ? {
               requireDisplayName: true,
-              requiredSourcePrefix: isWeiboProfilePage ? "https://me.weibo.com/" : "https://blog.csdn.net/",
+              requiredSourcePrefix: isWeiboProfilePage
+                ? "https://me.weibo.com/"
+                : isDouyinProfileProbe
+                  ? "https://creator.douyin.com/"
+                  : "https://blog.csdn.net/",
             }
           : undefined,
       );
@@ -2046,6 +2124,11 @@ async function resolvePlatformAccountProfile(windowInstance, input = {}) {
           lockedAccountName = String(profile.accountName || profile.displayName || "").trim();
           lockedPlatformAccountId = String(profile.platformAccountId || "").trim();
         }
+        if (isDouyinProfileProbe && isMeaningfulAccountProfileText(profile.displayName)) {
+          lockedDisplayName = String(profile.displayName || "").trim();
+          lockedAccountName = String(profile.accountName || profile.displayName || "").trim();
+          lockedPlatformAccountId = String(profile.platformAccountId || "").trim();
+        }
         if (lockedDisplayName) {
           latestProfile.displayName = lockedDisplayName;
         }
@@ -2056,7 +2139,7 @@ async function resolvePlatformAccountProfile(windowInstance, input = {}) {
           latestProfile.platformAccountId = lockedPlatformAccountId;
         }
       }
-      if ((platform === "weibo" || platform === "csdn" || platform === "zhihu") && lockedDisplayName) {
+      if ((platform === "weibo" || platform === "csdn" || platform === "zhihu" || platform === "douyin") && lockedDisplayName) {
         break;
       }
       if (hasMeaningfulAccountProfile(latestProfile) && latestProfile.avatarUrl && latestProfile.platformAccountId) {
@@ -2070,7 +2153,7 @@ async function resolvePlatformAccountProfile(windowInstance, input = {}) {
       probeWindow.close();
     }
   }
-  if ((platform === "weibo" || platform === "csdn" || platform === "zhihu") && !lockedDisplayName) {
+  if ((platform === "weibo" || platform === "csdn" || platform === "zhihu" || platform === "douyin") && !lockedDisplayName) {
     delete latestProfile.displayName;
     delete latestProfile.accountName;
   }
@@ -2641,6 +2724,29 @@ async function resolveWechatTokenizedPublishUrl(windowInstance, fallbackUrl, log
       return "";
     }
   };
+  const detectLoginRequired = async () => {
+    try {
+      return await windowInstance.webContents.executeJavaScript(
+        `(() => {
+          const text = document.body?.innerText || "";
+          return /扫码登录|请使用微信|登录公众平台|账号密码登录|请重新登录/.test(text);
+        })()`,
+        true,
+      );
+    } catch (_) {
+      return false;
+    }
+  };
+  const pageTextSample = async () => {
+    try {
+      return await windowInstance.webContents.executeJavaScript(
+        `(() => String(document.body?.innerText || document.body?.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 800))()`,
+        true,
+      );
+    } catch (_) {
+      return "";
+    }
+  };
 
   let token = await extractToken();
   if (!token) {
@@ -2648,7 +2754,11 @@ async function resolveWechatTokenizedPublishUrl(windowInstance, fallbackUrl, log
     await loadWindowUrlWithTimeout(windowInstance, "https://mp.weixin.qq.com/cgi-bin/home?t=home/index", 25000);
     await waitForWindowStable(windowInstance);
     const startedAt = Date.now();
-    while (!token && Date.now() - startedAt < 10000) {
+    while (!token && Date.now() - startedAt < 30000) {
+      if (await detectLoginRequired()) {
+        log("wechat_token_resolve_failed_login_required: 微信公众号后台要求重新登录");
+        throw new Error("微信公众号登录态已失效：后台要求重新扫码登录，无法自动进入图文编辑器。请重新登录公众号账号后再发布。");
+      }
       token = await extractToken();
       if (token) break;
       await sleep(500);
@@ -2666,7 +2776,9 @@ async function resolveWechatTokenizedPublishUrl(windowInstance, fallbackUrl, log
 
   if (!token) {
     log(`wechat_token_resolve_failed_url: ${windowInstance.webContents.getURL() || fallbackUrl}`);
-    return fallbackUrl;
+    const sample = await pageTextSample();
+    log(`wechat_token_resolve_failed_text: ${sample || "empty"}`);
+    throw new Error("微信公众号已登录但未能解析发布 token，无法自动进入图文编辑器。请点击“打开创作页”确认公众号后台是否停在登录、风控验证或账号选择页，处理后再重新发布。");
   }
 
   const tokenizedUrl = `https://mp.weixin.qq.com/cgi-bin/appmsg?t=media/appmsg_edit&action=edit&type=10&token=${token}&lang=zh_CN`;
@@ -3481,6 +3593,7 @@ async function runPlatformPublish(input = {}) {
   });
   let shouldCloseWindow = false;
   const detachNetworkLogger = attachPublishNetworkLogger(publishWindow, sessionToken, input.platform);
+  installPageDialogSuppressor(publishWindow, { platform: input.platform, log });
 
   if (process.env.GEO_OPEN_PUBLISH_DEVTOOLS === "1") {
     publishWindow.webContents.openDevTools({ mode: "detach" });

@@ -9,7 +9,7 @@ describe("Electron Baijiahao account profile extraction", () => {
 
     expect(baijiahaoProbe).not.toContain('".name"');
     expect(source).toContain('!["douyin", "weibo", "baijiahao"].includes(platform)');
-    expect(source).toContain('const forceProbeProfile = ["weibo", "csdn", "zhihu", "baijiahao"].includes(platform);');
+    expect(source).toContain('const forceProbeProfile = ["weibo", "csdn", "zhihu", "baijiahao", "douyin"].includes(platform);');
     expect(source).toContain('"https://baijiahao.baidu.com/builder/rc/settings/accountSet"');
     expect(source).toContain("\\\\u70ed\\\\u70b9\\\\u699c");
     expect(source).toContain("\\\\u5feb\\\\u6765\\\\u770b\\\\u770b");

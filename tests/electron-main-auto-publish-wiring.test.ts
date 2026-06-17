@@ -22,4 +22,25 @@ describe("Electron main auto publish wiring", () => {
     expect(source).toContain("publishProgressSessions.set(sessionToken, createProgressSnapshot(sessionToken, input.platform))");
     expect(source).toContain("getPlatformPublishProgress(input = {})");
   });
+
+  it("suppresses native page dialogs from automatic publish windows", async () => {
+    const source = await readFile(path.join(process.cwd(), "electron", "main.js"), "utf8");
+
+    expect(source).toContain("installPageDialogSuppressor");
+    expect(source).toContain("page_dialog_suppressed");
+    expect(source).toContain("disableDialogs: true");
+    expect(source).toContain("setWindowOpenHandler");
+    expect(source).toContain("window.alert =");
+    expect(source).toContain("window.confirm =");
+    expect(source).toContain("window.prompt =");
+  });
+
+  it("disables native dialogs for all scoped platform windows", async () => {
+    const source = await readFile(path.join(process.cwd(), "electron", "main.js"), "utf8");
+    const scopedWindowStart = source.indexOf("function createScopedWindow");
+    const scopedWindowBlock = source.slice(scopedWindowStart, source.indexOf("function installPageDialogSuppressor", scopedWindowStart));
+
+    expect(scopedWindowStart).toBeGreaterThan(-1);
+    expect(scopedWindowBlock).toContain("disableDialogs: true");
+  });
 });

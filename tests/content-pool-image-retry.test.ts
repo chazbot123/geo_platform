@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { retryAllFailedContentPoolImages, retryContentPoolItemImage } from "@/lib/content/service";
+import { runSingleImageModel } from "@/lib/integrations/images/client";
+import type { ContentPoolRecord } from "@/lib/types";
 
-const record = {
+const record: ContentPoolRecord = {
   taskId: "task-1",
   sourcePublishPlanUpdatedAt: "2026-06-14T00:00:00.000Z",
   currentTaskId: "task-1",
@@ -142,5 +144,45 @@ describe("retryContentPoolItemImage", () => {
     expect(item.imageList[1]?.status).toBe("generated");
     expect(item.imageList[1]?.url).toBe("/generated-images/item-1/image-2.png");
     expect(item.body).toBe("测试正文");
+  });
+
+  it("marks failed images as regenerating before retrying all failed images", async () => {
+    const result = await retryAllFailedContentPoolImages("task-1", { markRunningOnly: true });
+    const item = result.current.items[0];
+
+    expect(result.totalFailedImages).toBe(1);
+    expect(result.retriedImages).toBe(0);
+    expect(result.remainingFailedImages).toBe(1);
+    expect(item.imageList[1]?.status).toBe("regenerating");
+    expect(item.pipeline.imageGeneration.status).toBe("processing");
+    expect(item.stageLog?.some((entry) => entry.message.includes("开始重生失败图片"))).toBe(true);
+  });
+
+  it("continues retrying images that were already marked as regenerating", async () => {
+    const runningRecord = structuredClone(record);
+    runningRecord.items[0].imageList[1].status = "regenerating";
+    runningRecord.items[0].pipeline.imageGeneration.images[1].status = "regenerating";
+    const store = await import("@/lib/storage/data-store");
+    vi.mocked(store.getContentPool).mockResolvedValueOnce(runningRecord);
+
+    const result = await retryAllFailedContentPoolImages("task-1");
+    const item = result.current.items[0];
+
+    expect(result.totalFailedImages).toBe(1);
+    expect(result.retriedImages).toBe(1);
+    expect(item.imageList[1]?.status).toBe("generated");
+  });
+
+  it("keeps the failed image and localizes the reason when retry still hits image api 524", async () => {
+    vi.mocked(runSingleImageModel).mockRejectedValueOnce(new Error("IMAGE_API_524: openai_error"));
+
+    const next = await retryContentPoolItemImage("task-1", "item-1", "img-2");
+    const item = next.items[0];
+    const retriedImage = item.imageList[1];
+
+    expect(retriedImage.status).toBe("failed");
+    expect(retriedImage.errorMessage).toContain("图片服务网关超时");
+    expect(item.pipeline.imageGeneration.status).toBe("needs_action");
+    expect(item.stageLog?.some((entry) => entry.message.includes("图片服务网关超时"))).toBe(true);
   });
 });

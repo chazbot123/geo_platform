@@ -15,7 +15,7 @@ import type {
 } from "@/lib/types";
 
 const ELECTRON_PUBLISH_TIMEOUT_MS = 180000;
-const LOCAL_BRIDGE_TIMEOUT_BUFFER_MS = 15000;
+const LOCAL_BRIDGE_TIMEOUT_BUFFER_MS = 45000;
 
 function accountDraftToPublishingDraft(draft: AccountPublishingDraft): PublishingDraft {
   return {

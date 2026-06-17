@@ -10,7 +10,7 @@ describe("publish execution copy", () => {
     );
 
     expect(source).toContain("findBlockingReason");
-    expect(source).toContain("本次未执行：");
+    expect(source).toContain("跳过原因：");
     expect(source).toContain("publishQueueReasonLabel(value)");
   });
 
@@ -34,6 +34,45 @@ describe("publish execution copy", () => {
     expect(source).toContain("AccountIdentity");
     expect(source).toContain("account.avatarUrl");
     expect(source).toContain("<AccountIdentity");
+  });
+
+  it("truncates long account labels without covering adjacent publish result columns", async () => {
+    const source = await readFile(
+      path.join(process.cwd(), "src", "components", "publish", "publish-execution-workbench.tsx"),
+      "utf8",
+    );
+
+    expect(source).toContain("title={label}");
+    expect(source).toContain("max-w-full min-w-0");
+    expect(source).toContain("truncate");
+    expect(source).toContain("minmax(150px,0.85fr)");
+  });
+
+  it("shows batch execution feedback when the immediate run button is clicked", async () => {
+    const source = await readFile(
+      path.join(process.cwd(), "src", "components", "publish", "publish-execution-workbench.tsx"),
+      "utf8",
+    );
+
+    expect(source).toContain("runTargetArticleId");
+    expect(source).toContain("buildRunDueSummary");
+    expect(source).toContain("正在执行当前批次已到计划时间的发布任务。");
+    expect(source).toContain("本次执行到点任务");
+    expect(source).toContain("检查并执行到点任务");
+    expect(source).not.toContain("立即执行到点任务");
+    expect(source).toContain("ring-2 ring-accent/40");
+  });
+
+  it("runs all due jobs in the current task batch from the primary publish button", async () => {
+    const source = await readFile(
+      path.join(process.cwd(), "src", "components", "publish", "publish-execution-workbench.tsx"),
+      "utf8",
+    );
+
+    expect(source).toContain('action: "run_due"');
+    expect(source).toContain("buildRunDueSummary");
+    expect(source).toContain("本次执行到点任务");
+    expect(source).not.toContain('action: "run_next"');
   });
 
   it("keeps publish result row content vertically centered with the header", async () => {
@@ -74,11 +113,54 @@ describe("publish execution copy", () => {
       path.join(process.cwd(), "src", "components", "publish", "publish-execution-workbench.tsx"),
       "utf8",
     );
+    const dialogStart = source.indexOf("{pendingNotPublishedJobId ?");
+    const dialogEnd = source.indexOf("{pendingLoginArticleId ?", dialogStart);
+    const dialogSource = source.slice(dialogStart, dialogEnd);
+    const handlerStart = source.indexOf("async function markManualNotPublished");
+    const handlerEnd = source.indexOf("useEffect", handlerStart);
+    const handlerSource = source.slice(handlerStart, handlerEnd);
 
     expect(source).toContain("pendingNotPublishedJobId");
     expect(source).toContain("确认未发布并重新发布");
     expect(source).toContain("确认重新发布");
+    expect(source).toContain("requeueingJobId");
+    expect(handlerSource).toContain("setPendingNotPublishedJobId(\"\");");
+    expect(source).toContain("正在重新加入发布队列");
+    expect(handlerSource).toContain("setRequeueingJobId(jobId);");
+    expect(handlerSource).toContain("setBusy(false);");
     expect(source).not.toContain("window.confirm(\"确认该平台账号后台没有发布这篇文章？确认后系统会把它重新放回发布队列。\")");
+    expect(dialogSource).not.toContain("disabled={busy}");
+    expect(dialogSource).toContain("disabled={Boolean(requeueingJobId)}");
+  });
+
+  it("uses an in-page confirmation dialog before reopening login for expired accounts", async () => {
+    const source = await readFile(
+      path.join(process.cwd(), "src", "components", "publish", "publish-execution-workbench.tsx"),
+      "utf8",
+    );
+
+    expect(source).toContain("pendingLoginArticleId");
+    expect(source).toContain("openLoginConfirmDialog");
+    expect(source).toContain("重新登录账号");
+    expect(source).toContain("打开登录窗口");
+    expect(source).not.toContain("window.confirm");
+  });
+
+  it("lets operators repair account_not_found jobs by selecting a current platform account", async () => {
+    const source = await readFile(
+      path.join(process.cwd(), "src", "components", "publish", "publish-execution-workbench.tsx"),
+      "utf8",
+    );
+    const routeSource = await readFile(path.join(process.cwd(), "src", "app", "api", "publish", "execution", "route.ts"), "utf8");
+
+    expect(source).toContain("发布账号不存在，需要修复绑定");
+    expect(source).toContain("选择当前平台账号");
+    expect(source).toContain("修复并发布");
+    expect(source).toContain("repairAccountBindingAndRun");
+    expect(source).toContain('action: "repair_account_binding"');
+    expect(source).toContain("accountRepairCandidatesByPlatform");
+    expect(source).toContain("isPublishableAccountCandidate");
+    expect(routeSource).toContain("repair_account_binding");
   });
 
   it("adds a search box to filter publish results", async () => {

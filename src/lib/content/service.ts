@@ -3,7 +3,7 @@ import { getPromptVersion, normalizeAiScenario, normalizePlatform } from "@/lib/
 import { reviewContent, type ReviewResult } from "@/lib/content/review-service";
 import { planDispersion } from "@/lib/content/dispersion-service";
 import { buildGeoContentExecutionPackage } from "@/lib/content/execution-package";
-import { generateArticleForContentPool, formatArticleGenerationError } from "@/lib/content/article-generation-service";
+import { generateArticleForContentPool, formatArticleGenerationError, formatImageGenerationError } from "@/lib/content/article-generation-service";
 import { runContentModel } from "@/lib/integrations/content/client";
 import { runSingleImageModel } from "@/lib/integrations/images/client";
 import { materializeScopedArticleImageItem } from "@/lib/images/local-image-store";
@@ -1312,28 +1312,44 @@ export async function retryContentPoolItemImage(taskId: string, itemId: string, 
   }
   const currentImage = currentItem.imageList[imageIndex];
   const appConfig = await getAppConfig();
-  const regeneratedImage = await runSingleImageModel(bundle.product, appConfig.imageModelApiConfig, {
-    prompt: currentImage.prompt,
-    imageIndex: imageIndex + 1,
-    imageCount: currentItem.expectedImageCount ?? currentItem.imageList.length ?? 1,
-    paragraphIndex: imageIndex,
-    alt: `文章配图 ${imageIndex + 1}`,
-  });
-  const localizedImage = await materializeScopedArticleImageItem(itemId, regeneratedImage, imageIndex);
-  const nextImageList: ContentPoolImageItem[] = currentItem.imageList.map((image, index) =>
-    index === imageIndex
-      ? {
-          id: localizedImage.id,
-          prompt: localizedImage.prompt,
-          url: localizedImage.publicUrl ?? localizedImage.url,
-          localPath: localizedImage.localPath,
-          errorMessage: localizedImage.errorMessage,
-          status: localizedImage.reviewStatus === "failed" ? "failed" : "generated",
-        }
-      : image,
-  );
-  const failedCount = nextImageList.filter((image) => image.status === "failed").length;
   const timestamp = new Date().toISOString();
+  let stageMessage = `已重试图片 ${imageIndex + 1}。`;
+  let nextImageList: ContentPoolImageItem[];
+  try {
+    const regeneratedImage = await runSingleImageModel(bundle.product, appConfig.imageModelApiConfig, {
+      prompt: currentImage.prompt,
+      imageIndex: imageIndex + 1,
+      imageCount: currentItem.expectedImageCount ?? currentItem.imageList.length ?? 1,
+      paragraphIndex: imageIndex,
+      alt: `文章配图 ${imageIndex + 1}`,
+    });
+    const localizedImage = await materializeScopedArticleImageItem(itemId, regeneratedImage, imageIndex);
+    nextImageList = currentItem.imageList.map((image, index) =>
+      index === imageIndex
+        ? {
+            id: localizedImage.id,
+            prompt: localizedImage.prompt,
+            url: localizedImage.publicUrl ?? localizedImage.url,
+            localPath: localizedImage.localPath,
+            errorMessage: localizedImage.errorMessage,
+            status: localizedImage.reviewStatus === "failed" ? "failed" : "generated",
+          }
+        : image,
+    );
+  } catch (error) {
+    const errorMessage = formatImageGenerationError(error);
+    stageMessage = `图片 ${imageIndex + 1} 重新生成失败：${errorMessage}`;
+    nextImageList = currentItem.imageList.map((image, index) =>
+      index === imageIndex
+        ? {
+            ...image,
+            errorMessage,
+            status: "failed",
+          }
+        : image,
+    );
+  }
+  const failedCount = nextImageList.filter((image) => image.status === "failed").length;
   const next = mapItems(record, (item) => {
     if (item.id !== itemId) return item;
     return {
@@ -1347,22 +1363,72 @@ export async function retryContentPoolItemImage(taskId: string, itemId: string, 
           images: nextImageList,
         },
       },
-      stageLog: [...(item.stageLog ?? []), { stage: "finalizing", message: `已重试图片 ${imageIndex + 1}。`, at: timestamp }],
+      stageLog: [...(item.stageLog ?? []), { stage: "finalizing", message: stageMessage, at: timestamp }],
       updatedAt: timestamp,
     };
   });
   return saveContentPool(next);
 }
 
-export async function retryAllFailedContentPoolImages(taskId: string) {
+interface RetryAllFailedContentPoolImagesOptions {
+  markRunningOnly?: boolean;
+}
+
+function markContentPoolImagesRegenerating(record: ContentPoolRecord, targets: Array<{ itemId: string; imageId: string }>, timestamp: string) {
+  const targetKeys = new Set(targets.map((target) => `${target.itemId}:${target.imageId}`));
+  return mapItems(record, (item) => {
+    const hasTargets = targets.some((target) => target.itemId === item.id);
+    if (!hasTargets) return item;
+    const nextImageList = item.imageList.map((image) =>
+      targetKeys.has(`${item.id}:${image.id}`)
+        ? {
+            ...image,
+            errorMessage: undefined,
+            status: "regenerating" as const,
+          }
+        : image,
+    );
+    return {
+      ...item,
+      imageList: nextImageList,
+      pipeline: {
+        ...item.pipeline,
+        imageGeneration: {
+          ...item.pipeline.imageGeneration,
+          status: "processing",
+          images: nextImageList,
+        },
+      },
+      stageLog: [...(item.stageLog ?? []), { stage: "finalizing", message: "开始重生失败图片，完成后会自动刷新状态。", at: timestamp }],
+      updatedAt: timestamp,
+    };
+  });
+}
+
+export async function retryAllFailedContentPoolImages(taskId: string, options: RetryAllFailedContentPoolImagesOptions = {}) {
   const record = await getContentPool(taskId);
   if (!record) throw new Error("内容池不存在。");
 
   const targets = record.items.flatMap((item) =>
-    item.imageList.filter((image) => image.status === "failed").map((image) => ({ itemId: item.id, imageId: image.id })),
+    item.imageList
+      .filter((image) => image.status === "failed" || image.status === "regenerating")
+      .map((image) => ({ itemId: item.id, imageId: image.id })),
   );
 
-  let currentRecord = record;
+  const timestamp = new Date().toISOString();
+  const markedRecord = targets.length ? await saveContentPool(markContentPoolImagesRegenerating(record, targets, timestamp)) : record;
+
+  if (options.markRunningOnly) {
+    return {
+      current: markedRecord,
+      totalFailedImages: targets.length,
+      retriedImages: 0,
+      remainingFailedImages: targets.length,
+      errors: [],
+    };
+  }
+
+  let currentRecord = markedRecord;
   let retriedImages = 0;
   const errors: Array<{ itemId: string; imageId: string; message: string }> = [];
 
@@ -1393,6 +1459,16 @@ export async function retryAllFailedContentPoolImages(taskId: string) {
     remainingFailedImages,
     errors,
   };
+}
+
+export async function startRetryAllFailedContentPoolImages(taskId: string) {
+  const marked = await retryAllFailedContentPoolImages(taskId, { markRunningOnly: true });
+  if (marked.totalFailedImages > 0) {
+    void retryAllFailedContentPoolImages(taskId).catch((error) => {
+      console.error("[content-pool] retry all failed images failed", error);
+    });
+  }
+  return marked;
 }
 
 async function runRetryFailedContentPoolItems(taskId: string) {

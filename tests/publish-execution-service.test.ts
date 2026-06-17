@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ContentPoolItem, ContentPoolRecord, PublishingJobRecord, TaskRecord } from "@/lib/types";
+import type { ContentPoolItem, ContentPoolRecord, PlatformAccountRecord, PublishingJobRecord, TaskRecord } from "@/lib/types";
 
 let tempDataDir: string | undefined;
 
@@ -129,6 +129,23 @@ function publishingJob(patch: Partial<PublishingJobRecord> = {}): PublishingJobR
     publishedAt: "2026-06-10T10:00:00.000Z",
     createdAt: "2026-06-10T10:00:00.000Z",
     updatedAt: "2026-06-10T10:00:00.000Z",
+    ...patch,
+  };
+}
+
+function platformAccount(patch: Partial<PlatformAccountRecord> = {}): PlatformAccountRecord {
+  return {
+    id: "new-account",
+    platform: "xiaohongshu",
+    provider: "electron",
+    authType: "session",
+    accountName: "Account",
+    status: "active",
+    riskState: "active",
+    loginStatus: "authenticated",
+    sessionPartition: "persist:test",
+    createdAt: "2026-06-12T10:00:00.000Z",
+    updatedAt: "2026-06-12T10:00:00.000Z",
     ...patch,
   };
 }
@@ -297,6 +314,9 @@ describe("publish execution state", () => {
         finishedAt: "2026-06-12T10:05:00.000Z",
         queueBlockedReason: "account_daily_cap_reached",
         nextRunAt: "2026-06-13T09:00:00.000Z",
+        backoffUntil: "2026-06-13T09:30:00.000Z",
+        retryCount: 3,
+        maxRetries: 3,
         verificationEvidence: "success_then_blocking",
       }),
     );
@@ -312,6 +332,9 @@ describe("publish execution state", () => {
     expect(job?.finishedAt).toBeUndefined();
     expect(job?.queueBlockedReason).toBeUndefined();
     expect(job?.nextRunAt).toBeUndefined();
+    expect(job?.backoffUntil).toBeUndefined();
+    expect(job?.retryCount).toBe(0);
+    expect(job?.maxRetries).toBe(3);
     expect(job?.verificationEvidence).toBe("manual_not_published");
     expect(job?.notes).toContain("人工核查确认平台未发布");
     expect(pool?.items[0]?.status).toBe("pending_publish");
@@ -510,5 +533,49 @@ describe("publish execution state", () => {
     const jobs = await dataStore.getPublishingJobsByTask("task-1");
     expect(record?.items.find((item) => item.id === "task-1-0002")?.plannedPublishTime).toBe(manualOverrideTime);
     expect(jobs.find((job) => job.id === "manual-override-job")?.plannedPublishTime).toBe(manualOverrideTime);
+  });
+
+  it("repairs account_not_found jobs by rebinding them to a selected current platform account", async () => {
+    const { dataStore, executionService } = await loadIsolatedServices();
+
+    await dataStore.savePlatformAccount(platformAccount({ id: "replacement-account", accountName: "Replacement Account" }));
+    await dataStore.saveContentPool(
+      contentPool({
+        items: [
+          contentItem({
+            accountId: "deleted-account",
+            accountName: "Deleted Account",
+          }),
+        ],
+      }),
+    );
+    await dataStore.savePublishingJob(
+      publishingJob({
+        id: "stale-account-job",
+        platform: "xiaohongshu",
+        accountId: "deleted-account",
+        accountName: "Deleted Account",
+        plannedPublishTime: "2026-06-12T09:00:00.000Z",
+        status: "queued",
+        queueBlockedReason: "account_not_found",
+        nextRunAt: "2026-06-12T09:30:00.000Z",
+        executionStage: "account_not_found",
+        publishedAt: undefined,
+      }),
+    );
+
+    const state = await executionService.repairPublishingJobAccountBinding("stale-account-job", "replacement-account");
+    const job = (await dataStore.getPublishingJobsByTask("task-1")).find((item) => item.id === "stale-account-job");
+    const pool = await dataStore.getContentPool("task-1");
+
+    expect(job?.accountId).toBe("replacement-account");
+    expect(job?.accountName).toBe("Replacement Account");
+    expect(job?.queueBlockedReason).toBeUndefined();
+    expect(job?.nextRunAt).toBeUndefined();
+    expect(job?.executionStage).toBe("queued");
+    expect(pool?.items[0]?.accountId).toBe("replacement-account");
+    expect(pool?.items[0]?.accountName).toBe("Replacement Account");
+    expect(state.currentArticle?.job?.id).toBe("stale-account-job");
+    expect(state.currentArticle?.canRun).toBe(true);
   });
 });

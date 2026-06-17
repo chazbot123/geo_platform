@@ -482,4 +482,25 @@ describe("generateArticleForContentPool", () => {
     expect(result.item.stageLog?.some((entry) => entry.message.includes("图片模型认证失败"))).toBe(true);
     expect(result.item.stageLog?.some((entry) => entry.message.includes("IMAGE_API_401"))).toBe(false);
   });
+
+  it("localizes image api 524 gateway timeout errors", async () => {
+    payloadQueue = Array.from({ length: 5 }, () => ({
+      title: "正常标题",
+      summary: "正常摘要",
+      body: "正文包含判断标准和适用场景。",
+      imagePrompt: "配图提示",
+      riskLevel: "low",
+      tags: ["标签"],
+      notes: [],
+    }));
+    vi.mocked(runImageModel).mockRejectedValueOnce(new Error("IMAGE_API_524: openai_error"));
+
+    const result = await generateArticleForContentPool(createContext());
+
+    expect(result.item.status).toBe("pending_publish");
+    expect(result.item.pipeline.imageGeneration.status).toBe("needs_action");
+    expect(result.item.imageList[0]?.errorMessage).toContain("图片服务网关超时");
+    expect(result.item.stageLog?.some((entry) => entry.message.includes("图片服务网关超时"))).toBe(true);
+    expect(result.item.stageLog?.some((entry) => entry.message.includes("IMAGE_API_524"))).toBe(false);
+  });
 });

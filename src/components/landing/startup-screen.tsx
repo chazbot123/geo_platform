@@ -30,7 +30,6 @@ function renderBounceChars(text: string, startIndex = 0) {
 
 export function StartupScreen() {
   const router = useRouter();
-  const [termsAccepted, setTermsAccepted] = useState(false);
   const [isNavigating, setIsNavigating] = useState(false);
   const navigationTimerRef = useRef<number | null>(null);
   const fallbackTimerRef = useRef<number | null>(null);
@@ -60,7 +59,6 @@ export function StartupScreen() {
     if (isNavigating) {
       return;
     }
-    setTermsAccepted(true);
     window.localStorage.setItem(TERMS_STORAGE_KEY, new Date().toISOString());
     setIsNavigating(true);
     navigationTimerRef.current = window.setTimeout(() => {
@@ -104,7 +102,7 @@ export function StartupScreen() {
             <span className="geo-startup-bounce-text">{renderBounceChars(HERO_SUFFIX_TEXT, HERO_PREFIX_TEXT.length)}</span>
           </h1>
 
-          <div className="geo-startup-copy-2 mt-12">
+          <div className="geo-startup-copy-2 mt-12 flex flex-col items-center gap-4">
             <button
               type="button"
               onClick={handleStart}
@@ -118,26 +116,14 @@ export function StartupScreen() {
               {isNavigating ? "正在进入" : "立即使用"}
               <ArrowRight className="h-4 w-4" />
             </button>
-          </div>
-        </section>
-
-        <div className="geo-startup-copy-3 absolute bottom-0 right-0 px-0 py-0 text-right">
-          <label className="flex items-center justify-end gap-2 text-[11px] leading-5 text-muted sm:text-xs">
-            <span className="whitespace-nowrap text-right">
-              即表示同意
+            <p className="max-w-[22rem] text-center text-xs leading-5 text-muted">
+              点击「立即使用」即表示你已阅读并同意
               <Link className="mx-1 font-medium text-accent underline underline-offset-4 transition hover:text-accent-soft" href="/service-terms">
                 极EO服务条款
               </Link>
-            </span>
-            <input
-              type="checkbox"
-              checked={termsAccepted}
-              onChange={(event) => setTermsAccepted(event.target.checked)}
-              className="h-3.5 w-3.5 shrink-0 rounded border-stroke text-accent focus:ring-accent/30"
-              aria-label="同意 GEO 服务条款"
-            />
-          </label>
-        </div>
+            </p>
+          </div>
+        </section>
       </div>
     </main>
   );

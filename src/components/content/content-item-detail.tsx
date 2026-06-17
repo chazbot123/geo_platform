@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { ArrowLeft, ImageIcon } from "lucide-react";
+import { ArrowLeft, ImageIcon, RefreshCw } from "lucide-react";
 import type { ContentPoolItem, ContentPoolRiskLevel, ContentPoolItemStatus } from "@/lib/types";
 import { DEFAULT_EXPECTED_IMAGE_COUNT } from "@/lib/tasks/constants";
 
@@ -34,6 +34,7 @@ interface DetailResponse {
 }
 
 type ItemAction = "rewrite" | "confirm_medium" | "disperse" | "retry_image";
+const IMAGE_PREVIEW_LIMIT = 4;
 
 function formatDateTime(value?: string) {
   if (!value) return "未记录";
@@ -53,6 +54,8 @@ export function ContentItemDetail({ itemId }: { itemId: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [submittingAction, setSubmittingAction] = useState<ItemAction | null>(null);
+  const [showImagePrompt, setShowImagePrompt] = useState(false);
+  const [showAllImages, setShowAllImages] = useState(false);
 
   async function loadDetail(options?: { silent?: boolean }) {
     if (!options?.silent) {
@@ -77,10 +80,13 @@ export function ContentItemDetail({ itemId }: { itemId: string }) {
 
   useEffect(() => {
     void loadDetail();
+    setShowImagePrompt(false);
+    setShowAllImages(false);
   }, [itemId, taskId]);
 
   useEffect(() => {
-    if (!item || (item.status !== "pending_generation" && item.status !== "generating")) {
+    const hasRegeneratingImages = Boolean(item?.imageList.some((image) => image.status === "regenerating"));
+    if (!item || (item.status !== "pending_generation" && item.status !== "generating" && !hasRegeneratingImages)) {
       return;
     }
     const timer = window.setInterval(() => {
@@ -138,8 +144,17 @@ export function ContentItemDetail({ itemId }: { itemId: string }) {
     );
   }
 
-  const generatedImages = item.imageList.filter((image) => image.status !== "failed");
+  const generatedImages = item.imageList.filter((image) => image.status === "generated" || image.status === "pending");
   const failedImages = item.imageList.filter((image) => image.status === "failed");
+  const regeneratingImages = item.imageList.filter((image) => image.status === "regenerating");
+  const hasRegeneratingImages = regeneratingImages.length > 0;
+  const visiblePreviewImageIds = new Set(
+    (showAllImages ? item.imageList : item.imageList.slice(0, IMAGE_PREVIEW_LIMIT)).map((image) => image.id),
+  );
+  const visibleGeneratedImages = generatedImages.filter((image) => visiblePreviewImageIds.has(image.id));
+  const visibleFailedImages = failedImages.filter((image) => visiblePreviewImageIds.has(image.id));
+  const visibleRegeneratingImages = regeneratingImages.filter((image) => visiblePreviewImageIds.has(image.id));
+  const hiddenImageCount = Math.max(item.imageList.length - IMAGE_PREVIEW_LIMIT, 0);
   return (
     <div className="space-y-5">
       <Link className="inline-flex items-center gap-2 text-sm font-medium text-muted transition hover:text-ink" href={`/content-pool${taskId ? `?taskId=${encodeURIComponent(taskId)}` : ""}`}>
@@ -183,16 +198,26 @@ export function ContentItemDetail({ itemId }: { itemId: string }) {
               <ImageIcon className="h-4 w-4 text-accent" />
               <h3 className="page-section-title">图片</h3>
             </div>
-            <p className="mt-3 text-sm leading-6 text-muted">{item.imagePrompt || "暂无图片提示。"}</p>
             <p className="mt-3 text-xs text-muted">目标图片数量：{item.expectedImageCount ?? DEFAULT_EXPECTED_IMAGE_COUNT}</p>
             <p className="mt-1 text-xs text-muted">当前已生成：{item.imageList.length}</p>
+            <p className="mt-1 text-xs text-muted">成功：{generatedImages.length} / 失败：{failedImages.length} / 重生中：{regeneratingImages.length}</p>
             <p className="mt-2 text-xs text-muted">本篇文章图片数量已在登录账号/创建任务页锁定，这里仅展示当前数量。</p>
+            <button
+              type="button"
+              className="mt-3 rounded-md border border-line px-3 py-2 text-xs font-medium text-ink transition hover:border-accent"
+              onClick={() => showImagePrompt ? setShowImagePrompt(false) : setShowImagePrompt(true)}
+            >
+              {showImagePrompt ? "收起图片生成提示词" : "查看图片生成提示词"}
+            </button>
+            {showImagePrompt ? (
+              <p className="mt-3 rounded-md border border-line bg-surface px-3 py-2 text-xs leading-5 text-muted">{item.imagePrompt || "暂无图片提示。"}</p>
+            ) : null}
 
-            {generatedImages.length ? (
+            {visibleGeneratedImages.length ? (
               <div className="mt-4">
                 <p className="mb-2 text-xs font-medium uppercase tracking-wider text-emerald-400">成功图片</p>
                 <div className="grid grid-cols-2 gap-3">
-                  {generatedImages.slice(0, 4).map((image) => (
+                  {visibleGeneratedImages.map((image) => (
                     <div key={image.id} className="overflow-hidden rounded-md border border-emerald-500/20 bg-surface">
                       {image.url ? (
                         <a href={image.url} target="_blank" rel="noreferrer">
@@ -208,11 +233,11 @@ export function ContentItemDetail({ itemId }: { itemId: string }) {
               </div>
             ) : null}
 
-            {failedImages.length ? (
+            {visibleFailedImages.length ? (
               <div className="mt-4">
                 <p className="mb-2 text-xs font-medium uppercase tracking-wider text-danger">失败图片</p>
                 <div className="grid grid-cols-2 gap-3">
-                  {failedImages.slice(0, 4).map((image) => (
+                  {visibleFailedImages.map((image) => (
                     <div key={image.id} className="overflow-hidden rounded-md border border-danger/20 bg-surface">
                       <div className="flex h-24 items-center justify-center bg-panel text-xs text-muted">生成失败</div>
                       <div className="px-2 py-2 text-xs text-muted">
@@ -231,6 +256,36 @@ export function ContentItemDetail({ itemId }: { itemId: string }) {
                   ))}
                 </div>
               </div>
+            ) : null}
+
+            {visibleRegeneratingImages.length ? (
+              <div className="mt-4">
+                <p className="mb-2 text-xs font-medium uppercase tracking-wider text-blue-600">重生中图片</p>
+                <div className="grid grid-cols-2 gap-3">
+                  {visibleRegeneratingImages.map((image) => (
+                    <div key={image.id} className="overflow-hidden rounded-md border border-blue-500/20 bg-surface">
+                      <div className="flex h-24 flex-col items-center justify-center gap-2 bg-panel text-xs text-muted">
+                        <RefreshCw className="h-4 w-4 animate-spin text-blue-600" />
+                        <span>正在重新生成</span>
+                      </div>
+                      <div className="px-2 py-2 text-xs text-muted">
+                        <p>状态：正在重新生成</p>
+                        <p className="mt-1 line-clamp-2">提示词：{image.prompt}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {hiddenImageCount > 0 ? (
+              <button
+                type="button"
+                className="mt-4 w-full rounded-md border border-line px-3 py-2 text-xs font-medium text-ink transition hover:border-accent"
+                onClick={() => setShowAllImages((current) => !current)}
+              >
+                {showAllImages ? "收起图片" : `展开全部图片（还有 ${hiddenImageCount} 张）`}
+              </button>
             ) : null}
           </section>
 

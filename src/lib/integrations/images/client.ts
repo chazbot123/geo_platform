@@ -18,7 +18,7 @@ const DEFAULT_IMAGE_TIMEOUT_MS = 150000;
 
 const IMAGE_RETRY_RATE_LIMIT_DELAYS_MS = [1500, 4000, 8000];
 const IMAGE_RETRY_TRANSIENT_DELAYS_MS = [500, 1500, 3000];
-const IMAGE_RETRYABLE_HTTP_STATUSES = new Set([429, 502, 503, 504]);
+const IMAGE_RETRYABLE_HTTP_STATUSES = new Set([429, 502, 503, 504, 524]);
 
 function imageRetryJitter(ms: number) {
   return Math.round(ms * (0.85 + Math.random() * 0.3));

@@ -96,6 +96,10 @@ function failedImageCount(item: ContentPoolItem) {
   return item.imageList.filter((image) => image.status === "failed").length;
 }
 
+function regeneratingImageCount(item: ContentPoolItem) {
+  return item.imageList.filter((image) => image.status === "regenerating").length;
+}
+
 function matchesGenerationResultSearch(item: ContentPoolItem, account: PlatformAccountRecord | undefined, searchQuery: string) {
   const keyword = searchQuery.trim().toLowerCase();
   if (!keyword) return true;
@@ -154,6 +158,7 @@ function AccountIdentity({ account, fallback }: { account?: PlatformAccountRecor
 
 function ArticleRow({ item, taskId, account }: { item: ContentPoolItem; taskId: string; account?: PlatformAccountRecord }) {
   const failedImages = failedImageCount(item);
+  const regeneratingImages = regeneratingImageCount(item);
   return (
     <Link
       className={`grid gap-3 border-b border-line px-4 py-3 text-sm transition hover:bg-panelSoft lg:items-center ${articleTableGridClass} ${articleTableMinWidthClass}`}
@@ -163,7 +168,14 @@ function ArticleRow({ item, taskId, account }: { item: ContentPoolItem; taskId: 
       <span className="min-w-0">
         <span className="flex min-w-0 items-center gap-2">
           <span className="block truncate font-medium text-ink">{item.title || item.stageMessage || "等待生成结果"}</span>
-          {failedImages > 0 ? (
+          {regeneratingImages > 0 ? (
+            <span
+              className="inline-flex shrink-0 items-center rounded-full border border-blue-500/30 bg-blue-500/10 px-1.5 py-1 text-blue-700 dark:text-blue-300"
+              title={`有 ${regeneratingImages} 张图片正在重新生成`}
+            >
+              <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+            </span>
+          ) : failedImages > 0 ? (
             <span
               className="inline-flex shrink-0 items-center rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-1 text-amber-700 dark:text-amber-300"
               title={`有 ${failedImages} 张图片生成失败`}
@@ -211,6 +223,7 @@ export function ContentPoolWorkbench() {
   const accountsById = useMemo(() => new Map(accounts.map((account) => [account.id, account])), [accounts]);
   const retryableFailedItems = items.filter((item) => item.status === "failed" || item.riskLevel === "high");
   const failedImageTotal = items.reduce((total, item) => total + failedImageCount(item), 0);
+  const regeneratingImageTotal = items.reduce((total, item) => total + regeneratingImageCount(item), 0);
   const statusFilteredItems = statusFilter === "all" ? items : items.filter((item) => item.status === statusFilter);
   const searchFilteredItems = statusFilteredItems.filter((item) => matchesGenerationResultSearch(item, accountsById.get(item.accountId), resultSearchQuery));
   const filteredItems = searchFilteredItems;
@@ -265,9 +278,9 @@ export function ContentPoolWorkbench() {
   }, [requestedTaskId]);
 
   const shouldAutoRefresh = Boolean(
-    task?.status === "generation_queued" ||
+      task?.status === "generation_queued" ||
       task?.status === "generation_running" ||
-      current?.items.some((item) => item.status === "pending_generation" || item.status === "generating"),
+      current?.items.some((item) => item.status === "pending_generation" || item.status === "generating" || item.imageList.some((image) => image.status === "regenerating")),
   );
 
   useEffect(() => {
@@ -321,7 +334,7 @@ export function ContentPoolWorkbench() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           taskId: visibleRecord.taskId,
-          action: "retry_all_failed_images",
+          action: "retry_all_failed_images_async",
         }),
       });
       const data = (await response.json()) as {
@@ -333,7 +346,7 @@ export function ContentPoolWorkbench() {
       if (!response.ok) {
         throw new Error(data.error || "重生失败图片时出错。");
       }
-      setNotice(`已重生 ${data.retriedImages ?? 0}/${data.totalFailedImages ?? failedImageTotal} 张失败图片，剩余 ${data.remainingFailedImages ?? 0} 张。`);
+      setNotice(`已开始重生 ${data.totalFailedImages ?? failedImageTotal} 张失败图片，完成后会自动刷新结果。`);
       await loadStatus({ silent: true });
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "重生失败图片时出错。");
@@ -367,7 +380,11 @@ export function ContentPoolWorkbench() {
             <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted">第 4 步</p>
             <h2 className="page-section-title mt-2">生成结果</h2>
             <p className="page-section-desc">查看当前任务的文章生成进度和最终结果；生成完成后系统会按计划时间自动发布。</p>
-            {shouldAutoRefresh ? <p className="mt-2 text-xs text-blue-600">后台正在持续生成，列表会自动刷新。</p> : null}
+            {shouldAutoRefresh ? (
+              <p className="mt-2 text-xs text-blue-600">
+                {regeneratingImageTotal > 0 ? `正在重生失败图片（${regeneratingImageTotal}），列表会自动刷新。` : "后台正在持续生成，列表会自动刷新。"}
+              </p>
+            ) : null}
           </div>
           <div className="flex flex-wrap gap-2">
             <button
@@ -382,11 +399,11 @@ export function ContentPoolWorkbench() {
               <button
                 type="button"
                 className="inline-flex items-center gap-2 rounded-md border border-amber-500/30 px-3 py-2 text-sm font-medium text-amber-700 hover:border-amber-500 disabled:cursor-not-allowed disabled:opacity-60 dark:text-amber-300"
-                disabled={retryingImages || shouldAutoRefresh}
+                disabled={retryingImages || regeneratingImageTotal > 0 || shouldAutoRefresh}
                 onClick={() => void retryFailedImages()}
               >
-                <ImageOff className="h-4 w-4" />
-                {retryingImages ? "正在重生失败图片..." : `重生失败图片（${failedImageTotal}）`}
+                {retryingImages || regeneratingImageTotal > 0 ? <RefreshCw className="h-4 w-4 animate-spin" /> : <ImageOff className="h-4 w-4" />}
+                {retryingImages || regeneratingImageTotal > 0 ? `正在重生失败图片（${regeneratingImageTotal || failedImageTotal}）` : `重生失败图片（${failedImageTotal}）`}
               </button>
             ) : null}
             {retryableFailedItems.length > 0 ? (

@@ -3,6 +3,7 @@ import {
   getPublishExecutionState,
   markArticleManualNotPublished,
   markArticleManualPublished,
+  repairPublishingJobAccountBinding,
   runNextPublishArticle,
 } from "@/lib/publish/execution-service";
 import { runDuePublishingJobs } from "@/lib/publish/publish-queue-service";
@@ -23,9 +24,10 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const body = (await request.json().catch(() => ({}))) as {
-      action?: "run_next" | "mark_manual_published" | "mark_manual_not_published" | "run_due";
+      action?: "run_next" | "mark_manual_published" | "mark_manual_not_published" | "repair_account_binding" | "run_due";
       taskId?: string;
       jobId?: string;
+      accountId?: string;
       publishUrl?: string;
     };
 
@@ -44,7 +46,14 @@ export async function POST(request: Request) {
     }
 
     if (body.action === "run_due") {
-      return NextResponse.json(await runDuePublishingJobs());
+      return NextResponse.json(await runDuePublishingJobs(new Date(), { taskId: body.taskId }));
+    }
+
+    if (body.action === "repair_account_binding") {
+      if (!body.jobId || !body.accountId) {
+        return NextResponse.json({ error: "缺少发布任务或账号。"}, { status: 400 });
+      }
+      return NextResponse.json(await repairPublishingJobAccountBinding(body.jobId, body.accountId));
     }
 
     return NextResponse.json(await runNextPublishArticle(body.taskId));

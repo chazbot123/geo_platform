@@ -14,6 +14,7 @@ import {
   RotateCcw,
   Search,
   UserCircle2,
+  Wrench,
   X,
 } from "lucide-react";
 import { dispatchWorkflowStatusRefresh } from "@/components/layout/app-shell";
@@ -104,7 +105,7 @@ const queueReasonLabels: Record<string, string> = {
 };
 
 const executionTableGridClass =
-  "lg:grid-cols-[52px_minmax(320px,1.7fr)_88px_96px_minmax(130px,0.8fr)_112px_112px_112px]";
+  "lg:grid-cols-[52px_minmax(320px,1.7fr)_88px_96px_minmax(150px,0.85fr)_112px_112px_112px]";
 const executionTableMinWidthClass = "lg:min-w-[1120px]";
 
 interface ExecutionArticle {
@@ -128,6 +129,16 @@ interface ExecutionState {
   };
   currentArticle: ExecutionArticle | null;
   latestExecutionTime: string | null;
+  error?: string;
+}
+
+interface RunDueResult {
+  checked: number;
+  runnable: number;
+  executed: number;
+  skipped: number;
+  blocked?: Array<{ jobId: string; reason: string; nextRunAt?: string }>;
+  results?: Array<{ jobId: string; status: PublishingJobRecord["status"] }>;
   error?: string;
 }
 
@@ -273,7 +284,7 @@ function canRenderInlineAvatar(url?: string) {
 function AccountIdentity({ account, fallback }: { account?: PlatformAccountRecord; fallback?: string }) {
   const label = accountDisplayName(account, fallback);
   return (
-    <span className="flex min-w-0 items-center gap-2 text-muted">
+    <span className="flex max-w-full min-w-0 items-center gap-2 text-muted" title={label}>
       {account && canRenderInlineAvatar(account.avatarUrl) ? (
         <img
           src={account.avatarUrl}
@@ -338,6 +349,28 @@ function articleStageText(article: ExecutionArticle, job?: PublishingJobRecord) 
   return stageLabel(article.stage);
 }
 
+function buildRunDueSummary(result: RunDueResult) {
+  const blockedReasonSummary = (result.blocked ?? [])
+    .slice(0, 3)
+    .map((item) => queueLabel(item.reason))
+    .join("、");
+  const suffix = blockedReasonSummary ? `；跳过原因：${blockedReasonSummary}` : "";
+  if (result.executed > 0) {
+    return `本次执行到点任务 ${result.executed} 篇，跳过 ${result.skipped} 篇${suffix}`;
+  }
+  if (result.checked === 0) {
+    return "本次没有发现当前批次内已到计划时间的待执行任务。";
+  }
+  return `本次没有执行新任务，检查 ${result.checked} 篇，跳过 ${result.skipped} 篇${suffix}`;
+}
+
+function isPublishableAccountCandidate(account: PlatformAccountRecord) {
+  return (
+    account.loginStatus === "authenticated" &&
+    (account.status === "active" || account.status === "valid" || account.riskState === "active")
+  );
+}
+
 function buildLoginPatch(loginResult: Awaited<ReturnType<typeof openPlatformLoginWindow>>) {
   return {
     loginStatus: "authenticated" as const,
@@ -360,7 +393,14 @@ function ArticleRow({
   onManualDone,
   onManualNotPublished,
   onLogin,
+  accountCandidates,
+  selectedRepairAccountId,
+  onRepairAccountChange,
+  onRepairAccountBinding,
   progress,
+  requeueing,
+  repairing,
+  highlighted,
 }: {
   article: ExecutionArticle;
   account?: PlatformAccountRecord;
@@ -371,7 +411,14 @@ function ArticleRow({
   onManualDone: (jobId: string) => void;
   onManualNotPublished: (jobId: string) => void;
   onLogin: (article: ExecutionArticle) => void;
+  accountCandidates: PlatformAccountRecord[];
+  selectedRepairAccountId: string;
+  onRepairAccountChange: (jobId: string, accountId: string) => void;
+  onRepairAccountBinding: (jobId: string) => void;
   progress?: PublishProgressSnapshot;
+  requeueing?: boolean;
+  repairing?: boolean;
+  highlighted?: boolean;
 }) {
   const item = article.item;
   const job = article.job;
@@ -379,9 +426,14 @@ function ArticleRow({
   const materialIssue = isMaterialIssue(job);
   const manualConfirmation = needsManualConfirmation(job);
   const canManualConfirm = Boolean(job && !article.published && !needsLogin && !materialIssue);
+  const accountNotFound = job?.queueBlockedReason === "account_not_found";
 
   return (
-    <article className={`border-b border-line last:border-b-0 ${executionTableMinWidthClass}`}>
+    <article
+      className={`border-b border-line last:border-b-0 ${executionTableMinWidthClass} ${
+        highlighted ? "bg-accent/5 ring-2 ring-accent/40 ring-inset" : ""
+      }`}
+    >
       <div className={`grid gap-3 px-4 py-4 text-sm lg:items-center ${executionTableGridClass}`}>
         <span className="text-muted">#{item.sequence}</span>
         <span className="min-w-0 pr-4">
@@ -473,11 +525,11 @@ function ArticleRow({
                 <button
                   type="button"
                   className="inline-flex items-center justify-center gap-2 rounded-md border border-line px-3 py-2 text-sm font-medium text-ink hover:border-accent disabled:opacity-60"
-                  disabled={busy}
+                  disabled={busy || requeueing}
                   onClick={() => onManualNotPublished(job.id)}
                 >
-                  <RotateCcw className="h-4 w-4" />
-                  确认未发布，重新发布
+                  {requeueing ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
+                  {requeueing ? "正在重新加入发布队列" : "确认未发布，重新发布"}
                 </button>
                 <button
                   type="button"
@@ -492,6 +544,48 @@ function ArticleRow({
             </div>
           ) : null}
           {job.notes ? <p className="mt-3 whitespace-pre-line text-xs leading-5 text-muted">{translateMessage(job.notes)}</p> : null}
+        </div>
+      ) : null}
+
+      {job && accountNotFound ? (
+        <div className="mx-4 mb-4 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-3">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-ink">发布账号不存在，需要修复绑定</p>
+              <p className="mt-1 text-xs leading-5 text-muted">
+                这篇文章绑定的是已删除或失效账号。请选择一个当前可用的{platformLabels[item.publishPlatform]}账号，系统会修复绑定并重新执行发布。
+              </p>
+            </div>
+            <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
+              <select
+                className="h-10 min-w-[220px] rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none focus:border-accent disabled:opacity-60"
+                value={selectedRepairAccountId}
+                disabled={repairing || accountCandidates.length === 0}
+                onChange={(event) => onRepairAccountChange(job.id, event.target.value)}
+              >
+                <option value="">选择当前平台账号</option>
+                {accountCandidates.map((candidate) => (
+                  <option key={candidate.id} value={candidate.id}>
+                    {accountDisplayName(candidate, candidate.id)}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-accent px-3 text-sm font-medium text-white disabled:opacity-60"
+                disabled={repairing || !selectedRepairAccountId}
+                onClick={() => onRepairAccountBinding(job.id)}
+              >
+                {repairing ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Wrench className="h-4 w-4" />}
+                修复并发布
+              </button>
+            </div>
+          </div>
+          {accountCandidates.length === 0 ? (
+            <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">
+              当前没有可用的{platformLabels[item.publishPlatform]}账号，请先到账号中心重新登录或绑定账号。
+            </p>
+          ) : null}
         </div>
       ) : null}
 
@@ -534,8 +628,13 @@ export function PublishExecutionWorkbench() {
   const [notice, setNotice] = useState("");
   const [manualUrls, setManualUrls] = useState<Record<string, string>>({});
   const [pendingNotPublishedJobId, setPendingNotPublishedJobId] = useState("");
+  const [requeueingJobId, setRequeueingJobId] = useState("");
+  const [pendingLoginArticleId, setPendingLoginArticleId] = useState("");
   const [liveProgress, setLiveProgress] = useState<Record<string, PublishProgressSnapshot>>({});
   const [resultSearchQuery, setResultSearchQuery] = useState("");
+  const [runTargetArticleId, setRunTargetArticleId] = useState("");
+  const [repairAccountSelections, setRepairAccountSelections] = useState<Record<string, string>>({});
+  const [repairingJobId, setRepairingJobId] = useState("");
 
   const articles = state?.articles ?? [];
   const accountsById = useMemo(() => new Map(accounts.map((account) => [account.id, account])), [accounts]);
@@ -546,6 +645,9 @@ export function PublishExecutionWorkbench() {
   const currentArticle = state?.currentArticle ?? null;
   const pendingNotPublishedArticle = pendingNotPublishedJobId
     ? articles.find((article) => article.job?.id === pendingNotPublishedJobId)
+    : null;
+  const pendingLoginArticle = pendingLoginArticleId
+    ? articles.find((article) => article.item.id === pendingLoginArticleId)
     : null;
   const loginRequiredArticle =
     articles.find((article) => accountNeedsLogin(article, article.job?.accountId ? accountsById.get(article.job.accountId) : undefined)) ??
@@ -559,6 +661,17 @@ export function PublishExecutionWorkbench() {
     () => articles.map((article) => article.job).filter((job): job is PublishingJobRecord => Boolean(job?.sessionToken && job.status === "running")),
     [articles],
   );
+
+  const accountRepairCandidatesByPlatform = useMemo(() => {
+    const map = new Map<SocialPlatform, PlatformAccountRecord[]>();
+    for (const account of accounts) {
+      if (!isPublishableAccountCandidate(account)) continue;
+      const current = map.get(account.platform) ?? [];
+      current.push(account);
+      map.set(account.platform, current);
+    }
+    return map;
+  }, [accounts]);
 
   async function loadState(options?: { silent?: boolean }) {
     if (!options?.silent) setLoading(true);
@@ -675,6 +788,17 @@ export function PublishExecutionWorkbench() {
     }
   }
 
+  function openLoginConfirmDialog(article: ExecutionArticle) {
+    setPendingLoginArticleId(article.item.id);
+  }
+
+  async function confirmLoginAndContinue() {
+    const target = pendingLoginArticle;
+    if (!target) return;
+    setPendingLoginArticleId("");
+    await startAccountLogin(target);
+  }
+
   async function runNext() {
     const targetLoginArticle = currentArticle
       ? accountNeedsLogin(currentArticle, currentArticle.job?.accountId ? accountsById.get(currentArticle.job.accountId) : undefined)
@@ -683,8 +807,7 @@ export function PublishExecutionWorkbench() {
       : loginRequiredArticle;
 
     if (targetLoginArticle) {
-      const confirmed = window.confirm("当前发布账号登录已失效，需要先重新登录。是否现在打开登录窗口？");
-      if (confirmed) await startAccountLogin(targetLoginArticle);
+      openLoginConfirmDialog(targetLoginArticle);
       return;
     }
 
@@ -694,26 +817,79 @@ export function PublishExecutionWorkbench() {
       return;
     }
 
+    setRunTargetArticleId(currentArticle?.item.id || "");
     setBusy(true);
     setError("");
-    setNotice("");
+    setNotice("正在执行当前批次已到计划时间的发布任务。");
     try {
       const response = await fetch("/api/publish/execution", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "run_next", taskId: state?.current?.taskId || requestedTaskId || undefined }),
+        body: JSON.stringify({ action: "run_due", taskId: state?.current?.taskId || requestedTaskId || undefined }),
       });
-      const data = (await response.json()) as ExecutionState;
-      if (!response.ok) throw new Error(data.error || "执行发布失败。");
-      setState(data);
-      const blockingReason = findBlockingReason(data);
-      setNotice(blockingReason ? `本次未执行：${blockingReason}` : "已记录当前文章执行结果。");
+      const result = (await response.json()) as RunDueResult;
+      if (!response.ok) throw new Error(result.error || "执行发布失败。");
+      setNotice(buildRunDueSummary(result));
       dispatchWorkflowStatusRefresh();
       await loadState({ silent: true });
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "执行发布失败。");
     } finally {
       setBusy(false);
+      setRunTargetArticleId("");
+    }
+  }
+
+  async function repairAccountBindingAndRun(jobId: string) {
+    const accountId = repairAccountSelections[jobId];
+    if (!accountId) {
+      setError("请先选择一个当前平台账号。");
+      return;
+    }
+
+    const licenseGuard = await requireLicensedAction("execute_publish");
+    if (!licenseGuard.allowed) {
+      setError(licenseGuard.message ?? "当前设备未授权，请先激活授权码。");
+      return;
+    }
+
+    setRepairingJobId(jobId);
+    setError("");
+    setNotice("正在修复发布账号绑定，并准备重新执行发布。");
+    try {
+      const repairResponse = await fetch("/api/publish/execution", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "repair_account_binding",
+          taskId: state?.current?.taskId || requestedTaskId || undefined,
+          jobId,
+          accountId,
+        }),
+      });
+      const repairData = (await repairResponse.json()) as ExecutionState;
+      if (!repairResponse.ok) throw new Error(repairData.error || "修复发布账号绑定失败。");
+      setState(repairData);
+      setRepairAccountSelections((current) => {
+        const next = { ...current };
+        delete next[jobId];
+        return next;
+      });
+
+      const runResponse = await fetch("/api/publish/execution", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "run_due", taskId: repairData.current?.taskId || state?.current?.taskId || requestedTaskId || undefined }),
+      });
+      const runResult = (await runResponse.json()) as RunDueResult;
+      if (!runResponse.ok) throw new Error(runResult.error || "修复后执行发布失败。");
+      setNotice(`账号绑定已修复。${buildRunDueSummary(runResult)}`);
+      dispatchWorkflowStatusRefresh();
+      await loadState({ silent: true });
+    } catch (currentError) {
+      setError(currentError instanceof Error ? currentError.message : "修复发布账号绑定失败。");
+    } finally {
+      setRepairingJobId("");
     }
   }
 
@@ -724,9 +900,10 @@ export function PublishExecutionWorkbench() {
       return;
     }
 
-    setBusy(true);
+    setPendingNotPublishedJobId("");
+    setRequeueingJobId(jobId);
     setError("");
-    setNotice("");
+    setNotice("正在重新加入发布队列，页面可继续操作。");
     try {
       const response = await fetch("/api/publish/execution", {
         method: "POST",
@@ -759,9 +936,11 @@ export function PublishExecutionWorkbench() {
       return;
     }
 
+    setPendingNotPublishedJobId("");
+    setRequeueingJobId(jobId);
     setBusy(true);
     setError("");
-    setNotice("");
+    setNotice("正在重新加入发布队列，页面可继续操作。");
     try {
       const response = await fetch("/api/publish/execution", {
         method: "POST",
@@ -776,14 +955,14 @@ export function PublishExecutionWorkbench() {
       if (!response.ok) throw new Error(data.error || "重新加入发布队列失败。");
       setState(data);
       setManualUrls((current) => ({ ...current, [jobId]: "" }));
-      setNotice("已确认平台未发布，文章已重新进入发布队列。");
+      setNotice("已确认平台未发布，文章已重新进入发布队列。请点击“检查并执行到点任务”继续发布。");
       dispatchWorkflowStatusRefresh();
       await loadState({ silent: true });
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "重新加入发布队列失败。");
     } finally {
       setBusy(false);
-      setPendingNotPublishedJobId("");
+      setRequeueingJobId("");
     }
   }
 
@@ -867,7 +1046,7 @@ export function PublishExecutionWorkbench() {
   const primaryButtonText = loginRequiredArticle && !currentArticle
     ? "重新登录账号"
     : currentArticle
-      ? "立即执行到点任务"
+      ? "检查并执行到点任务"
       : allPublished
         ? "已全部发布"
         : state.stats.manualPending > 0
@@ -938,10 +1117,10 @@ export function PublishExecutionWorkbench() {
           <div className="mt-3 h-2 overflow-hidden rounded-full bg-panel">
             <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${progressPercent}%` }} />
           </div>
-          <div className="mt-4 grid gap-3 text-sm text-muted md:grid-cols-4">
-            <span>平台：{currentArticle ? platformLabels[currentArticle.item.publishPlatform] : "--"}</span>
+          <div className="mt-4 grid gap-3 text-sm text-muted md:grid-cols-[minmax(90px,0.7fr)_minmax(180px,1.4fr)_minmax(80px,0.6fr)_minmax(140px,1fr)]">
+            <span className="min-w-0 truncate">平台：{currentArticle ? platformLabels[currentArticle.item.publishPlatform] : "--"}</span>
             <span className="min-w-0">
-              <span className="inline-flex min-w-0 items-center gap-1">
+              <span className="inline-flex max-w-full min-w-0 items-center gap-1">
                 <span className="shrink-0">账号：</span>
                 {currentArticle?.job?.accountId ? (
                   <AccountIdentity account={accountsById.get(currentArticle.job.accountId)} fallback={currentArticle.item.accountName} />
@@ -950,8 +1129,8 @@ export function PublishExecutionWorkbench() {
                 )}
               </span>
             </span>
-            <span>文章：{currentArticle ? `#${currentArticle.item.sequence}` : "--"}</span>
-            <span>最近处理：{formatDateTime(state.latestExecutionTime)}</span>
+            <span className="min-w-0 truncate">文章：{currentArticle ? `#${currentArticle.item.sequence}` : "--"}</span>
+            <span className="min-w-0 truncate">最近处理：{formatDateTime(state.latestExecutionTime)}</span>
           </div>
         </div>
 
@@ -1022,7 +1201,14 @@ export function PublishExecutionWorkbench() {
             onManualDone={(jobId) => void markManualDone(jobId)}
             onManualNotPublished={(jobId) => setPendingNotPublishedJobId(jobId)}
             onLogin={(target) => void startAccountLogin(target)}
+            accountCandidates={accountRepairCandidatesByPlatform.get(article.item.publishPlatform) ?? []}
+            selectedRepairAccountId={article.job ? repairAccountSelections[article.job.id] ?? "" : ""}
+            onRepairAccountChange={(jobId, accountId) => setRepairAccountSelections((current) => ({ ...current, [jobId]: accountId }))}
+            onRepairAccountBinding={(jobId) => void repairAccountBindingAndRun(jobId)}
             progress={article.job ? liveProgress[article.job.id] : undefined}
+            requeueing={Boolean(article.job && requeueingJobId === article.job.id)}
+            repairing={Boolean(article.job && repairingJobId === article.job.id)}
+            highlighted={runTargetArticleId === article.item.id || Boolean(article.job?.status === "running")}
           />
         ))}
         {filteredArticles.length === 0 ? (
@@ -1054,7 +1240,6 @@ export function PublishExecutionWorkbench() {
               <button
                 type="button"
                 className="rounded-md border border-line px-3 py-2 text-sm font-medium text-ink hover:border-accent disabled:opacity-60"
-                disabled={busy}
                 onClick={() => setPendingNotPublishedJobId("")}
               >
                 取消
@@ -1062,11 +1247,52 @@ export function PublishExecutionWorkbench() {
               <button
                 type="button"
                 className="inline-flex items-center justify-center gap-2 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white disabled:opacity-60"
-                disabled={busy}
+                disabled={Boolean(requeueingJobId)}
                 onClick={() => void markManualNotPublished(pendingNotPublishedJobId)}
               >
-                {busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
+                {requeueingJobId ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
                 确认重新发布
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {pendingLoginArticleId ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6">
+          <div className="w-full max-w-md rounded-md border border-line bg-panel p-5 shadow-2xl">
+            <div className="flex items-start gap-3">
+              <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-amber-500/30 bg-amber-500/10 text-amber-600">
+                <LogIn className="h-4 w-4" />
+              </span>
+              <div className="min-w-0">
+                <h3 className="text-base font-semibold text-ink">重新登录账号</h3>
+                <p className="mt-2 text-sm leading-6 text-muted">
+                  当前发布账号登录已失效，需要先重新登录后才能继续自动发布。系统会打开对应平台登录窗口。
+                </p>
+                {pendingLoginArticle ? (
+                  <p className="mt-3 truncate rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink">
+                    {platformLabels[pendingLoginArticle.item.publishPlatform]} · {pendingLoginArticle.item.accountName || "发布账号"}
+                  </p>
+                ) : null}
+              </div>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                className="rounded-md border border-line px-3 py-2 text-sm font-medium text-ink hover:border-accent disabled:opacity-60"
+                disabled={Boolean(loginBusyAccountId)}
+                onClick={() => setPendingLoginArticleId("")}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="inline-flex items-center justify-center gap-2 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white disabled:opacity-60"
+                disabled={Boolean(loginBusyAccountId)}
+                onClick={() => void confirmLoginAndContinue()}
+              >
+                {loginBusyAccountId ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <LogIn className="h-4 w-4" />}
+                打开登录窗口
               </button>
             </div>
           </div>

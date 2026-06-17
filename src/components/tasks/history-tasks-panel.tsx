@@ -11,8 +11,8 @@ const historyPageSize = 10;
 const providerLabels: Record<string, string> = {
   doubao: "豆包",
   deepseek: "DeepSeek",
-  yuanbao: "元宝",
-  tongyi: "通义",
+  yuanbao: "腾讯元宝",
+  tongyi: "通义千问",
 };
 
 const statusFilterOptions = [
@@ -224,6 +224,7 @@ export function HistoryTasksPanel({
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [page, setPage] = useState(1);
+  const [historyErrorMessage, setHistoryErrorMessage] = useState("");
   const hasListControls = typeof limit !== "number";
   const filteredTasks = useMemo(
     () => tasks.filter((task) => matchesSearchQuery(task, searchQuery) && matchesStatusFilter(task, statusFilter)),
@@ -270,7 +271,7 @@ export function HistoryTasksPanel({
       }
       router.push(payload.links.taskPlan);
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "复用历史任务关键词失败。");
+      setHistoryErrorMessage(error instanceof Error ? error.message : "复用历史任务关键词失败。");
     } finally {
       setReusingTaskId("");
     }
@@ -389,6 +390,30 @@ export function HistoryTasksPanel({
               下一页
               <ChevronRight className="h-3.5 w-3.5" />
             </button>
+          </div>
+        </div>
+      ) : null}
+      {historyErrorMessage ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6">
+          <div className="w-full max-w-md rounded-md border border-line bg-panel p-5 shadow-2xl">
+            <div className="flex items-start gap-3">
+              <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-red-500/30 bg-red-500/10 text-red-600">
+                <X className="h-4 w-4" />
+              </span>
+              <div className="min-w-0">
+                <h3 className="text-base font-semibold text-ink">历史任务操作失败</h3>
+                <p className="mt-2 text-sm leading-6 text-muted">{historyErrorMessage}</p>
+              </div>
+            </div>
+            <div className="mt-5 flex justify-end">
+              <button
+                type="button"
+                className="rounded-md bg-accent px-3 py-2 text-sm font-medium text-white"
+                onClick={() => setHistoryErrorMessage("")}
+              >
+                知道了
+              </button>
+            </div>
           </div>
         </div>
       ) : null}
