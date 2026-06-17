@@ -11,24 +11,6 @@ const platformCookieDomains = {
   kuaishou: ["cp.kuaishou.com", "passport.kuaishou.com", ".kuaishou.com"],
 };
 
-function emitVideohaoExtensionDebug(hypothesisId, location, msg, data = {}) {
-  // #region debug-point I:videohao-web-extension
-  fetch("http://127.0.0.1:7777/event", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      sessionId: "videohao-extension-load",
-      runId: "web-dev",
-      hypothesisId,
-      location,
-      msg: `[DEBUG] ${msg}`,
-      data,
-      ts: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
-}
-
 function sendResponseSafe(sendResponse, payload) {
   try {
     sendResponse(payload);
@@ -130,6 +112,35 @@ async function collectPlatformCookieRecords(platform) {
   return Array.from(cookieMap.values()).sort((left, right) =>
     `${left.domain}|${left.path}|${left.name}`.localeCompare(`${right.domain}|${right.path}|${right.name}`),
   );
+}
+
+function hasVideohaoLoginEvidence(parsedPayload) {
+  const cookies = Array.isArray(parsedPayload?.cookies) ? parsedPayload.cookies : [];
+  if (cookies.some((cookie) => String(cookie?.name || "").trim() && String(cookie?.value || "").trim())) {
+    return true;
+  }
+  const storage = {
+    ...(parsedPayload?.localStorage || {}),
+    ...(parsedPayload?.sessionStorage || {}),
+  };
+  return ["finder_uin", "finder_username", "finderUserName", "finderUsername"].some((key) =>
+    String(storage[key] || "").trim(),
+  );
+}
+
+function hasUsableLoginPayload(authPayload, platform) {
+  const normalized = String(authPayload || "").trim();
+  if (normalized.length < 20) {
+    return false;
+  }
+  if (platform !== "wechat_mp") {
+    return true;
+  }
+  try {
+    return hasVideohaoLoginEvidence(JSON.parse(normalized));
+  } catch (_) {
+    return false;
+  }
 }
 
 function buildCookieRemovalUrls(cookie) {
@@ -339,12 +350,14 @@ async function syncLoginResult(session, context) {
       localStorage: context?.authStorage?.localStorage || {},
       sessionStorage: context?.authStorage?.sessionStorage || {},
     });
-    if (!authPayload || authPayload.length < 20) {
+    const hasUsableAuthPayload = hasUsableLoginPayload(authPayload, session.platform);
+    if (!hasUsableAuthPayload) {
       throw new Error("当前页面还没有可用的登录 Cookie，请先完成平台登录。");
     }
 
     const accountName = String(context?.accountName || "").trim();
     const displayName = String(context?.displayName || "").trim();
+    const platformAccountId = String(context?.platformAccountId || "").trim();
     const avatarUrl = String(context?.avatarUrl || "").trim();
     const followerCount =
       typeof context?.followerCount === "number" && Number.isFinite(context.followerCount)
@@ -353,8 +366,8 @@ async function syncLoginResult(session, context) {
     const hasResolvedProfile =
       session.platform === "douyin"
         ? Boolean(accountName && displayName && avatarUrl && followerCount !== null)
-        : Boolean(accountName || displayName || avatarUrl || followerCount !== null);
-    if (!hasResolvedProfile) {
+        : Boolean(accountName || displayName || platformAccountId || avatarUrl || followerCount !== null);
+    if (!hasUsableAuthPayload && !hasResolvedProfile) {
       return;
     }
 
@@ -371,6 +384,7 @@ async function syncLoginResult(session, context) {
         authPayload,
         accountName,
         displayName,
+        platformAccountId,
         sourceUrl: context?.url || "",
         avatarUrl,
         followerCount,
@@ -464,7 +478,7 @@ async function ensureFreshWechatLoginSession(session, context, tabId) {
     await clearPlatformCookies("wechat_mp");
     session.loginPrepStatus = "done";
     session.loginTabId = tabId;
-    emitVideohaoExtensionDebug("I", "background.js:ensureFreshWechatLoginSession", "cleared wechat cookies before login page", {
+    debugLog("login", "cleared wechat cookies before login page", {
       sessionId: session.sessionId,
       tabId,
       targetUrl,
@@ -477,7 +491,7 @@ async function ensureFreshWechatLoginSession(session, context, tabId) {
     return true;
   } catch (error) {
     session.loginPrepStatus = "failed";
-    emitVideohaoExtensionDebug("J", "background.js:ensureFreshWechatLoginSession", "failed to clear wechat cookies before login page", {
+    debugLog("login", "failed to clear wechat cookies before login page", {
       sessionId: session.sessionId,
       tabId,
       targetUrl,
@@ -637,14 +651,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       void (async () => {
         try {
           const loginUrl = String(payload?.session?.loginUrl || "").trim();
-          // #region debug-point I:start-login
-          emitVideohaoExtensionDebug("I", "background.js:START_LOGIN:begin", "extension START_LOGIN received", {
+          debugLog("login", "extension START_LOGIN received", {
             loginUrl,
             platform: payload.platform,
             sessionId: payload?.session?.sessionId || "",
             appTabId: sender.tab?.id || null,
           });
-          // #endregion
           if (!loginUrl) {
             throw new Error("当前平台缺少登录入口 URL，扩展无法打开登录页");
           }
@@ -679,15 +691,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             active: true,
           });
           session.loginTabId = Number(tab?.id) || null;
-          // #region debug-point I:tab-created
-          emitVideohaoExtensionDebug("I", "background.js:START_LOGIN:tabs.create", "extension login tab created", {
+          debugLog("login", "extension login tab created", {
             platform: payload.platform,
             sessionId: session.sessionId,
             loginTabId: session.loginTabId,
             loginUrl,
             clearTimedOut: Boolean(clearResult.timedOut),
           });
-          // #endregion
           debugLog("login", "login-tab-created", {
             platform: payload.platform,
             sessionId: session.sessionId,
@@ -701,12 +711,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             message: clearResult.message || "",
           });
         } catch (error) {
-          // #region debug-point J:start-login-error
-          emitVideohaoExtensionDebug("J", "background.js:START_LOGIN:catch", "extension START_LOGIN failed", {
+          debugLog("login", "extension START_LOGIN failed", {
             platform: payload?.platform || "",
             message: error instanceof Error ? error.message : "扩展清理平台登录态失败",
           });
-          // #endregion
           sendResponseSafe(sendResponse, {
             ok: false,
             message: error instanceof Error ? error.message : "扩展清理平台登录态失败",

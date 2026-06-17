@@ -1,4 +1,5 @@
-import { readFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 const backgroundFiles = [
@@ -7,15 +8,25 @@ const backgroundFiles = [
 ];
 
 describe("videohao external login fallback", () => {
-  it("opens the real login page if the extension does not respond to the guide page", async () => {
-    const source = await readFile(
-      new URL("../src/app/external-login/videohao/videohao-guide-client.tsx", import.meta.url),
-      "utf-8",
-    );
+  it("does not ship the deleted videohao external-login helper page", async () => {
+    const helperFiles = [
+      "../src/app/external-login/videohao/page.tsx",
+      "../src/app/external-login/videohao/videohao-guide-client.tsx",
+    ];
 
-    expect(source).toContain("function openLoginPage(reason: string)");
-    expect(source).toContain('window.open(manualLoginUrl, "_blank", "noopener,noreferrer")');
-    expect(source).toContain("未收到扩展响应，已直接打开视频号登录页。请完成扫码登录后返回 GEO。");
+    for (const filePath of helperFiles) {
+      await expect(access(new URL(filePath, import.meta.url), constants.F_OK)).rejects.toThrow();
+    }
+  });
+
+  it("opens the real videohao login target from Electron without the helper route", async () => {
+    const source = await readFile(new URL("../electron/main.js", import.meta.url), "utf-8");
+
+    expect(source).not.toContain("/external-login/videohao");
+    expect(source).not.toContain("START_LOGIN");
+    expect(source).not.toContain("guideUrl");
+    expect(source).toContain("prepareVideohaoBrowserProfilePath()");
+    expect(source).toContain("openUrlInPreferredBrowser(loginUrl, { requireBundledVideohaoExtension: true })");
   });
 
   it("does not let cookie cleanup block opening the videohao login tab", async () => {
@@ -24,10 +35,8 @@ describe("videohao external login fallback", () => {
 
       expect(source).toContain("async function withTimeout(promise, timeoutMs, fallbackValue)");
       expect(source).toContain("4000");
-      expect(source).toContain("清理旧登录态超时，已继续打开视频号登录页。");
-      expect(source).toContain("清理旧登录态失败，已继续打开视频号登录页。");
       expect(source).toContain("const tab = await chrome.tabs.create({");
-      expect(source).toContain("message: clearResult.message || \"\"");
+      expect(source).toContain('message: clearResult.message || ""');
     }
   });
 });

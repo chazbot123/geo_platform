@@ -94,8 +94,8 @@ export const publishPlatformDescriptors: PlatformDescriptor[] = [
     automationStatus: "ready",
     routeAvailability: "electron_ready",
     contentProfile: "短文案，节奏型表达，适合配合视频或图文动态。",
-    publishEntryUrl: "https://channels.weixin.qq.com/platform/post/create",
-    hint: "通过 Electron 脚本进入视频号助手发布页自动填充文案并提交；如平台强制要求视频素材、扫码确认或审核，会返回明确阻断阶段。",
+    publishEntryUrl: "https://channels.weixin.qq.com/platform/post/finderNewLifeCreate",
+    hint: "通过外置 Edge/CDP 视频号助手图文动态页上传素材、填充文案并提交；如平台强制要求扫码确认、审核或风控，会返回明确阻断阶段。",
   },
   {
     key: "zhihu",

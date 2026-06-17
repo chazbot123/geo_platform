@@ -30,7 +30,7 @@ export async function POST(request: Request) {
       });
     }
 
-    if (!account.sessionPartition) {
+    if (platform !== "videohao" && !account.sessionPartition) {
       account = await updatePlatformAccountRecord(account.id, {
         sessionPartition: getPlatformAccountSessionPartition(account),
       });
@@ -44,7 +44,7 @@ export async function POST(request: Request) {
         platform,
         title: `${descriptor.label} 登录`,
         loginUrl: descriptor.publishEntryUrl,
-        sessionPartition: nextAccount.sessionPartition,
+        sessionPartition: platform === "videohao" ? undefined : nextAccount.sessionPartition,
         loginSessionToken: nextAccount.loginSessionToken,
       },
     });

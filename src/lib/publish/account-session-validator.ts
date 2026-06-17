@@ -30,7 +30,80 @@ export function buildDesktopSessionFailureReason(status: string, reason?: string
   }
 }
 
+function hasVideohaoExtensionLoginEvidence(authPayload: string) {
+  try {
+    const parsed = JSON.parse(authPayload) as {
+      cookies?: Array<{ name?: unknown; value?: unknown }>;
+      localStorage?: Record<string, unknown>;
+      sessionStorage?: Record<string, unknown>;
+    };
+    const cookies = Array.isArray(parsed.cookies) ? parsed.cookies : [];
+    if (cookies.some((cookie) => String(cookie?.name || "").trim() && String(cookie?.value || "").trim())) {
+      return true;
+    }
+    const storage = {
+      ...(parsed.localStorage || {}),
+      ...(parsed.sessionStorage || {}),
+    };
+    return ["finder_uin", "finder_username", "finderUserName", "finderUsername"].some((key) =>
+      String(storage[key] || "").trim(),
+    );
+  } catch {
+    return false;
+  }
+}
+
+function validateVideohaoExtensionCookieAccount(account: PlatformAccountRecord): AccountSessionAuditResult | null {
+  const source = String(account.source || "").trim();
+  if (account.platform === "videohao" && account.authType === "cookie" && source === "browser_extension") {
+    const validatedAt = new Date().toISOString();
+    if (typeof account.authPayload === "string" && hasVideohaoExtensionLoginEvidence(account.authPayload.trim())) {
+      return {
+        canAutoValidate: true,
+        nextLoginStatus: "authenticated",
+        nextStatus: "valid",
+        lastError: undefined,
+        summary: "视频号外置浏览器登录态可用。",
+        validationStatus: "authenticated",
+        patch: {
+          loginStatus: "authenticated",
+          status: "valid",
+          riskState: "active",
+          riskReason: undefined,
+          lastError: undefined,
+          lastValidatedAt: validatedAt,
+          authPayload: account.authPayload.trim(),
+          authPayloadUpdatedAt: account.authPayloadUpdatedAt ?? validatedAt,
+        },
+      };
+    }
+    const lastError = "视频号外置浏览器登录态为空，请重新扫码登录。";
+    return {
+      canAutoValidate: true,
+      nextLoginStatus: "failed",
+      nextStatus: "invalid",
+      lastError,
+      summary: lastError,
+      validationStatus: "missing_session",
+      patch: {
+        loginStatus: "failed",
+        status: "invalid",
+        riskState: "needs_login",
+        riskReason: lastError,
+        lastError,
+        lastValidatedAt: validatedAt,
+      },
+    };
+  }
+  return null;
+}
+
 export async function auditPlatformAccountSession(account: PlatformAccountRecord): Promise<AccountSessionAuditResult> {
+  const videohaoCookieValidation = validateVideohaoExtensionCookieAccount(account);
+  if (videohaoCookieValidation) {
+    return videohaoCookieValidation;
+  }
+
   const result = await validatePlatformSessionWindow({
     platform: account.platform,
     publishUrl: account.loginUrl,

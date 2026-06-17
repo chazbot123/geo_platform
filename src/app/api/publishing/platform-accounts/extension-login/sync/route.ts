@@ -17,6 +17,14 @@ function buildAccountName(platform: SocialPlatform, accountName?: string, displa
   return candidate || `${platform}-extension-${new Date().toISOString().slice(11, 19).replace(/:/g, "")}`;
 }
 
+function pickNonEmptyText(...values: Array<unknown>) {
+  for (const value of values) {
+    const text = String(value || "").trim();
+    if (text) return text;
+  }
+  return "";
+}
+
 function pickPlatformAccountId(payload: {
   platformAccountId?: unknown;
   accountId?: unknown;
@@ -25,6 +33,29 @@ function pickPlatformAccountId(payload: {
   profileId?: unknown;
 }) {
   return String(payload.platformAccountId || payload.accountId || payload.userId || payload.uid || payload.profileId || "").trim();
+}
+
+function hasVideohaoExtensionLoginEvidence(authPayload: string) {
+  try {
+    const parsed = JSON.parse(authPayload) as {
+      cookies?: Array<{ name?: unknown; value?: unknown }>;
+      localStorage?: Record<string, unknown>;
+      sessionStorage?: Record<string, unknown>;
+    };
+    const cookies = Array.isArray(parsed.cookies) ? parsed.cookies : [];
+    if (cookies.some((cookie) => String(cookie?.name || "").trim() && String(cookie?.value || "").trim())) {
+      return true;
+    }
+    const storage = {
+      ...(parsed.localStorage || {}),
+      ...(parsed.sessionStorage || {}),
+    };
+    return ["finder_uin", "finder_username", "finderUserName", "finderUsername"].some((key) =>
+      String(storage[key] || "").trim(),
+    );
+  } catch {
+    return false;
+  }
 }
 
 export async function POST(request: Request) {
@@ -56,19 +87,30 @@ export async function POST(request: Request) {
     if (!authPayload || authPayload.length < 20) {
       return NextResponse.json({ message: "缺少浏览器扩展同步的登录凭证，请重新同步。" }, { status: 400 });
     }
+    if (platform === "videohao" && !hasVideohaoExtensionLoginEvidence(authPayload)) {
+      return NextResponse.json({ message: "Videohao login is not complete yet." }, { status: 400 });
+    }
 
     const platformAccountId = pickPlatformAccountId(payload);
-    const accountName = buildAccountName(platform, payload.accountName, payload.displayName, platformAccountId);
-    const displayName = String(payload.displayName || payload.accountName || platformAccountId || accountName).trim();
+    const incomingAccountName = String(payload.accountName || "").trim();
+    const incomingDisplayName = String(payload.displayName || "").trim();
+    const incomingAvatarUrl = String(payload.avatarUrl || "").trim();
     const accounts = await getAllPlatformAccounts();
     const existing = accounts.find(
       (account) =>
         account.platform === platform &&
         (account.loginSessionToken === payload.sessionToken ||
           (platformAccountId && account.platformAccountId === platformAccountId) ||
-          account.accountName === accountName ||
+          (incomingAccountName && account.accountName === incomingAccountName) ||
           account.displayName === payload.displayName),
     );
+    const accountName = buildAccountName(
+      platform,
+      incomingAccountName,
+      incomingDisplayName,
+      platformAccountId || existing?.platformAccountId,
+    );
+    const displayName = pickNonEmptyText(incomingDisplayName, incomingAccountName, existing?.displayName, existing?.accountName, platformAccountId, accountName);
 
     const payloadFormat = String(payload.payloadFormat || "").trim();
     const payloadShape = authPayload.startsWith("{") ? "json-object" : authPayload.startsWith("[") ? "json-array" : "cookie-header";
@@ -82,13 +124,14 @@ export async function POST(request: Request) {
       provider: "electron" as const,
       authType: "cookie" as const,
       source: "browser_extension",
-      accountName,
+      accountName: pickNonEmptyText(incomingAccountName, incomingDisplayName, existing?.accountName, platformAccountId, accountName),
       displayName,
-      platformAccountId: platformAccountId || undefined,
-      avatarUrl: String(payload.avatarUrl || "").trim() || undefined,
+      platformAccountId: platformAccountId || existing?.platformAccountId || undefined,
+      avatarUrl: incomingAvatarUrl || existing?.avatarUrl || undefined,
       loginStatus: "authenticated" as const,
       status: "valid" as const,
       loginUrl: descriptor.publishEntryUrl,
+      sessionPartition: platform === "videohao" ? undefined : existing?.sessionPartition,
       authPayload,
       authPayloadUpdatedAt: new Date().toISOString(),
       loginSessionToken: String(payload.sessionToken || "").trim() || undefined,

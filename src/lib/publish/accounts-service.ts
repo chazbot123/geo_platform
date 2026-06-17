@@ -186,6 +186,14 @@ function buildAuthPayloadPreview(authPayload?: string) {
   return preview.length > 120 ? `${preview.slice(0, 117)}...` : preview;
 }
 
+function isVideohaoExtensionCookieAccount(account: Pick<PlatformAccountRecord, "platform" | "authType" | "source">) {
+  return account.platform === "videohao" && account.authType === "cookie" && account.source === "browser_extension";
+}
+
+function getAccountSessionPartitionForPatch(account: PlatformAccountRecord) {
+  return isVideohaoExtensionCookieAccount(account) ? undefined : account.sessionPartition;
+}
+
 function collectAccountIdentityKeys(
   account: Pick<PlatformAccountRecord, "platformAccountId" | "accountName"> &
     Partial<Pick<PlatformAccountRecord, "platform">>,
@@ -242,7 +250,7 @@ function buildLoginResultPatch(
     lastError: result.lastError,
     lastLoginCompletedAt: now(),
     lastValidatedAt: result.lastValidatedAt ?? now(),
-    sessionPartition: current.sessionPartition,
+    sessionPartition: getAccountSessionPartitionForPatch(current),
     loginUrl: current.loginUrl,
     lastLoginStartedAt: current.lastLoginStartedAt,
   };
@@ -280,7 +288,7 @@ function buildSessionAuditPatch(
     cooldownUntil: undefined,
     lastError: result.lastError,
     lastValidatedAt: result.lastValidatedAt ?? now(),
-    sessionPartition: current.sessionPartition,
+    sessionPartition: getAccountSessionPartitionForPatch(current),
     loginUrl: current.loginUrl,
   };
   if (typeof result.authPayload === "string") {

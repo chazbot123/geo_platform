@@ -16,24 +16,6 @@
     console.log(`${debugPrefix}[${scope}] ${detail}`, extra);
   }
 
-  function emitVideohaoExtensionDebug(hypothesisId, location, msg, data = {}) {
-    // #region debug-point K:videohao-web-content
-    fetch("http://127.0.0.1:7777/event", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sessionId: "videohao-extension-load",
-        runId: "web-dev",
-        hypothesisId,
-        location,
-        msg: `[DEBUG] ${msg}`,
-        data,
-        ts: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
-  }
-
   function resolvePlatformFromHost(hostname) {
     if (hostname.includes("xiaohongshu.com")) return "xiaohongshu";
     if (hostname.includes("douyin.com")) return "douyin";
@@ -86,12 +68,35 @@
   }
 
   function findFirstImageSrc(selectors) {
+    const pickUrlFromSrcset = (value) => {
+      const firstCandidate = String(value || "")
+        .split(",")
+        .map((item) => item.trim().split(/\s+/)[0])
+        .find(Boolean);
+      return normalize(firstCandidate || "");
+    };
     for (const selector of selectors) {
       try {
         const node = document.querySelector(selector);
-        const src = normalize(node?.getAttribute?.("src") || node?.src || "");
+        const src = normalize(
+          node?.currentSrc ||
+            node?.getAttribute?.("src") ||
+            node?.getAttribute?.("data-src") ||
+            node?.getAttribute?.("data-avatar") ||
+            node?.src ||
+            "",
+        );
         if (src) {
           return src;
+        }
+        const srcset = pickUrlFromSrcset(node?.getAttribute?.("srcset") || node?.getAttribute?.("data-srcset") || "");
+        if (srcset) {
+          return srcset;
+        }
+        const backgroundImage = normalize(getComputedStyle(node).backgroundImage || "");
+        const matched = backgroundImage.match(/url\(["']?([^"')]+)["']?\)/i);
+        if (matched?.[1]) {
+          return normalize(matched[1]);
         }
       } catch (_) {
         // ignore invalid selector
@@ -217,6 +222,65 @@
       .replace(/^douyin\s*id\s*[:：]?\s*/i, "")
       .trim();
     return /^[A-Za-z0-9_-]{2,}$/.test(cleaned) ? cleaned : "";
+  }
+
+  function normalizeVideohaoAccountId(value) {
+    const normalized = normalize(value);
+    if (!normalized) return "";
+    const cleaned = normalized
+      .replace(/^(视频号ID|视频号\s*Id|视频号|微信号|账号ID|账号)\s*[:：]?\s*/i, "")
+      .trim();
+    if (!/^[A-Za-z0-9_-]{4,}$/.test(cleaned)) return "";
+    if (/^(platform|profile|post|finderNewLifeCreate|home)$/i.test(cleaned)) return "";
+    return cleaned;
+  }
+
+  function extractVideohaoIdFromHref(href) {
+    const raw = normalize(href);
+    if (!raw) return "";
+    try {
+      const url = new URL(raw, window.location.href);
+      if (!url.hostname.includes("channels.weixin.qq.com")) return "";
+      const pathnameMatch =
+        url.pathname.match(/\/platform\/profile\/([^/?#]+)/i) ||
+        url.pathname.match(/\/profile\/([^/?#]+)/i) ||
+        url.pathname.match(/\/finder\/([^/?#]+)/i) ||
+        url.pathname.match(/\/platform\/([^/?#]+)/i);
+      const pathId = normalizeVideohaoAccountId(pathnameMatch?.[1] || "");
+      if (pathId) return pathId;
+      for (const key of ["finderUsername", "finderUserName", "username", "id", "uin"]) {
+        const queryId = normalizeVideohaoAccountId(url.searchParams.get(key) || "");
+        if (queryId) return queryId;
+      }
+    } catch (_) {
+      // ignore invalid URLs
+    }
+    return "";
+  }
+
+  function findFirstVideohaoAccountId(selectors) {
+    for (const selector of selectors) {
+      try {
+        const nodes = Array.from(document.querySelectorAll(selector));
+        for (const node of nodes) {
+          const textId = normalizeVideohaoAccountId(
+            node?.textContent ||
+              node?.getAttribute?.("title") ||
+              node?.getAttribute?.("aria-label") ||
+              "",
+          );
+          if (textId) return textId;
+
+          const hrefId =
+            extractVideohaoIdFromHref(node?.getAttribute?.("href") || "") ||
+            extractVideohaoIdFromHref(node?.getAttribute?.("data-href") || "");
+          if (hrefId) return hrefId;
+        }
+      } catch (_) {
+        // ignore invalid selector
+      }
+    }
+    return "";
   }
 
   function looksLikePlatformLabel(value, platform) {
@@ -412,12 +476,20 @@
             "h2.finder-nickname",
             ".finder-nickname",
             "[class*='finder-nickname']",
+            "[class*='nickname']",
+            "[class*='account-name']",
+            "[class*='user-name']",
+            "[class*='creator-name']",
+            "[class*='profile-name']",
             ".weui-desktop-account__info-name",
             ".finder_account_name",
             ".account_meta_primary",
             "[class*='finder'] [class*='name']",
             "[class*='account'] [class*='name']",
+            ".account-name",
+            ".user-name",
             "[class*='name']",
+            ".name",
           ],
           kuaishou: [
             "div.user-info-name",
@@ -440,6 +512,17 @@
             ]),
           ) || null
         : null;
+    const directPlatformAccountId =
+      platform === "wechat_mp"
+        ? findFirstVideohaoAccountId([
+            "a[href*='channels.weixin.qq.com']",
+            "a[href*='finderUserName=']",
+            "a[href*='finderUsername=']",
+            "[class*='account-id']",
+            "[class*='user-id']",
+            "[class*='channel-id']",
+          ]) || null
+        : null;
 
     const profileFromAnchoredText =
       platform === "douyin" ? { accountName: null, displayName: null } : extractProfileFromPageText(anchoredText, platform);
@@ -449,8 +532,23 @@
       platform === "xiaohongshu" || platform === "douyin"
         ? null
         : extractNameFromTitle(document.title || "", platform);
+    const directNearbyDisplayName =
+      platform === "wechat_mp"
+        ? findNearbyProfileName(
+            [
+              "img.avatar",
+              "[class*='avatar']",
+              "[class*='finder'] img",
+              "img[src*='qlogo.cn']",
+              "img[src*='wx.qlogo.cn']",
+              "img[src*='wx.qlogo.cn/finderhead/']",
+            ],
+            platform,
+          ) || null
+        : null;
     const displayName =
       directDisplayName ||
+      directNearbyDisplayName ||
       profileFromAnchoredText.displayName ||
       profileFromPageText.displayName ||
       titleFallback ||
@@ -461,6 +559,11 @@
       profileFromPageText.accountName ||
       displayName ||
       titleFallback ||
+      null;
+    const platformAccountId =
+      directPlatformAccountId ||
+      normalizeVideohaoAccountId(profileFromAnchoredText.accountName) ||
+      normalizeVideohaoAccountId(profileFromPageText.accountName) ||
       null;
 
     const avatarUrl =
@@ -480,10 +583,23 @@
             ]) || null
         : platform === "wechat_mp"
           ? findFirstImageSrc([
+              "img.avatar[alt*='视频号头像']",
               "img.avatar",
+              "[class*='avatar'] img",
+              "[class*='avatar']",
+              ".account-avatar img",
+              ".user-avatar img",
+              "img[src*='qlogo.cn']",
+              "img[src*='wx.qlogo.cn']",
               "img[src*='wx.qlogo.cn/finderhead/']",
+              "img[data-src*='qlogo.cn']",
+              "img[data-src*='wx.qlogo.cn']",
+              "img[srcset*='qlogo.cn']",
+              "img[srcset*='wx.qlogo.cn']",
               "[class*='finder'] img.avatar",
               "[class*='finder'] [class*='avatar'] img",
+              "[style*='qlogo.cn']",
+              "[style*='wx.qlogo.cn']",
               ".weui-desktop-account__info img",
             ]) || null
           : null;
@@ -508,18 +624,17 @@
     return {
       accountName: normalizedAccountName || normalizedDisplayName,
       displayName: normalizedDisplayName,
+      platformAccountId,
       avatarUrl,
       followerCount,
     };
   }
 
-  // #region debug-point K:content-script-ready
-  emitVideohaoExtensionDebug("K", "content.js:init", "content script booted", {
+  debugLog("init", "content script booted", {
     href: window.location.href,
     hostname: window.location.hostname,
     title: document.title || "",
   });
-  // #endregion
 
   window.addEventListener("message", (event) => {
     if (event.source !== window) {
@@ -531,13 +646,11 @@
       return;
     }
 
-    // #region debug-point L:page-message-forward
-    emitVideohaoExtensionDebug("L", "content.js:window-message", "content script received page request", {
+    debugLog("window-message", "content script received page request", {
       href: window.location.href,
       requestId: data.requestId || "",
       action: data.payload?.action || "",
     });
-    // #endregion
     chrome.runtime.sendMessage(
       {
         type: "AI_SUPERWEB_FROM_PAGE",
@@ -545,15 +658,13 @@
         payload: data.payload,
       },
       (response) => {
-        // #region debug-point L:page-message-response
-        emitVideohaoExtensionDebug("L", "content.js:window-message:callback", "content script received background response", {
+        debugLog("window-message", "content script received background response", {
           href: window.location.href,
           requestId: data.requestId || "",
           ok: Boolean(response?.ok),
           runtimeError: chrome.runtime.lastError?.message || "",
           responseMessage: response?.message || "",
         });
-        // #endregion
         window.postMessage(
           {
             source: EXTENSION_SOURCE,
@@ -615,6 +726,7 @@
                 ...payload,
                 accountName: profile.accountName,
                 displayName: profile.displayName,
+                platformAccountId: profile.platformAccountId,
               },
             },
             () => resolve(undefined),
@@ -660,6 +772,7 @@
       title: document.title || "",
       accountName: profile.accountName,
       displayName: profile.displayName,
+      platformAccountId: profile.platformAccountId,
     });
     chrome.runtime.sendMessage({
       type: "AI_SUPERWEB_PLATFORM_PAGE_READY",
@@ -669,6 +782,7 @@
         title: document.title || "",
         accountName: profile.accountName,
         displayName: profile.displayName,
+        platformAccountId: profile.platformAccountId,
         avatarUrl: profile.avatarUrl,
         followerCount: profile.followerCount,
         authStorage:

@@ -21,7 +21,7 @@ async (input) => {
     complete,
   } = automation;
   const payload = input?.payload ?? {};
-  const publishUrl = String(input?.publishUrl || "https://channels.weixin.qq.com/platform/post/create");
+  const publishUrl = String(input?.publishUrl || "https://channels.weixin.qq.com/platform/post/finderNewLifeCreate");
   const title = normalize(payload.draftTitle || "");
   const body = normalize(payload.draftBody || "");
   const preparedImages = Array.isArray(payload.preparedImages) ? payload.preparedImages : [];
